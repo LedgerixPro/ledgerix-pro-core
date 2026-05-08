@@ -421,6 +421,20 @@
       "when": 1776542246000,
       "tag": "0059_plugin_database_namespaces",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1777667751605,
+      "tag": "0060_closed_black_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1778262234046,
+      "tag": "0061_futuristic_nighthawk",
+      "breakpoints": true
     }
   ]
 }
