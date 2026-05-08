@@ -38,6 +38,12 @@ import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { ghlWebhookRoutes } from "./routes/webhooks/ghl.js";
+import { accountingWebhookRoutes } from "./routes/webhooks/accounting.js";
+import { ledgerixDashboardRoutes } from "./routes/ledgerix-dashboard.js";
+import { diagnosticRoutes } from "./routes/diagnostic.js";
+import { quickbooksOAuthRoutes } from "./routes/oauth/quickbooks.js";
+import { xeroOAuthRoutes } from "./routes/oauth/xero.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
@@ -273,6 +279,12 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  api.use(ghlWebhookRoutes(db));
+  api.use(accountingWebhookRoutes(db));
+  api.use(ledgerixDashboardRoutes(db));
+  api.use(diagnosticRoutes(db));
+  api.use(quickbooksOAuthRoutes(db));
+  api.use(xeroOAuthRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
