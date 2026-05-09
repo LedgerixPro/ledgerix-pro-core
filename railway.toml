@@ -1,0 +1,9 @@
+[build]
+builder = "nixpacks"
+buildCommand = "npm install -g pnpm && pnpm install --frozen-lockfile && pnpm --filter @paperclipai/server build"
+
+[deploy]
+startCommand = "node server/dist/index.js"
+healthcheckPath = "/api/health"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
