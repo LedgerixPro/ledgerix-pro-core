@@ -41,6 +41,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { ghlWebhookRoutes } from "./routes/webhooks/ghl.js";
 import { accountingWebhookRoutes } from "./routes/webhooks/accounting.js";
 import { ledgerixDashboardRoutes } from "./routes/ledgerix-dashboard.js";
+import { debugRoutes } from "./routes/debug.js";
 import { diagnosticRoutes } from "./routes/diagnostic.js";
 import { quickbooksOAuthRoutes } from "./routes/oauth/quickbooks.js";
 import { xeroOAuthRoutes } from "./routes/oauth/xero.js";
@@ -282,6 +283,7 @@ export async function createApp(
   api.use(ghlWebhookRoutes(db));
   api.use(accountingWebhookRoutes(db));
   api.use(ledgerixDashboardRoutes(db));
+  api.use(debugRoutes());
   api.use(diagnosticRoutes(db));
   api.use(quickbooksOAuthRoutes(db));
   api.use(xeroOAuthRoutes(db));
