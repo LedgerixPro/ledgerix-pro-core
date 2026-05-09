@@ -1,8 +1,19 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { logger } from "../middleware/logger.js";
+
+// Run a short command and capture stdout (or null on failure). Bounded by
+// timeout + maxBuffer so a hung child can't take down the request.
+function tryExec(cmd: string, args: string[]): string | null {
+  try {
+    return execFileSync(cmd, args, { encoding: "utf-8", timeout: 3000, maxBuffer: 64 * 1024 }).trim();
+  } catch {
+    return null;
+  }
+}
 
 // Same shared-secret pattern as ledgerix-dashboard. Constant-time compare.
 function requireDashboardSecret(req: Request, res: Response, next: NextFunction): void {
@@ -70,6 +81,20 @@ export function debugRoutes() {
       },
       topLevelOfApp: existsSync("/app") ? listDir("/app") : null,
       agents: agentDirs,
+    });
+  });
+
+  router.get("/debug/claude-path", (_req, res) => {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const claudeWhich = tryExec("which", ["claude"]);
+    const claudeVersion = tryExec("claude", ["--version"]);
+    res.json({
+      cwd: process.cwd(),
+      PATH: process.env.PATH ?? null,
+      claudeWhich,
+      claudeVersion,
+      anthropicKeySet: Boolean(apiKey),
+      anthropicKeyPrefix: apiKey ? apiKey.slice(0, 7) : null,
     });
   });
 
