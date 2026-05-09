@@ -1,9 +1,9 @@
 [build]
 builder = "nixpacks"
-buildCommand = "pnpm --filter @paperclipai/plugin-sdk build && pnpm --filter @paperclipai/db build && pnpm --filter @paperclipai/shared build && pnpm --filter @paperclipai/server build"
+buildCommand = "pnpm --filter @paperclipai/plugin-sdk build"
 
 [deploy]
-startCommand = "node server/dist/index.js"
+startCommand = "pnpm --filter @paperclipai/server exec tsx src/index.ts"
 healthcheckPath = "/api/health"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
