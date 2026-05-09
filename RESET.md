@@ -393,7 +393,7 @@ WHERE name = 'Sentinel'
 The agent instructions file lives at:
 agents/sentinel/AGENTS.md
 
-The daily 6am Arizona cron routine that drives this agent must be re-registered after a DB reset — see the Sentinel API flow used during initial setup.
+The daily 6am Arizona cron routine that drives this agent must be re-registered after a DB reset — see Section 24 for routine registration commands.
 
 ---
 
@@ -566,7 +566,7 @@ WHERE name = 'Reactivation'
 The agent instructions file lives at:
 agents/reactivation/AGENTS.md
 
-The monthly cron routine (1st of month 9am Arizona) that drives this agent must be re-registered after a DB reset — see the Reactivation API flow used during initial setup.
+The monthly cron routine (1st of month 9am Arizona) that drives this agent must be re-registered after a DB reset — see Section 24 for routine registration commands.
 
 ---
 
@@ -601,7 +601,7 @@ WHERE name = 'Billing & Invoicing'
 The agent instructions file lives at:
 agents/billing-invoicing/AGENTS.md
 
-The monthly cron routine (1st of month 8am Arizona) that drives this agent must be re-registered after a DB reset.
+The monthly cron routine (1st of month 8am Arizona) that drives this agent must be re-registered after a DB reset — see Section 24 for routine registration commands.
 
 ---
 
@@ -637,9 +637,79 @@ WHERE name = 'AP Specialist'
 The agent instructions file lives at:
 agents/ap-specialist/AGENTS.md
 
-Two cron routines drive this agent and must be re-registered after a DB reset:
-- Daily AP Scan: `30 6 * * *` America/Phoenix (6:30am)
-- Weekly AP Summary: `30 8 * * 1` America/Phoenix (Monday 8:30am)
+Two cron routines drive this agent and must be re-registered after a DB reset — see Section 24 for routine registration commands.
+
+---
+
+## 24. Register all cron routines
+
+Run after a DB reset or fresh Railway deploy. Requires a valid board API key (see Section 23 for how to create one).
+
+```bash
+TOKEN="pcp_board_railway_admin_key_2026"
+BASE="https://api.ledgerixpro.com"
+COMPANY_ID="f60117de-1131-433c-934f-3fe88bfaa163"
+
+# 1. Sentinel — daily 6am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Daily Bookkeeping Run — Sentinel","description":"Runs every day at 6am Arizona time.","priority":"high","status":"active","assigneeAgentId":"51526544-e8db-4a6b-808e-b02950c527d2"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 6 * * *","timezone":"America/Phoenix"}'
+echo "Sentinel routine: $ROUTINE_ID"
+
+# 2. Senior Bookkeeper weekly digest — Monday 8am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Weekly Client Digest — Senior Bookkeeper","description":"Runs every Monday at 8am Arizona time.","priority":"high","status":"active","assigneeAgentId":"2b00ead7-c1e6-4b87-b0dc-8294d54b463c"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 8 * * 1","timezone":"America/Phoenix"}'
+echo "Senior Bookkeeper digest routine: $ROUTINE_ID"
+
+# 3. Reactivation nurture — monthly 1st 9am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Monthly Nurture Run — Reactivation","description":"Runs on the 1st of every month at 9am Arizona time.","priority":"medium","status":"active","assigneeAgentId":"7f5a3ce8-4c90-4fcb-8559-66372c374a83"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 9 1 * *","timezone":"America/Phoenix"}'
+echo "Reactivation routine: $ROUTINE_ID"
+
+# 4. Billing & Invoicing — monthly 1st 8am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Monthly Billing Run — Billing & Invoicing","description":"Runs on the 1st of every month at 8am Arizona time.","priority":"high","status":"active","assigneeAgentId":"7115530d-0aa6-4315-a3c9-3a81d6de2e84"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 8 1 * *","timezone":"America/Phoenix"}'
+echo "Billing routine: $ROUTINE_ID"
+
+# 5. AP Specialist daily scan — 6:30am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Daily AP Scan — AP Specialist","description":"Runs daily at 6:30am Arizona.","priority":"high","status":"active","assigneeAgentId":"d1800e52-cb15-4880-bf26-578bab350939"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"30 6 * * *","timezone":"America/Phoenix"}'
+echo "AP daily scan routine: $ROUTINE_ID"
+
+# 6. AP Specialist weekly summary — Monday 8:30am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Weekly AP Summary — AP Specialist","description":"Runs every Monday at 8:30am Arizona.","priority":"medium","status":"active","assigneeAgentId":"d1800e52-cb15-4880-bf26-578bab350939"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"30 8 * * 1","timezone":"America/Phoenix"}'
+echo "AP weekly summary routine: $ROUTINE_ID"
+```
 
 ---
 
