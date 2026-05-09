@@ -1,6 +1,6 @@
 [build]
 builder = "nixpacks"
-buildCommand = "pnpm --filter @paperclipai/server build"
+buildCommand = "pnpm --filter @paperclipai/plugin-sdk build && pnpm --filter @paperclipai/db build && pnpm --filter @paperclipai/shared build && pnpm --filter @paperclipai/server build"
 
 [deploy]
 startCommand = "node server/dist/index.js"
