@@ -37,4 +37,4 @@ USER paperclip
 
 EXPOSE 8080
 
-CMD ["pnpm", "--filter", "@paperclipai/server", "exec", "tsx", "src/index.ts"]
+CMD ["node", "/app/server/node_modules/.bin/tsx", "/app/server/src/index.ts"]
