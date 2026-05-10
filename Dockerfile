@@ -13,6 +13,7 @@ RUN useradd -m -u 1001 paperclip
 
 # Copy workspace files
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY tsconfig.base.json tsconfig.json ./
 COPY patches/ ./patches/
 COPY packages/ ./packages/
 COPY server/ ./server/
