@@ -27,13 +27,17 @@ const SCOPES = [
 const STATE_TTL_MS = 10 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
 
-const pendingStates = new Map<string, number>(); // state UUID -> timestamp
+interface PendingState {
+  ts: number;
+  contactId: string | null;
+}
+const pendingStates = new Map<string, PendingState>();
 
 // Purge expired entries every 5 minutes so the Map doesn't grow unbounded
 setInterval(() => {
   const now = Date.now();
-  for (const [state, ts] of pendingStates) {
-    if (now - ts > STATE_TTL_MS) pendingStates.delete(state);
+  for (const [state, entry] of pendingStates) {
+    if (now - entry.ts > STATE_TTL_MS) pendingStates.delete(state);
   }
 }, 5 * 60 * 1000).unref();
 
@@ -53,9 +57,13 @@ interface XeroTenant {
 export function xeroOAuthRoutes(db: Db) {
   const router = Router();
 
-  router.get("/oauth/xero/connect", (_req, res) => {
+  router.get("/oauth/xero/connect", (req, res) => {
+    const contactId =
+      typeof req.query.contactId === "string" && req.query.contactId.length > 0
+        ? req.query.contactId
+        : null;
     const state = randomUUID();
-    pendingStates.set(state, Date.now());
+    pendingStates.set(state, { ts: Date.now(), contactId });
 
     const params = new URLSearchParams({
       client_id: process.env.XERO_CLIENT_ID!,
@@ -82,12 +90,13 @@ export function xeroOAuthRoutes(db: Db) {
       return;
     }
 
-    const stateTs = pendingStates.get(state);
-    if (!stateTs || Date.now() - stateTs > STATE_TTL_MS) {
+    const stateEntry = pendingStates.get(state);
+    if (!stateEntry || Date.now() - stateEntry.ts > STATE_TTL_MS) {
       res.status(400).json({ error: "Invalid or expired state" });
       return;
     }
     pendingStates.delete(state);
+    const { contactId } = stateEntry;
 
     try {
       const basic = Buffer.from(
@@ -150,6 +159,7 @@ export function xeroOAuthRoutes(db: Db) {
         .values({
           companyId: COMPANY_ID,
           platform: "xero",
+          contactId,
           realmId: tenantId,
           accessToken: encryptedAccessToken,
           refreshToken: encryptedRefreshToken,
@@ -157,7 +167,11 @@ export function xeroOAuthRoutes(db: Db) {
           refreshTokenExpiresAt,
         })
         .onConflictDoUpdate({
-          target: [accountingConnections.companyId, accountingConnections.platform],
+          target: [
+            accountingConnections.companyId,
+            accountingConnections.platform,
+            accountingConnections.contactId,
+          ],
           set: {
             realmId: tenantId,
             accessToken: encryptedAccessToken,
@@ -168,10 +182,10 @@ export function xeroOAuthRoutes(db: Db) {
           },
         });
 
-      logger.info({ tenantId, companyId: COMPANY_ID }, "Xero OAuth connection established");
+      logger.info({ tenantId, companyId: COMPANY_ID, contactId }, "Xero OAuth connection established");
 
       try {
-        await registerXeroWebhook(db, COMPANY_ID);
+        await registerXeroWebhook(db, COMPANY_ID, contactId);
       } catch (err) {
         logger.error({ err }, "Xero webhook registration failed — OAuth connection still valid");
       }
