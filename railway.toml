@@ -1,10 +1,9 @@
 [build]
-builder = "nixpacks"
-buildCommand = "npm config set prefix '/root/.npm-global' && npm install -g @anthropic-ai/claude-code && pnpm --filter @paperclipai/plugin-sdk build"
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "PATH=/root/.npm-global/bin:$PATH pnpm --filter @paperclipai/server exec tsx src/index.ts"
 healthcheckPath = "/api/health"
-healthcheckTimeout = 120
+healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
