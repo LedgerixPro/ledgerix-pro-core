@@ -789,6 +789,26 @@ curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"kind":"schedule","cronExpression":"0 11 1 * *","timezone":"America/Phoenix"}'
 echo "Compliance monthly deep scan routine: $ROUTINE_ID"
+
+# 15. Payroll bi-weekly scan — Wednesday 7am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Bi-Weekly Payroll Scan — Payroll Agent","description":"Runs every Wednesday at 7am Arizona. Monitors payroll runs, 941 deposits, AZ withholding, and misclassification risk.","priority":"medium","status":"active","assigneeAgentId":"6e5ca690-2715-4003-912c-6771fbe247eb"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 7 * * 3","timezone":"America/Phoenix"}'
+echo "Payroll bi-weekly scan routine: $ROUTINE_ID"
+
+# 16. Payroll monthly review — 1st of month 11:30am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Monthly Payroll Review — Payroll Agent","description":"Runs on the 1st of every month at 11:30am Arizona. Full payroll audit, W-2/FUTA deadline tracking, monthly report.","priority":"medium","status":"active","assigneeAgentId":"6e5ca690-2715-4003-912c-6771fbe247eb"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"30 11 1 * *","timezone":"America/Phoenix"}'
+echo "Payroll monthly review routine: $ROUTINE_ID"
 ```
 
 ---
@@ -930,6 +950,41 @@ The agent instructions file lives at:
 agents/audit-compliance/AGENTS.md
 
 Two cron routines drive this agent (Monday 10:15am weekly + 1st-of-month 11am monthly) — see Section 24 for routine registration commands.
+
+---
+
+## 29. Restore the Payroll agent configuration
+
+After a DB reset and agent re-seed, restore the Payroll agent with:
+
+```sql
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/payroll/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 50,
+    \"timeoutSec\": 360
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Payroll'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+```
+
+The agent instructions file lives at:
+agents/payroll/AGENTS.md
+
+Two cron routines drive this agent (Wednesday 7am bi-weekly scan + 1st-of-month 11:30am monthly deep review) — see Section 24 for routine registration commands.
 
 ---
 
@@ -1336,6 +1391,29 @@ UPDATE agents SET
   }',
   permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
 WHERE name = 'Audit & Compliance'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+
+# 24. Restore the Payroll agent config (see Section 29)
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/payroll/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 50,
+    \"timeoutSec\": 360
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Payroll'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 ```
