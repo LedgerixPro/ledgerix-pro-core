@@ -729,6 +729,26 @@ curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"kind":"schedule","cronExpression":"0 9 * * 1","timezone":"America/Phoenix"}'
 echo "Tax weekly review routine: $ROUTINE_ID"
+
+# 9. Reporter weekly pulse — Monday 7:30am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Weekly Pulse — Reporter","description":"Runs every Monday at 7:30am Arizona. Sends weekly business pulse to scott@ledgerixpro.com.","priority":"medium","status":"active","assigneeAgentId":"847a94fa-5d1b-4210-8ac7-fd3866fabb7e"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"30 7 * * 1","timezone":"America/Phoenix"}'
+echo "Reporter weekly pulse routine: $ROUTINE_ID"
+
+# 10. Reporter monthly deep dive — 1st of month 7am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Monthly Deep Dive — Reporter","description":"Runs on the 1st of every month at 7am Arizona. Sends comprehensive monthly business report.","priority":"medium","status":"active","assigneeAgentId":"847a94fa-5d1b-4210-8ac7-fd3866fabb7e"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 7 1 * *","timezone":"America/Phoenix"}'
+echo "Reporter monthly deep dive routine: $ROUTINE_ID"
 ```
 
 ---
@@ -763,6 +783,41 @@ WHERE name = 'Tax Liaison'
 
 The agent instructions file lives at:
 agents/tax-liaison/AGENTS.md
+
+Two cron routines drive this agent and must be re-registered after a DB reset — see Section 24 for routine registration commands.
+
+---
+
+## 26. Restore the Reporter agent configuration
+
+After a DB reset and agent re-seed, restore the Reporter agent with:
+
+```sql
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/reporter/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 40,
+    \"timeoutSec\": 300
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Reporter'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+```
+
+The agent instructions file lives at:
+agents/reporter/AGENTS.md
 
 Two cron routines drive this agent and must be re-registered after a DB reset — see Section 24 for routine registration commands.
 
@@ -1102,6 +1157,29 @@ UPDATE agents SET
   }',
   permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
 WHERE name = 'Tax Liaison'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+
+# 21. Restore the Reporter agent config (see Section 26)
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/reporter/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 40,
+    \"timeoutSec\": 300
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Reporter'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 ```
