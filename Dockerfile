@@ -14,6 +14,7 @@ COPY packages/ ./packages/
 COPY server/ ./server/
 COPY agents/ ./agents/
 COPY ui/ ./ui/
+COPY patches/ ./patches/
 
 # Install dependencies as root (needed for workspace setup)
 RUN pnpm install --frozen-lockfile
