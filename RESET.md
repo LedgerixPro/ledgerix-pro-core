@@ -1215,29 +1215,6 @@ WHERE name = 'Tax Liaison'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 
-# 22. Restore the Quality Control agent config (see Section 27)
-/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
-UPDATE agents SET
-  adapter_type = 'claude_local',
-  adapter_config = '{
-    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
-    \"model\": \"claude-sonnet-4-6\",
-    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/quality-control/AGENTS.md\",
-    \"dangerouslySkipPermissions\": true,
-    \"maxTurnsPerRun\": 50,
-    \"timeoutSec\": 360
-  }',
-  runtime_config = '{
-    \"heartbeat\": {
-      \"enabled\": true,
-      \"maxConcurrentRuns\": 1
-    }
-  }',
-  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
-WHERE name = 'Quality Control'
-  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
-"
-
 # 21. Restore the Reporter agent config (see Section 26)
 /opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
 UPDATE agents SET
@@ -1258,6 +1235,29 @@ UPDATE agents SET
   }',
   permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
 WHERE name = 'Reporter'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+
+# 22. Restore the Quality Control agent config (see Section 27)
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/quality-control/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 50,
+    \"timeoutSec\": 360
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Quality Control'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 ```
