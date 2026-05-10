@@ -50,6 +50,7 @@ import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { DiagnosticPage } from "./pages/Diagnostic";
 import { LedgerixDashboard } from "./pages/LedgerixDashboard";
+import { ClientPortal } from "./pages/ClientPortal";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
@@ -258,6 +259,7 @@ export function App() {
         <Route path="invite/:token" element={<InviteLandingPage />} />
         <Route path="diagnostic" element={<DiagnosticPage />} />
         <Route path="dashboard" element={<LedgerixDashboard />} />
+        <Route path="portal/:contactId" element={<ClientPortal />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />

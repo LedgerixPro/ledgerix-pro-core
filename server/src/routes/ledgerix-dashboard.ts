@@ -503,13 +503,25 @@ export function ledgerixDashboardRoutes(db: Db) {
       };
 
       const thisMonthFlagged = openSb;
+      const transactionsProcessed = sumMetric(matchingIssues, ledgerSpecialist?.id, "transactionsProcessed");
+      const autoCategorized = sumMetric(matchingIssues, ledgerSpecialist?.id, "autoCategorized");
+      const reconciled = sumMetric(matchingIssues, reconciliationAgent?.id, "autoReconciled");
+
+      // Status logic: attention_needed if open flags, else unknown if no agent
+      // has produced any DONE runs yet, else current.
+      const hasAnyRunData =
+        transactionsProcessed !== null || autoCategorized !== null || reconciled !== null;
       const bookStatus: "current" | "attention_needed" | "unknown" =
-        thisMonthFlagged > 0 ? "attention_needed" : "current";
+        thisMonthFlagged > 0
+          ? "attention_needed"
+          : hasAnyRunData
+            ? "current"
+            : "unknown";
 
       const thisMonth = {
-        transactionsProcessed: sumMetric(matchingIssues, ledgerSpecialist?.id, "transactionsProcessed"),
-        autoCategorized: sumMetric(matchingIssues, ledgerSpecialist?.id, "autoCategorized"),
-        reconciled: sumMetric(matchingIssues, reconciliationAgent?.id, "autoReconciled"),
+        transactionsProcessed,
+        autoCategorized,
+        reconciled,
         flagged: thisMonthFlagged,
         bookStatus,
       };
