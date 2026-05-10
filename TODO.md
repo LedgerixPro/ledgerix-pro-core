@@ -135,7 +135,7 @@ Priority-ordered build list. Updated: 2026-05-01.
 - [x] **H4-5. Billing & Invoicing agent** — monthly 1st of month 8am cron, creates QBO invoices in Ledgerix Pro's own QBO, emails clients with payment link, charter-pricing tag controls pricing ($199/$399/$799 Charter, $299/$499/$899 Standard), SMS billing summary to Scott. Completed: 2026-05-08
 - [ ] **H4-6. Payroll agent** — monitors client payroll transactions, tax deposit flagging
 - [x] **H4-7. Quality Control agent** — Mon-Fri 7:30am daily spot-check (20% sample of yesterday's Ledger Specialist runs, categorization/duplicate/anomaly checks, KB coverage), Friday 9am weekly review (trend analysis vs healthy benchmarks, KB health, recommendations email to Scott). Escalates to Senior Bookkeeper or KB Manager. Completed: 2026-05-10
-- [ ] **H4-8. Audit & Compliance agent** — compliance red flags, audit-ready documentation, document retention
+- [x] **H4-8. Audit & Compliance agent** — Mon 10:15am weekly scan (1099 tracking, AZ TPT, AZ ROC contractor licenses, expense documentation), 1st-of-month 11am monthly deep scan (full 1099 audit, TPT review, business licenses, insurance verification, estimated tax payments, monthly compliance report email). Escalates via Senior Bookkeeper → CFO → Scott chain (no direct Scott emails). Completed: 2026-05-10
 - [ ] **H4-9. Sales Outreach agent** — cold outbound via Apollo/ZoomInfo, defer until 50+ inbound leads proven
 - [ ] **H4-10. Referral & Reviews agent** — referral program, Google/Trustpilot review requests at 90 days
 - [ ] **H4-11. AR payment date automation** — auto-update invoice due date when client replies to reminder

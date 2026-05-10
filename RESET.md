@@ -769,6 +769,26 @@ curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"kind":"schedule","cronExpression":"0 9 * * 5","timezone":"America/Phoenix"}'
 echo "QC weekly review routine: $ROUTINE_ID"
+
+# 13. Audit & Compliance weekly scan — Monday 10:15am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Weekly Compliance Scan — Audit & Compliance","description":"Runs every Monday at 10:15am Arizona. Checks 1099, TPT, ROC, and documentation compliance.","priority":"medium","status":"active","assigneeAgentId":"9a66a035-c038-45b9-8f3b-a53d1a6eed19"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"15 10 * * 1","timezone":"America/Phoenix"}'
+echo "Compliance weekly scan routine: $ROUTINE_ID"
+
+# 14. Audit & Compliance monthly deep scan — 1st of month 11am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Monthly Compliance Deep Scan — Audit & Compliance","description":"Runs on the 1st of every month at 11am Arizona. Comprehensive compliance review.","priority":"medium","status":"active","assigneeAgentId":"9a66a035-c038-45b9-8f3b-a53d1a6eed19"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 11 1 * *","timezone":"America/Phoenix"}'
+echo "Compliance monthly deep scan routine: $ROUTINE_ID"
 ```
 
 ---
@@ -875,6 +895,41 @@ The agent instructions file lives at:
 agents/quality-control/AGENTS.md
 
 Two cron routines drive this agent (daily Mon-Fri spot-check + Friday weekly review) — see Section 24 for routine registration commands.
+
+---
+
+## 28. Restore the Audit & Compliance agent configuration
+
+After a DB reset and agent re-seed, restore the Audit & Compliance agent with:
+
+```sql
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/audit-compliance/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 50,
+    \"timeoutSec\": 360
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Audit & Compliance'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+```
+
+The agent instructions file lives at:
+agents/audit-compliance/AGENTS.md
+
+Two cron routines drive this agent (Monday 10:15am weekly + 1st-of-month 11am monthly) — see Section 24 for routine registration commands.
 
 ---
 
@@ -1258,6 +1313,29 @@ UPDATE agents SET
   }',
   permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
 WHERE name = 'Quality Control'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+
+# 23. Restore the Audit & Compliance agent config (see Section 28)
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/audit-compliance/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 50,
+    \"timeoutSec\": 360
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Audit & Compliance'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 ```
