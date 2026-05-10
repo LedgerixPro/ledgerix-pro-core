@@ -37,4 +37,5 @@ USER paperclip
 
 EXPOSE 8080
 
-CMD ["/bin/sh", "-c", "/app/server/node_modules/.bin/tsx /app/server/src/index.ts"]
+# Run server as non-root user with exec for proper signal handling
+CMD ["/bin/sh", "-c", "exec /app/server/node_modules/.bin/tsx /app/server/src/index.ts"]
