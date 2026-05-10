@@ -809,6 +809,16 @@ curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"kind":"schedule","cronExpression":"30 11 1 * *","timezone":"America/Phoenix"}'
 echo "Payroll monthly review routine: $ROUTINE_ID"
+
+# 17. Referral & Reviews weekly scan — Tuesday 9am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Weekly Referral & Reviews Scan","description":"Runs every Tuesday at 9am Arizona. Identifies 30-day check-in candidates (Google review request) and 90-day referral candidates.","priority":"medium","status":"active","assigneeAgentId":"ea9026a0-76dd-4f6c-a675-add13678c532"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 9 * * 2","timezone":"America/Phoenix"}'
+echo "Referral weekly scan routine: $ROUTINE_ID"
 ```
 
 ---
@@ -985,6 +995,43 @@ The agent instructions file lives at:
 agents/payroll/AGENTS.md
 
 Two cron routines drive this agent (Wednesday 7am bi-weekly scan + 1st-of-month 11:30am monthly deep review) — see Section 24 for routine registration commands.
+
+---
+
+## 30. Restore the Referral & Reviews agent configuration
+
+After a DB reset and agent re-seed, restore the Referral & Reviews agent with:
+
+```sql
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/referral-reviews/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 40,
+    \"timeoutSec\": 300
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Referral & Reviews'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+```
+
+The agent instructions file lives at:
+agents/referral-reviews/AGENTS.md
+
+One cron routine drives this agent (Tuesday 9am weekly scan) — see Section 24 for routine registration commands.
+
+Required env var: `GOOGLE_PLACE_ID` — used to construct the Google review link in the 30-day check-in email. If unset, the agent falls back to https://ledgerixpro.com.
 
 ---
 
@@ -1414,6 +1461,29 @@ UPDATE agents SET
   }',
   permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
 WHERE name = 'Payroll'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+
+# 25. Restore the Referral & Reviews agent config (see Section 30)
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/referral-reviews/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 40,
+    \"timeoutSec\": 300
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Referral & Reviews'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 ```
