@@ -37,4 +37,4 @@ USER paperclip
 
 EXPOSE 8080
 
-CMD ["node", "/app/server/node_modules/.bin/tsx", "/app/server/src/index.ts"]
+CMD ["/bin/sh", "-c", "/app/server/node_modules/.bin/tsx /app/server/src/index.ts"]
