@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { timingSafeEqual } from "node:crypto";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import { agents, issues, accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -49,6 +49,30 @@ function sevenDaysAgoUtc(): Date {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - 7);
   return d;
+}
+
+function thirtyDaysAgoUtc(): Date {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 30);
+  return d;
+}
+
+// ISO week start (Monday) at UTC midnight for a given date
+function startOfWeekUtc(d: Date): Date {
+  const day = d.getUTCDay() || 7; // Sunday → 7
+  const monday = new Date(d);
+  monday.setUTCHours(0, 0, 0, 0);
+  monday.setUTCDate(monday.getUTCDate() - (day - 1));
+  return monday;
+}
+
+function formatWeekOf(d: Date): string {
+  return d.toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 function fullName(c: GHLContact): string {
@@ -362,6 +386,195 @@ export function ledgerixDashboardRoutes(db: Db) {
       avgDurationMs,
       errorRate,
     });
+  });
+
+  // ---- GET /portal/:contactId ---------------------------------------------
+  // Client-facing portal view, scoped to one contact. NO AUTH — beta only.
+  // The contactId acts as the access token. Production needs proper tokens.
+  router.get("/portal/:contactId", async (req, res) => {
+    try {
+      const contactId = req.params.contactId as string;
+
+      // Fetch contact from GHL — 404 if not found
+      let contact: GHLContact | null = null;
+      try {
+        contact = await ghl.contacts.getContact(LOCATION_ID, contactId);
+      } catch (err) {
+        logger.warn({ err, contactId }, "Portal: GHL contact lookup failed");
+      }
+      if (!contact) {
+        res.status(404).json({ error: "Contact not found" });
+        return;
+      }
+
+      const contactName = fullName(contact);
+      const companyName = (contact as { companyName?: string }).companyName ?? null;
+      const serviceTierRaw = getFieldValue(contact, "service_tier");
+      const serviceTier = typeof serviceTierRaw === "string" ? serviceTierRaw : "";
+      const workspaceId = getFieldValue(contact, "ledgerix_workspace_id");
+      const platform =
+        typeof workspaceId === "string" && workspaceId
+          ? await platformForWorkspace(db, workspaceId)
+          : null;
+
+      // Look up the three agent IDs in parallel
+      const [seniorBookkeeper, ledgerSpecialist, reconciliationAgent] = await Promise.all([
+        db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.companyId, COMPANY_ID), eq(agents.name, "Senior Bookkeeper")))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.companyId, COMPANY_ID), eq(agents.name, "Ledger Specialist")))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.companyId, COMPANY_ID), eq(agents.name, "Reconciliation Agent")))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+      ]);
+
+      // Pull all matching issues in last 30 days. Match on contactName OR
+      // contactId — cron-triggered issues use name, GHL-webhook use id.
+      const since = thirtyDaysAgoUtc();
+      const namePattern = `%${contactName}%`;
+      const idPattern = `%${contactId}%`;
+
+      const matchingIssues = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          runMetrics: issues.runMetrics,
+          createdAt: issues.createdAt,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, COMPANY_ID),
+            gte(issues.createdAt, since),
+            contactName
+              ? or(
+                  sql`${issues.title} ILIKE ${namePattern}`,
+                  sql`${issues.title} ILIKE ${idPattern}`,
+                )
+              : sql`${issues.title} ILIKE ${idPattern}`,
+          ),
+        );
+
+      // Currently open Senior Bookkeeper issues for this client = "flagged"
+      const openSb =
+        seniorBookkeeper
+          ? await db
+              .select({ count: sql<number>`COUNT(*)::int` })
+              .from(issues)
+              .where(
+                and(
+                  eq(issues.assigneeAgentId, seniorBookkeeper.id),
+                  inArray(issues.status, ["todo", "in_progress", "blocked"]),
+                  contactName
+                    ? or(
+                        sql`${issues.title} ILIKE ${namePattern}`,
+                        sql`${issues.title} ILIKE ${idPattern}`,
+                      )
+                    : sql`${issues.title} ILIKE ${idPattern}`,
+                ),
+              )
+              .then((rows) => rows[0]?.count ?? 0)
+          : 0;
+
+      // Aggregate helpers — sum a runMetrics field across DONE issues for an agent.
+      // Returns null if no DONE runs (signals "no data yet").
+      const sumMetric = (
+        rows: typeof matchingIssues,
+        agentId: string | undefined,
+        key: string,
+      ): number | null => {
+        if (!agentId) return null;
+        const relevant = rows.filter(
+          (r) => r.assigneeAgentId === agentId && r.status === "done",
+        );
+        if (relevant.length === 0) return null;
+        return relevant.reduce((sum, r) => sum + (num(r.runMetrics, key) ?? 0), 0);
+      };
+
+      const thisMonthFlagged = openSb;
+      const bookStatus: "current" | "attention_needed" | "unknown" =
+        thisMonthFlagged > 0 ? "attention_needed" : "current";
+
+      const thisMonth = {
+        transactionsProcessed: sumMetric(matchingIssues, ledgerSpecialist?.id, "transactionsProcessed"),
+        autoCategorized: sumMetric(matchingIssues, ledgerSpecialist?.id, "autoCategorized"),
+        reconciled: sumMetric(matchingIssues, reconciliationAgent?.id, "autoReconciled"),
+        flagged: thisMonthFlagged,
+        bookStatus,
+      };
+
+      // Build last-4-weeks history (weeks ending today, Monday-start ISO weeks).
+      const now = new Date();
+      const weeklyHistory: Array<{
+        weekOf: string;
+        transactionsProcessed: number | null;
+        autoCategorized: number | null;
+        reconciled: number | null;
+        flagged: number | null;
+      }> = [];
+
+      for (let i = 0; i < 4; i++) {
+        const weekStart = startOfWeekUtc(now);
+        weekStart.setUTCDate(weekStart.getUTCDate() - 7 * i);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setUTCDate(weekEnd.getUTCDate() + 7);
+
+        const inWeek = matchingIssues.filter((r) => {
+          const t = new Date(r.createdAt).getTime();
+          return t >= weekStart.getTime() && t < weekEnd.getTime();
+        });
+
+        const sumWeekMetric = (
+          agentId: string | undefined,
+          key: string,
+        ): number | null => {
+          if (!agentId) return null;
+          const relevant = inWeek.filter(
+            (r) => r.assigneeAgentId === agentId && r.status === "done",
+          );
+          if (relevant.length === 0) return null;
+          return relevant.reduce((sum, r) => sum + (num(r.runMetrics, key) ?? 0), 0);
+        };
+
+        const flaggedCount = seniorBookkeeper
+          ? inWeek.filter((r) => r.assigneeAgentId === seniorBookkeeper.id).length
+          : null;
+
+        weeklyHistory.push({
+          weekOf: formatWeekOf(weekStart),
+          transactionsProcessed: sumWeekMetric(ledgerSpecialist?.id, "transactionsProcessed"),
+          autoCategorized: sumWeekMetric(ledgerSpecialist?.id, "autoCategorized"),
+          reconciled: sumWeekMetric(reconciliationAgent?.id, "autoReconciled"),
+          flagged: flaggedCount,
+        });
+      }
+
+      res.json({
+        contactName,
+        companyName,
+        serviceTier,
+        platform,
+        thisMonth,
+        weeklyHistory,
+      });
+    } catch (err) {
+      logger.error({ err }, "Portal request failed");
+      res.status(500).json({
+        error: "Portal request failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   return router;
