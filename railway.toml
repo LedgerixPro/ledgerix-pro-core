@@ -3,7 +3,7 @@ builder = "nixpacks"
 buildCommand = "npm config set prefix '/root/.npm-global' && npm install -g @anthropic-ai/claude-code && pnpm --filter @paperclipai/plugin-sdk build"
 
 [deploy]
-startCommand = "useradd -m -u 1001 paperclip 2>/dev/null || adduser -u 1001 paperclip 2>/dev/null; ln -sf /root/.npm-global /home/paperclip/.npm-global 2>/dev/null; su paperclip -c 'PATH=/root/.npm-global/bin:$PATH HOME=/home/paperclip ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY PAPERCLIP_DEPLOYMENT_MODE=$PAPERCLIP_DEPLOYMENT_MODE DATABASE_URL=$DATABASE_URL HOST=$HOST PORT=$PORT BETTER_AUTH_SECRET=$BETTER_AUTH_SECRET BETTER_AUTH_BASE_URL=$BETTER_AUTH_BASE_URL PAPERCLIP_AGENT_JWT_SECRET=$PAPERCLIP_AGENT_JWT_SECRET GHL_API_KEY=$GHL_API_KEY GHL_PRIVATE_TOKEN=$GHL_PRIVATE_TOKEN GHL_WEBHOOK_SECRET=$GHL_WEBHOOK_SECRET GHL_LOCATION_ID=$GHL_LOCATION_ID DASHBOARD_SECRET=$DASHBOARD_SECRET PAPERCLIP_ALLOWED_HOSTNAMES=$PAPERCLIP_ALLOWED_HOSTNAMES pnpm --filter @paperclipai/server exec tsx src/index.ts'"
+startCommand = "useradd -m -u 1001 paperclip 2>/dev/null || adduser -u 1001 paperclip 2>/dev/null; ln -sf /root/.npm-global /home/paperclip/.npm-global 2>/dev/null; su -p paperclip -c 'PATH=/root/.npm-global/bin:$PATH HOME=/home/paperclip pnpm --filter @paperclipai/server exec tsx src/index.ts'"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 300
 restartPolicyType = "on_failure"
