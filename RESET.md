@@ -733,6 +733,41 @@ echo "Tax weekly review routine: $ROUTINE_ID"
 
 ---
 
+## 25. Restore the Tax Liaison agent configuration
+
+After a DB reset and agent re-seed, restore the Tax Liaison agent with:
+
+```sql
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/tax-liaison/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 40,
+    \"timeoutSec\": 300
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Tax Liaison'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+```
+
+The agent instructions file lives at:
+agents/tax-liaison/AGENTS.md
+
+Two cron routines drive this agent and must be re-registered after a DB reset — see Section 24 for routine registration commands.
+
+---
+
 ## Full reset sequence
 
 ```sh
@@ -1044,6 +1079,29 @@ UPDATE agents SET
   permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}',
   title = 'Accounts Payable Specialist'
 WHERE name = 'AP Specialist'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+
+# 20. Restore the Tax Liaison agent config (see Section 25)
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/tax-liaison/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 40,
+    \"timeoutSec\": 300
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Tax Liaison'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 ```
