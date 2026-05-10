@@ -299,6 +299,16 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
+  // Block common scanner paths before falling through to SPA static serve
+  app.use((req, res, next) => {
+    if (
+      /^\/(\.env|\.git|\.aws|\.ssh|config\.js|phpinfo\.php|wp-admin|wp-login)/i.test(req.path)
+    ) {
+      res.status(404).send("Not found");
+      return;
+    }
+    next();
+  });
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
