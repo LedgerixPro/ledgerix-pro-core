@@ -115,6 +115,91 @@ Do NOT send any email to the client on payment — payment confirmation is handl
 
 Note: Do not contact the client about their own bills — this is an internal visibility issue only.
 
+## Payment Date Intelligence
+
+### Escalation Chain
+AR Specialist → Senior Bookkeeper → CFO → Scott
+Never contact Scott directly for routine payment date updates.
+
+### Confirmed Payment Date Capture (from client replies)
+
+When processing a GHL reply event and the reply message contains any of:
+- "I'll pay by [date]"
+- "payment on [date]"
+- "sending payment [date]"
+- "check in the mail"
+- "paid today" / "payment sent"
+- "will pay [timeframe]" (e.g. "will pay next week", "paying Friday")
+
+Extract the payment date (or estimate it from relative references like "next week" = today + 7 days, "Friday" = next Friday, "end of month" = last day of current month).
+
+Then:
+1. Update the invoice in QBO/Xero: set custom field "expected_payment_date" to extracted date
+2. Add a note to the QBO/Xero invoice: "Customer confirmed payment by [date] via email on [today]"
+3. Update GHL contact note: "Payment commitment: [date] — confirmed [today]"
+4. Add GHL tag: payment-committed
+5. Update the Paperclip issue comment: "Payment date confirmed by customer: [date]. QBO/Xero updated."
+6. If payment date is more than 30 days out: escalate to Senior Bookkeeper via new issue titled "AR — Extended Payment Timeline — [ClientName] — [InvoiceNumber]"
+
+### Manual Payment Date Update (from Scott or Senior Bookkeeper)
+
+When processing a Paperclip issue comment that contains:
+PAYMENT_DATE: YYYY-MM-DD
+
+Extract the date and:
+1. Update QBO/Xero invoice expected_payment_date
+2. Add note to invoice: "Payment date set manually on [today]"
+3. Update GHL contact note
+4. Confirm in Paperclip issue comment: "Payment date updated to [date] in QBO/Xero."
+
+### History-Based Payment Date Prediction
+
+When an invoice becomes overdue and no payment commitment exists:
+1. Pull the customer's last 12 invoices from QBO/Xero
+2. Calculate: average days to pay (from invoice date to payment date)
+3. Calculate: payment date variance (are they consistent or erratic?)
+4. Set predicted_payment_date = invoice_due_date + average_days_late
+5. If average_days_late > 60: escalate to Senior Bookkeeper with payment history summary
+6. Add note to QBO/Xero invoice: "Predicted payment: [date] based on [N]-invoice history (avg [X] days late)"
+7. Add to Paperclip issue comment: "Payment prediction: [date] (avg [X] days late based on history)"
+
+### Payment Received — Recalibration
+
+When an Invoice Paid webhook fires:
+1. Record actual payment date
+2. Compare to predicted_payment_date: was prediction accurate?
+3. Update customer payment profile in GHL note: "Payment history updated: invoice [N] paid [X] days after due date"
+4. Remove GHL tags: payment-committed, ar-overdue-notified (if present)
+5. Add GHL tag: invoice-paid
+6. Log to Paperclip issue: "Invoice paid [date]. Prediction was [accurate/off by X days]. Profile updated."
+
+### Escalation Thresholds
+
+| Scenario | Action | Priority |
+|---|---|---|
+| Payment commitment > 30 days out | Issue → Senior Bookkeeper | high |
+| No payment after commitment date | Issue → Senior Bookkeeper | urgent |
+| Average days late > 60 | Issue → Senior Bookkeeper | high |
+| Average days late > 90 | Issue → CFO | urgent |
+| Repeat non-payer (3+ late invoices) | Issue → CFO + notify Scott | high |
+
+### Run Metrics
+
+When updating your Paperclip issue at the end of any procedure that touches payment-date intelligence, PATCH runMetrics with the relevant counters:
+
+```json
+{
+  "type": "ar_payment_date_intel",
+  "date": "YYYY-MM-DD",
+  "paymentDatesConfirmed": N,
+  "paymentDatesPredicted": N,
+  "paymentCommitmentsKept": N,
+  "paymentCommitmentsMissed": N
+}
+```
+
+These fields should also be added to the runMetrics emitted by the existing invoice.overdue, invoice.paid, and bill.due procedures so weekly trend analysis can compare prediction accuracy over time.
+
 ## GHL API Access
 
 GHL Location ID: GhnRONQQVJiCKsdWoQFc
