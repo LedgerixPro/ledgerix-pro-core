@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { encrypt, decrypt } from "./encrypt.js";
@@ -64,7 +64,17 @@ async function refreshAccessToken(db: Db, connection: QboConnection): Promise<st
   return tokens.access_token;
 }
 
-export async function getQboRealmId(db: Db, companyId: string): Promise<string> {
+function contactFilter(contactId: string | null) {
+  return contactId === null
+    ? isNull(accountingConnections.contactId)
+    : eq(accountingConnections.contactId, contactId);
+}
+
+export async function getQboRealmId(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+): Promise<string> {
   const row = await db
     .select({ realmId: accountingConnections.realmId })
     .from(accountingConnections)
@@ -72,18 +82,20 @@ export async function getQboRealmId(db: Db, companyId: string): Promise<string> 
       and(
         eq(accountingConnections.companyId, companyId),
         eq(accountingConnections.platform, "quickbooks"),
+        contactFilter(contactId),
       ),
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
 
-  if (!row) throw new Error(`No QBO connection found for companyId=${companyId}`);
+  if (!row) throw new Error(`No QBO connection found for companyId=${companyId} contactId=${contactId}`);
   return row.realmId;
 }
 
 export async function qboRequest<T = unknown>(
   db: Db,
   companyId: string,
+  contactId: string | null,
   method: string,
   path: string,
   body?: unknown,
@@ -95,12 +107,13 @@ export async function qboRequest<T = unknown>(
       and(
         eq(accountingConnections.companyId, companyId),
         eq(accountingConnections.platform, "quickbooks"),
+        contactFilter(contactId),
       ),
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
 
-  if (!connection) throw new Error(`No QBO connection found for companyId=${companyId}`);
+  if (!connection) throw new Error(`No QBO connection found for companyId=${companyId} contactId=${contactId}`);
 
   const url = `${getBaseUrl(connection.realmId)}${path}`;
 
@@ -119,7 +132,7 @@ export async function qboRequest<T = unknown>(
   let response = await doRequest(accessToken);
 
   if (response.status === 401) {
-    logger.info({ companyId, path }, "QBO 401 — refreshing token and retrying");
+    logger.info({ companyId, contactId, path }, "QBO 401 — refreshing token and retrying");
     accessToken = await refreshAccessToken(db, connection);
     response = await doRequest(accessToken);
   }

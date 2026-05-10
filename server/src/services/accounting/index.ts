@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { qboRequest, getQboRealmId } from "./qbo-client.js";
@@ -163,35 +163,42 @@ function qboQueryUrl(query: string): string {
   return `/query?${new URLSearchParams({ query })}`;
 }
 
+function contactFilter(contactId: string | null) {
+  return contactId === null
+    ? isNull(accountingConnections.contactId)
+    : eq(accountingConnections.contactId, contactId);
+}
+
 // ---------------------------------------------------------------------------
 // QBO
 // ---------------------------------------------------------------------------
 
 export const qbo = {
-  async getCompanyInfo(db: Db, companyId: string) {
-    const realmId = await getQboRealmId(db, companyId);
-    return qboRequest(db, companyId, "GET", `/companyinfo/${realmId}`);
+  async getCompanyInfo(db: Db, companyId: string, contactId: string | null) {
+    const realmId = await getQboRealmId(db, companyId, contactId);
+    return qboRequest(db, companyId, contactId, "GET", `/companyinfo/${realmId}`);
   },
 
-  async getAccounts(db: Db, companyId: string) {
-    return qboRequest(db, companyId, "GET", qboQueryUrl("SELECT * FROM Account"));
+  async getAccounts(db: Db, companyId: string, contactId: string | null) {
+    return qboRequest(db, companyId, contactId, "GET", qboQueryUrl("SELECT * FROM Account"));
   },
 
-  async getProfitAndLoss(db: Db, companyId: string, startDate: string, endDate: string) {
+  async getProfitAndLoss(db: Db, companyId: string, contactId: string | null, startDate: string, endDate: string) {
     const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
-    return qboRequest(db, companyId, "GET", `/reports/ProfitAndLoss?${params}`);
+    return qboRequest(db, companyId, contactId, "GET", `/reports/ProfitAndLoss?${params}`);
   },
 
-  async getBalanceSheet(db: Db, companyId: string, asOfDate: string) {
+  async getBalanceSheet(db: Db, companyId: string, contactId: string | null, asOfDate: string) {
     const params = new URLSearchParams({ as_of_date: asOfDate });
-    return qboRequest(db, companyId, "GET", `/reports/BalanceSheet?${params}`);
+    return qboRequest(db, companyId, contactId, "GET", `/reports/BalanceSheet?${params}`);
   },
 
   // Open bills (Bill entity in QBO) with non-zero balance, ordered by due date
-  async getBills(db: Db, companyId: string): Promise<Bill[]> {
+  async getBills(db: Db, companyId: string, contactId: string | null): Promise<Bill[]> {
     const res = await qboRequest<{ QueryResponse: { Bill?: QboBill[] } }>(
       db,
       companyId,
+      contactId,
       "GET",
       `/query?${new URLSearchParams({
         query: "SELECT * FROM Bill WHERE Balance > 0 ORDER BY DueDate ASC",
@@ -207,14 +214,14 @@ export const qbo = {
     }));
   },
 
-  async getTransactions(db: Db, companyId: string, sinceDate: string): Promise<Transaction[]> {
+  async getTransactions(db: Db, companyId: string, contactId: string | null, sinceDate: string): Promise<Transaction[]> {
     const ts = safeQboTimestamp(sinceDate);
     const purchaseQ = `SELECT * FROM Purchase WHERE MetaData.LastUpdatedTime > '${ts}'`;
     const depositQ = `SELECT * FROM Deposit WHERE MetaData.LastUpdatedTime > '${ts}'`;
 
     const [purchaseRes, depositRes] = await Promise.all([
-      qboRequest<QboQueryResponse<"Purchase", QboPurchase>>(db, companyId, "GET", qboQueryUrl(purchaseQ)),
-      qboRequest<QboQueryResponse<"Deposit", QboDeposit>>(db, companyId, "GET", qboQueryUrl(depositQ)),
+      qboRequest<QboQueryResponse<"Purchase", QboPurchase>>(db, companyId, contactId, "GET", qboQueryUrl(purchaseQ)),
+      qboRequest<QboQueryResponse<"Deposit", QboDeposit>>(db, companyId, contactId, "GET", qboQueryUrl(depositQ)),
     ]);
 
     const purchases: Transaction[] = (purchaseRes.QueryResponse.Purchase ?? []).map((p) => ({
@@ -240,16 +247,16 @@ export const qbo = {
     return [...purchases, ...deposits];
   },
 
-  async getBankTransactions(db: Db, companyId: string, sinceDate: string): Promise<Transaction[]> {
+  async getBankTransactions(db: Db, companyId: string, contactId: string | null, sinceDate: string): Promise<Transaction[]> {
     const ts = safeQboTimestamp(sinceDate);
     const purchaseQ = `SELECT * FROM Purchase WHERE MetaData.LastUpdatedTime > '${ts}'`;
     const depositQ = `SELECT * FROM Deposit WHERE MetaData.LastUpdatedTime > '${ts}'`;
     const transferQ = `SELECT * FROM Transfer WHERE MetaData.LastUpdatedTime > '${ts}'`;
 
     const [purchaseRes, depositRes, transferRes] = await Promise.all([
-      qboRequest<QboQueryResponse<"Purchase", QboPurchase>>(db, companyId, "GET", qboQueryUrl(purchaseQ)),
-      qboRequest<QboQueryResponse<"Deposit", QboDeposit>>(db, companyId, "GET", qboQueryUrl(depositQ)),
-      qboRequest<QboQueryResponse<"Transfer", QboTransfer>>(db, companyId, "GET", qboQueryUrl(transferQ)),
+      qboRequest<QboQueryResponse<"Purchase", QboPurchase>>(db, companyId, contactId, "GET", qboQueryUrl(purchaseQ)),
+      qboRequest<QboQueryResponse<"Deposit", QboDeposit>>(db, companyId, contactId, "GET", qboQueryUrl(depositQ)),
+      qboRequest<QboQueryResponse<"Transfer", QboTransfer>>(db, companyId, contactId, "GET", qboQueryUrl(transferQ)),
     ]);
 
     const purchases: Transaction[] = (purchaseRes.QueryResponse.Purchase ?? []).map((p) => ({
@@ -290,12 +297,14 @@ export const qbo = {
   async updateTransactionAccount(
     db: Db,
     companyId: string,
+    contactId: string | null,
     transactionId: string,
     accountId: string,
   ): Promise<void> {
     const current = await qboRequest<{ Purchase: QboPurchaseFull }>(
       db,
       companyId,
+      contactId,
       "GET",
       `/purchase/${transactionId}`,
     );
@@ -311,9 +320,9 @@ export const qbo = {
       ...(firstLine.AccountBasedExpenseLineDetail ?? {}),
       AccountRef: { value: accountId },
     };
-    await qboRequest(db, companyId, "POST", "/purchase?operation=update", purchase);
+    await qboRequest(db, companyId, contactId, "POST", "/purchase?operation=update", purchase);
     logger.info(
-      { companyId, transactionId, accountId },
+      { companyId, contactId, transactionId, accountId },
       "QBO Purchase line account updated",
     );
   },
@@ -322,6 +331,7 @@ export const qbo = {
   async applyPaymentToInvoice(
     db: Db,
     companyId: string,
+    contactId: string | null,
     invoiceId: string,
     amount: number,
     customerId: string,
@@ -336,9 +346,9 @@ export const qbo = {
         },
       ],
     };
-    await qboRequest(db, companyId, "POST", "/payment", body);
+    await qboRequest(db, companyId, contactId, "POST", "/payment", body);
     logger.info(
-      { companyId, invoiceId, amount, customerId },
+      { companyId, contactId, invoiceId, amount, customerId },
       "QBO Payment applied to Invoice",
     );
   },
@@ -349,6 +359,7 @@ export const qbo = {
   async findOrCreateCustomer(
     db: Db,
     companyId: string,
+    contactId: string | null,
     name: string,
     email: string,
   ): Promise<string> {
@@ -360,6 +371,7 @@ export const qbo = {
       const emailRes = await qboRequest<{ QueryResponse: { Customer?: Array<{ Id: string }> } }>(
         db,
         companyId,
+        contactId,
         "GET",
         `/query?${new URLSearchParams({
           query: `SELECT * FROM Customer WHERE PrimaryEmailAddr = '${safeEmail}' MAXRESULTS 1`,
@@ -367,7 +379,7 @@ export const qbo = {
       );
       const found = emailRes?.QueryResponse?.Customer?.[0];
       if (found) {
-        logger.info({ companyId, customerId: found.Id, match: "email" }, "QBO Customer found");
+        logger.info({ companyId, contactId, customerId: found.Id, match: "email" }, "QBO Customer found");
         return found.Id;
       }
     }
@@ -376,6 +388,7 @@ export const qbo = {
       const nameRes = await qboRequest<{ QueryResponse: { Customer?: Array<{ Id: string }> } }>(
         db,
         companyId,
+        contactId,
         "GET",
         `/query?${new URLSearchParams({
           query: `SELECT * FROM Customer WHERE DisplayName = '${safeName}' MAXRESULTS 1`,
@@ -383,7 +396,7 @@ export const qbo = {
       );
       const found = nameRes?.QueryResponse?.Customer?.[0];
       if (found) {
-        logger.info({ companyId, customerId: found.Id, match: "name" }, "QBO Customer found");
+        logger.info({ companyId, contactId, customerId: found.Id, match: "name" }, "QBO Customer found");
         return found.Id;
       }
     }
@@ -391,6 +404,7 @@ export const qbo = {
     const createRes = await qboRequest<{ Customer: { Id: string } }>(
       db,
       companyId,
+      contactId,
       "POST",
       "/customer",
       {
@@ -398,7 +412,7 @@ export const qbo = {
         ...(email ? { PrimaryEmailAddr: { Address: email } } : {}),
       },
     );
-    logger.info({ companyId, customerId: createRes.Customer.Id, match: "created" }, "QBO Customer created");
+    logger.info({ companyId, contactId, customerId: createRes.Customer.Id, match: "created" }, "QBO Customer created");
     return createRes.Customer.Id;
   },
 
@@ -408,11 +422,12 @@ export const qbo = {
   async createInvoice(
     db: Db,
     companyId: string,
+    contactId: string | null,
     customerRef: string,
     lineItems: Array<{ description: string; amount: number }>,
     dueDate: string,
   ): Promise<{ invoiceId: string; invoiceNumber: string | null; totalAmt: number; dueDate: string }> {
-    const itemId = await findOrCreateBookkeepingItem(db, companyId);
+    const itemId = await findOrCreateBookkeepingItem(db, companyId, contactId);
 
     const Line = lineItems.map((l) => ({
       DetailType: "SalesItemLineDetail",
@@ -432,10 +447,10 @@ export const qbo = {
 
     const res = await qboRequest<{
       Invoice: { Id: string; DocNumber?: string; TotalAmt: number; DueDate: string };
-    }>(db, companyId, "POST", "/invoice", body);
+    }>(db, companyId, contactId, "POST", "/invoice", body);
 
     logger.info(
-      { companyId, invoiceId: res.Invoice.Id, customerRef, totalAmt: res.Invoice.TotalAmt },
+      { companyId, contactId, invoiceId: res.Invoice.Id, customerRef, totalAmt: res.Invoice.TotalAmt },
       "QBO Invoice created",
     );
 
@@ -451,10 +466,15 @@ export const qbo = {
 // Find or create the "Bookkeeping Services" service Item used as the line-item
 // ref for every Ledgerix Pro invoice. Memoization is per-process and cheap —
 // QBO query cost is one extra GET per cold start.
-async function findOrCreateBookkeepingItem(db: Db, companyId: string): Promise<string> {
+async function findOrCreateBookkeepingItem(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+): Promise<string> {
   const existing = await qboRequest<{ QueryResponse: { Item?: Array<{ Id: string }> } }>(
     db,
     companyId,
+    contactId,
     "GET",
     `/query?${new URLSearchParams({
       query: "SELECT * FROM Item WHERE Name = 'Bookkeeping Services' MAXRESULTS 1",
@@ -469,6 +489,7 @@ async function findOrCreateBookkeepingItem(db: Db, companyId: string): Promise<s
   }>(
     db,
     companyId,
+    contactId,
     "GET",
     `/query?${new URLSearchParams({
       query: "SELECT * FROM Account WHERE AccountType = 'Income' MAXRESULTS 1",
@@ -477,16 +498,16 @@ async function findOrCreateBookkeepingItem(db: Db, companyId: string): Promise<s
   const incomeAccount = incomeRes?.QueryResponse?.Account?.[0];
   if (!incomeAccount) {
     throw new Error(
-      `Cannot create 'Bookkeeping Services' Item for companyId=${companyId}: no Income account found in QBO`,
+      `Cannot create 'Bookkeeping Services' Item for companyId=${companyId} contactId=${contactId}: no Income account found in QBO`,
     );
   }
 
-  const created = await qboRequest<{ Item: { Id: string } }>(db, companyId, "POST", "/item", {
+  const created = await qboRequest<{ Item: { Id: string } }>(db, companyId, contactId, "POST", "/item", {
     Name: "Bookkeeping Services",
     Type: "Service",
     IncomeAccountRef: { value: incomeAccount.Id, name: incomeAccount.Name },
   });
-  logger.info({ companyId, itemId: created.Item.Id }, "QBO 'Bookkeeping Services' Item created");
+  logger.info({ companyId, contactId, itemId: created.Item.Id }, "QBO 'Bookkeeping Services' Item created");
   return created.Item.Id;
 }
 
@@ -495,36 +516,37 @@ async function findOrCreateBookkeepingItem(db: Db, companyId: string): Promise<s
 // ---------------------------------------------------------------------------
 
 export const xero = {
-  async getContacts(db: Db, companyId: string) {
-    return xeroRequest(db, companyId, "GET", "/Contacts");
+  async getContacts(db: Db, companyId: string, contactId: string | null) {
+    return xeroRequest(db, companyId, contactId, "GET", "/Contacts");
   },
 
-  async getAccounts(db: Db, companyId: string) {
-    return xeroRequest(db, companyId, "GET", "/Accounts");
+  async getAccounts(db: Db, companyId: string, contactId: string | null) {
+    return xeroRequest(db, companyId, contactId, "GET", "/Accounts");
   },
 
-  async getProfitAndLoss(db: Db, companyId: string, fromDate: string, toDate: string) {
+  async getProfitAndLoss(db: Db, companyId: string, contactId: string | null, fromDate: string, toDate: string) {
     const params = new URLSearchParams({ fromDate, toDate });
-    return xeroRequest(db, companyId, "GET", `/Reports/ProfitAndLoss?${params}`);
+    return xeroRequest(db, companyId, contactId, "GET", `/Reports/ProfitAndLoss?${params}`);
   },
 
-  async getBalanceSheet(db: Db, companyId: string, date: string) {
+  async getBalanceSheet(db: Db, companyId: string, contactId: string | null, date: string) {
     const params = new URLSearchParams({ date });
-    return xeroRequest(db, companyId, "GET", `/Reports/BalanceSheet?${params}`);
+    return xeroRequest(db, companyId, contactId, "GET", `/Reports/BalanceSheet?${params}`);
   },
 
-  async getInvoices(db: Db, companyId: string) {
+  async getInvoices(db: Db, companyId: string, contactId: string | null) {
     const params = new URLSearchParams({ Statuses: "AUTHORISED,VOIDED" });
-    return xeroRequest(db, companyId, "GET", `/Invoices?${params}`);
+    return xeroRequest(db, companyId, contactId, "GET", `/Invoices?${params}`);
   },
 
   // Open bills (Type=ACCPAY, AUTHORISED) — overdue is computed from DueDate.
   // Xero has no OVERDUE status; AUTHORISED + DueDate < today is the equivalent.
-  async getBills(db: Db, companyId: string): Promise<Bill[]> {
+  async getBills(db: Db, companyId: string, contactId: string | null): Promise<Bill[]> {
     const params = new URLSearchParams({ Type: "ACCPAY", Statuses: "AUTHORISED" });
     const res = await xeroRequest<{ Invoices?: XeroBill[] }>(
       db,
       companyId,
+      contactId,
       "GET",
       `/Invoices?${params}`,
     );
@@ -538,11 +560,12 @@ export const xero = {
     }));
   },
 
-  async getTransactions(db: Db, companyId: string, sinceDate: string): Promise<Transaction[]> {
+  async getTransactions(db: Db, companyId: string, contactId: string | null, sinceDate: string): Promise<Transaction[]> {
     const params = new URLSearchParams({ where: `Date>${xeroDateTimeLiteral(sinceDate)}` });
     const res = await xeroRequest<{ BankTransactions?: XeroBankTransaction[] }>(
       db,
       companyId,
+      contactId,
       "GET",
       `/BankTransactions?${params}`,
     );
@@ -557,8 +580,8 @@ export const xero = {
     }));
   },
 
-  async getBankTransactions(db: Db, companyId: string, sinceDate: string): Promise<Transaction[]> {
-    return xero.getTransactions(db, companyId, sinceDate);
+  async getBankTransactions(db: Db, companyId: string, contactId: string | null, sinceDate: string): Promise<Transaction[]> {
+    return xero.getTransactions(db, companyId, contactId, sinceDate);
   },
 
   // Read-modify-write: fetch the BankTransaction, swap the first line's AccountCode,
@@ -566,12 +589,14 @@ export const xero = {
   async updateTransactionAccount(
     db: Db,
     companyId: string,
+    contactId: string | null,
     transactionId: string,
     accountCode: string,
   ): Promise<void> {
     const current = await xeroRequest<{ BankTransactions?: XeroBankTransactionFull[] }>(
       db,
       companyId,
+      contactId,
       "GET",
       `/BankTransactions/${transactionId}`,
     );
@@ -584,9 +609,9 @@ export const xero = {
       throw new Error(`Xero BankTransaction ${transactionId} has no line items to categorize`);
     }
     firstLine.AccountCode = accountCode;
-    await xeroRequest(db, companyId, "POST", "/BankTransactions", { BankTransactions: [txn] });
+    await xeroRequest(db, companyId, contactId, "POST", "/BankTransactions", { BankTransactions: [txn] });
     logger.info(
-      { companyId, transactionId, accountCode },
+      { companyId, contactId, transactionId, accountCode },
       "Xero BankTransaction line account updated",
     );
   },
@@ -595,6 +620,7 @@ export const xero = {
   async applyPaymentToInvoice(
     db: Db,
     companyId: string,
+    contactId: string | null,
     invoiceId: string,
     amount: number,
     accountId: string,
@@ -610,30 +636,36 @@ export const xero = {
         },
       ],
     };
-    await xeroRequest(db, companyId, "POST", "/Payments", body);
+    await xeroRequest(db, companyId, contactId, "POST", "/Payments", body);
     logger.info(
-      { companyId, invoiceId, amount, accountId, date },
+      { companyId, contactId, invoiceId, amount, accountId, date },
       "Xero Payment applied to Invoice",
     );
   },
 };
 
 // ---------------------------------------------------------------------------
-// Unified helper — auto-detect platform per company
+// Unified helper — auto-detect platform per (companyId, contactId)
 // ---------------------------------------------------------------------------
 
 export async function getNewTransactions(
   db: Db,
   companyId: string,
+  contactId: string | null,
   sinceDate: string,
 ): Promise<{ platform: "quickbooks" | "xero"; transactions: Transaction[] }> {
   const connections = await db
     .select({ platform: accountingConnections.platform })
     .from(accountingConnections)
-    .where(eq(accountingConnections.companyId, companyId));
+    .where(
+      and(
+        eq(accountingConnections.companyId, companyId),
+        contactFilter(contactId),
+      ),
+    );
 
   if (connections.length === 0) {
-    throw new Error(`No accounting connection found for companyId=${companyId}`);
+    throw new Error(`No accounting connection found for companyId=${companyId} contactId=${contactId}`);
   }
 
   const platforms = new Set(connections.map((c) => c.platform));
@@ -642,22 +674,22 @@ export async function getNewTransactions(
 
   if (hasQbo && hasXero) {
     logger.warn(
-      { companyId },
+      { companyId, contactId },
       "Both QBO and Xero connected — preferring QBO for getNewTransactions",
     );
   }
 
   if (hasQbo) {
-    const transactions = await qbo.getTransactions(db, companyId, sinceDate);
+    const transactions = await qbo.getTransactions(db, companyId, contactId, sinceDate);
     return { platform: "quickbooks", transactions };
   }
 
   if (hasXero) {
-    const transactions = await xero.getTransactions(db, companyId, sinceDate);
+    const transactions = await xero.getTransactions(db, companyId, contactId, sinceDate);
     return { platform: "xero", transactions };
   }
 
-  throw new Error(`Unsupported accounting platform for companyId=${companyId}`);
+  throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
 }
 
 // Platform-agnostic write-back. Routes to qbo.updateTransactionAccount or
@@ -665,15 +697,16 @@ export async function getNewTransactions(
 export async function updateTransactionCategory(
   db: Db,
   companyId: string,
+  contactId: string | null,
   platform: "quickbooks" | "xero",
   transactionId: string,
   accountRef: string,
 ): Promise<void> {
   if (platform === "quickbooks") {
-    return qbo.updateTransactionAccount(db, companyId, transactionId, accountRef);
+    return qbo.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
   }
   if (platform === "xero") {
-    return xero.updateTransactionAccount(db, companyId, transactionId, accountRef);
+    return xero.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
   }
   throw new Error(`Unsupported platform: ${platform}`);
 }
@@ -684,6 +717,7 @@ export async function updateTransactionCategory(
 export async function reconcilePayment(
   db: Db,
   companyId: string,
+  contactId: string | null,
   platform: "quickbooks" | "xero",
   invoiceId: string,
   amount: number,
@@ -692,10 +726,10 @@ export async function reconcilePayment(
 ): Promise<void> {
   const effectiveDate = date ?? new Date().toISOString().slice(0, 10);
   if (platform === "quickbooks") {
-    return qbo.applyPaymentToInvoice(db, companyId, invoiceId, amount, entityRef);
+    return qbo.applyPaymentToInvoice(db, companyId, contactId, invoiceId, amount, entityRef);
   }
   if (platform === "xero") {
-    return xero.applyPaymentToInvoice(db, companyId, invoiceId, amount, entityRef, effectiveDate);
+    return xero.applyPaymentToInvoice(db, companyId, contactId, invoiceId, amount, entityRef, effectiveDate);
   }
   throw new Error(`Unsupported platform: ${platform}`);
 }

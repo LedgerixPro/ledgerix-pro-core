@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { encrypt, decrypt } from "./encrypt.js";
@@ -62,7 +62,17 @@ async function refreshAccessToken(db: Db, connection: XeroConnection): Promise<s
   return tokens.access_token;
 }
 
-export async function getXeroTenantId(db: Db, companyId: string): Promise<string> {
+function contactFilter(contactId: string | null) {
+  return contactId === null
+    ? isNull(accountingConnections.contactId)
+    : eq(accountingConnections.contactId, contactId);
+}
+
+export async function getXeroTenantId(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+): Promise<string> {
   const row = await db
     .select({ realmId: accountingConnections.realmId })
     .from(accountingConnections)
@@ -70,18 +80,20 @@ export async function getXeroTenantId(db: Db, companyId: string): Promise<string
       and(
         eq(accountingConnections.companyId, companyId),
         eq(accountingConnections.platform, "xero"),
+        contactFilter(contactId),
       ),
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
 
-  if (!row) throw new Error(`No Xero connection found for companyId=${companyId}`);
+  if (!row) throw new Error(`No Xero connection found for companyId=${companyId} contactId=${contactId}`);
   return row.realmId;
 }
 
 export async function xeroRequest<T = unknown>(
   db: Db,
   companyId: string,
+  contactId: string | null,
   method: string,
   path: string,
   body?: unknown,
@@ -93,12 +105,13 @@ export async function xeroRequest<T = unknown>(
       and(
         eq(accountingConnections.companyId, companyId),
         eq(accountingConnections.platform, "xero"),
+        contactFilter(contactId),
       ),
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
 
-  if (!connection) throw new Error(`No Xero connection found for companyId=${companyId}`);
+  if (!connection) throw new Error(`No Xero connection found for companyId=${companyId} contactId=${contactId}`);
 
   const url = `${BASE_URL}${path}`;
 
@@ -118,7 +131,7 @@ export async function xeroRequest<T = unknown>(
   let response = await doRequest(accessToken);
 
   if (response.status === 401) {
-    logger.info({ companyId, path }, "Xero 401 — refreshing token and retrying");
+    logger.info({ companyId, contactId, path }, "Xero 401 — refreshing token and retrying");
     accessToken = await refreshAccessToken(db, connection);
     response = await doRequest(accessToken);
   }
