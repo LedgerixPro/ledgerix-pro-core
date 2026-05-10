@@ -749,6 +749,26 @@ curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"kind":"schedule","cronExpression":"0 7 1 * *","timezone":"America/Phoenix"}'
 echo "Reporter monthly deep dive routine: $ROUTINE_ID"
+
+# 11. Quality Control daily spot-check — Mon-Fri 7:30am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Daily QC Spot-Check — Quality Control","description":"Runs Mon-Fri at 7:30am Arizona. Reviews 20% sample of yesterday'"'"'s bookkeeping runs.","priority":"medium","status":"active","assigneeAgentId":"3c12d5c8-de3d-4bde-81dd-9df30d4addb4"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"30 7 * * 1-5","timezone":"America/Phoenix"}'
+echo "QC daily spot-check routine: $ROUTINE_ID"
+
+# 12. Quality Control weekly review — Friday 9am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Weekly QC Review — Quality Control","description":"Runs every Friday at 9am Arizona. Full bookkeeping engine quality review with trend analysis.","priority":"medium","status":"active","assigneeAgentId":"3c12d5c8-de3d-4bde-81dd-9df30d4addb4"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 9 * * 5","timezone":"America/Phoenix"}'
+echo "QC weekly review routine: $ROUTINE_ID"
 ```
 
 ---
@@ -820,6 +840,41 @@ The agent instructions file lives at:
 agents/reporter/AGENTS.md
 
 Two cron routines drive this agent and must be re-registered after a DB reset — see Section 24 for routine registration commands.
+
+---
+
+## 27. Restore the Quality Control agent configuration
+
+After a DB reset and agent re-seed, restore the Quality Control agent with:
+
+```sql
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/quality-control/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 50,
+    \"timeoutSec\": 360
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Quality Control'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+```
+
+The agent instructions file lives at:
+agents/quality-control/AGENTS.md
+
+Two cron routines drive this agent (daily Mon-Fri spot-check + Friday weekly review) — see Section 24 for routine registration commands.
 
 ---
 
@@ -1157,6 +1212,29 @@ UPDATE agents SET
   }',
   permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
 WHERE name = 'Tax Liaison'
+  AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
+"
+
+# 22. Restore the Quality Control agent config (see Section 27)
+/opt/homebrew/opt/libpq/bin/psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip -c "
+UPDATE agents SET
+  adapter_type = 'claude_local',
+  adapter_config = '{
+    \"command\": \"/Users/scotthansbury/.local/bin/claude\",
+    \"model\": \"claude-sonnet-4-6\",
+    \"instructionsFilePath\": \"/Users/scotthansbury/Projects/ledgerix-pro-core/agents/quality-control/AGENTS.md\",
+    \"dangerouslySkipPermissions\": true,
+    \"maxTurnsPerRun\": 50,
+    \"timeoutSec\": 360
+  }',
+  runtime_config = '{
+    \"heartbeat\": {
+      \"enabled\": true,
+      \"maxConcurrentRuns\": 1
+    }
+  }',
+  permissions = '{\"canCreateAgents\": false, \"canCreateIssues\": true}'
+WHERE name = 'Quality Control'
   AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';
 "
 
