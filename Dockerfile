@@ -29,6 +29,9 @@ RUN npm install -g @anthropic-ai/claude-code
 # Build plugin-sdk only (tsx handles server at runtime — no tsc needed)
 RUN pnpm --filter @paperclipai/plugin-sdk build
 
+# Build UI for production — server serves dist when SERVE_UI=true
+RUN pnpm --filter @paperclipai/ui build
+
 # Fix ownership
 RUN chown -R paperclip:paperclip /app /usr/local/lib/node_modules /usr/local/bin
 
