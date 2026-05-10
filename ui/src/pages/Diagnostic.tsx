@@ -60,13 +60,13 @@ function getTier(amount: number): { name: string; price: string; description: st
   if (amount <= 50_000) {
     return {
       name: "The Growth Engine",
-      price: "from $349/mo",
+      price: "from $399/mo",
       description: "This plan pays for itself 10x over by month two.",
     };
   }
   return {
     name: "The Scale-Up",
-    price: "from $599/mo",
+    price: "from $799/mo",
     description: "Full AP, AR, and payroll automation to protect your volume.",
   };
 }
