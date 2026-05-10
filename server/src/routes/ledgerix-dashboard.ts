@@ -79,6 +79,22 @@ function fullName(c: GHLContact): string {
   return `${c.firstName ?? ""} ${c.lastName ?? ""}`.trim();
 }
 
+// "Enyrgy Inc" → "enyrgy-inc". Lowercase, spaces collapse to single hyphens,
+// non-alphanumeric stripped. Matches the slug format clients see in their URL.
+export function toPortalSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/[\s-]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+// GHL contact IDs are 20-char alphanumeric (MongoDB ObjectId-style, no hyphens).
+// Anything else — slugs with hyphens, shorter strings, etc. — needs a lookup.
+function looksLikeContactId(s: string): boolean {
+  return /^[a-zA-Z0-9]{20}$/.test(s);
+}
+
 async function fetchActiveClients(): Promise<GHLContact[]> {
   // GHL's /contacts endpoint rejects the `tags` query parameter (422). Fetch
   // the contact list for this location and filter in memory by the
@@ -586,6 +602,51 @@ export function ledgerixDashboardRoutes(db: Db) {
         error: "Portal request failed",
         message: err instanceof Error ? err.message : String(err),
       });
+    }
+  });
+
+  return router;
+}
+
+// ---------------------------------------------------------------------------
+// Slug-based portal redirect (mounted at root, not /api)
+// ---------------------------------------------------------------------------
+// Lets clients share memorable URLs like /portal/enyrgy-inc. When the path
+// param doesn't match the GHL contact-ID shape, look up the contact by
+// slugified companyName and redirect 302 to the canonical /portal/{contactId}
+// URL. Falls through to the SPA when the param is already a contact ID, or
+// when the slug doesn't match any contact (SPA will render its 404 state).
+export function portalSlugRedirectRoutes() {
+  const router = Router();
+
+  router.get("/portal/:slug", async (req, res, next) => {
+    const slug = req.params.slug as string;
+
+    if (looksLikeContactId(slug)) {
+      next();
+      return;
+    }
+
+    try {
+      const params = new URLSearchParams({ locationId: LOCATION_ID, query: slug });
+      const search = await ghlRequest<GHLContactSearchResult>("GET", `/contacts/?${params}`);
+      const match = (search.contacts ?? []).find((c) => {
+        const companyName = (c as { companyName?: string }).companyName;
+        return typeof companyName === "string" && toPortalSlug(companyName) === slug;
+      });
+
+      if (!match) {
+        logger.info({ slug }, "Portal slug not found — falling through to SPA 404");
+        next();
+        return;
+      }
+
+      logger.info({ slug, contactId: match.id }, "Portal slug resolved");
+      res.redirect(302, `/portal/${match.id}`);
+    } catch (err) {
+      logger.error({ err, slug }, "Portal slug lookup failed");
+      // Fail open: let the SPA handle it rather than 500ing the user
+      next();
     }
   });
 

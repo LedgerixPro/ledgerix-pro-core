@@ -40,7 +40,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { ghlWebhookRoutes } from "./routes/webhooks/ghl.js";
 import { accountingWebhookRoutes } from "./routes/webhooks/accounting.js";
-import { ledgerixDashboardRoutes } from "./routes/ledgerix-dashboard.js";
+import { ledgerixDashboardRoutes, portalSlugRedirectRoutes } from "./routes/ledgerix-dashboard.js";
 import { debugRoutes } from "./routes/debug.js";
 import { diagnosticRoutes } from "./routes/diagnostic.js";
 import { quickbooksOAuthRoutes } from "./routes/oauth/quickbooks.js";
@@ -309,6 +309,10 @@ export async function createApp(
     }
     next();
   });
+  // Intercept /portal/:slug — redirect to canonical /portal/{contactId} before
+  // the SPA static fallback serves index.html. Pass-through when the path
+  // param already looks like a GHL contact ID.
+  app.use(portalSlugRedirectRoutes());
   app.use(pluginUiStaticRoutes(db, {
     localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
   }));
