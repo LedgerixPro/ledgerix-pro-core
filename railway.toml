@@ -3,7 +3,8 @@ builder = "nixpacks"
 buildCommand = "npm config set prefix '/root/.npm-global' && npm install -g @anthropic-ai/claude-code && pnpm --filter @paperclipai/plugin-sdk build"
 
 [deploy]
-startCommand = "PATH=/root/.npm-global/bin:$PATH pnpm --filter @paperclipai/server exec tsx src/index.ts"
+startCommand = "useradd -m -u 1001 paperclip 2>/dev/null; cp -r /root/.npm-global /home/paperclip/.npm-global 2>/dev/null; chown -R paperclip:paperclip /home/paperclip/.npm-global 2>/dev/null; su paperclip -c 'PATH=/home/paperclip/.npm-global/bin:/root/.npm-global/bin:$PATH HOME=/home/paperclip ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY pnpm --filter @paperclipai/server exec tsx src/index.ts'"
 healthcheckPath = "/api/health"
+healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
