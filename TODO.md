@@ -142,7 +142,7 @@ Priority-ordered build list. Updated: 2026-05-01.
 - [ ] **H4-12. Scale Pattern — accounting webhooks** — webhook renewal cron, queue-based processing, dead letter handling (trigger: 50 clients)
 - [ ] **H4-13. Knowledge Base rules DB table** — replace KB-as-issue with dedicated table (trigger: 50 clients)
 - [ ] **H4-14. Multi-tenant architecture** — GHL OAuth Marketplace App, per-client Paperclip workspace (trigger: 20 clients)
-- [ ] **H4-15. Always-on infrastructure** — move Paperclip off Mac to cloud server (Railway/Render/DO/AWS). Most urgent H4 item — beta clients need reliability.
+- [x] **H4-15. Always-on infrastructure** — Paperclip migrated to Railway. api.ledgerixpro.com → Railway (ledgerix-pro-core-production.up.railway.app). PostgreSQL on Railway. All 25 agents seeded. 6 routines registered. Board API key: pcp_board_railway_admin_key_2026. Auth: admin@ledgerixpro.com. Dockerfile with non-root paperclip user (UID 1001) for Claude CLI --dangerously-skip-permissions support. ANTHROPIC_API_KEY required (quotes stripped from all Railway env vars). Agent execution confirmed working — Onboarding agent completed successfully on 2026-05-09. Completed: 2026-05-09
 
 ---
 
