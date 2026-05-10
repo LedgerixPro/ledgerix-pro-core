@@ -435,6 +435,13 @@
       "when": 1778262234046,
       "tag": "0061_futuristic_nighthawk",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1778440936250,
+      "tag": "0062_square_karnak",
+      "breakpoints": true
     }
   ]
 }
