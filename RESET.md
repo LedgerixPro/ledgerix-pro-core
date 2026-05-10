@@ -709,6 +709,26 @@ curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"kind":"schedule","cronExpression":"30 8 * * 1","timezone":"America/Phoenix"}'
 echo "AP weekly summary routine: $ROUTINE_ID"
+
+# 7. Tax Liaison daily scan — 7am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Daily Tax Scan — Tax Liaison","description":"Runs daily at 7am Arizona. Scans tax deadlines for 7-day urgent alerts.","priority":"high","status":"active","assigneeAgentId":"c171e3a1-0d6d-4b94-87c3-032a4d001b0e"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 7 * * *","timezone":"America/Phoenix"}'
+echo "Tax daily scan routine: $ROUTINE_ID"
+
+# 8. Tax Liaison weekly review — Monday 9am Arizona
+ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"title":"Weekly Tax Review — Tax Liaison","description":"Runs every Monday at 9am Arizona. Sends 30-day tax planning reminders with YTD P&L summary.","priority":"medium","status":"active","assigneeAgentId":"c171e3a1-0d6d-4b94-87c3-032a4d001b0e"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"schedule","cronExpression":"0 9 * * 1","timezone":"America/Phoenix"}'
+echo "Tax weekly review routine: $ROUTINE_ID"
 ```
 
 ---

@@ -123,14 +123,14 @@ Priority-ordered build list. Updated: 2026-05-01.
 
 ## HORIZON 4
 
-- [ ] **H4-1. Client portal** — api.ledgerixpro.com/portal/{contactId} — client-facing view of their own bookkeeping activity in plain English. No login required (contactId as token). Build when first paying client requests it.
+- [x] **H4-1. Client portal** — api.ledgerixpro.com/portal/{contactId} — client-facing light-theme portal showing this month's metrics (transactions, categorized, reconciled, flagged), book status (current/attention_needed/unknown), and 4-week history. No auth for beta (contactId as token). Built into Dockerfile. Completed: 2026-05-09
 
 ---
 
 ## HORIZON 4 — Scale & Revenue Expansion
 
 - [x] **H4-2. AP Specialist agent** — daily 6:30am scan (7-day warnings to client, overdue 1-29d → CFO + Health Monitor, overdue 30d+ → CFO + Health Monitor + Senior Bookkeeper + Scott). Weekly Monday 8:30am HTML AP summary to clients. getBills added for QBO + Xero. Correct escalation chain through CFO and Senior Bookkeeper. Completed: 2026-05-08
-- [ ] **H4-3. Tax Liaison agent** — quarterly/annual CPA handoff, tax-ready reports, deadline reminders
+- [x] **H4-3. Tax Liaison agent** — daily 7am scan (7-day alerts + CPA handoff issue), weekly Monday 9am 30-day planning emails with YTD P&L summary. Federal + Arizona state deadlines. Completed: 2026-05-09
 - [ ] **H4-4. Reporter agent** — CFO strategy reporting, MRR/churn/agent cost tracking, investor reporting
 - [x] **H4-5. Billing & Invoicing agent** — monthly 1st of month 8am cron, creates QBO invoices in Ledgerix Pro's own QBO, emails clients with payment link, charter-pricing tag controls pricing ($199/$399/$799 Charter, $299/$499/$899 Standard), SMS billing summary to Scott. Completed: 2026-05-08
 - [ ] **H4-6. Payroll agent** — monitors client payroll transactions, tax deposit flagging
