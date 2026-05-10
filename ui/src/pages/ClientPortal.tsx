@@ -239,7 +239,7 @@ export function ClientPortal() {
   // ---- Render ----
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 font-sans text-[#0F1E38]">
+      <div className="h-screen overflow-y-auto bg-gray-50 font-sans text-[#0F1E38]">
         <Header />
         <LoadingSpinner />
       </div>
@@ -248,7 +248,7 @@ export function ClientPortal() {
 
   if (error?.kind === "not_found") {
     return (
-      <div className="min-h-screen bg-gray-50 font-sans text-[#0F1E38]">
+      <div className="h-screen overflow-y-auto bg-gray-50 font-sans text-[#0F1E38]">
         <Header />
         <ErrorCard
           title="Portal not found"
@@ -269,7 +269,7 @@ export function ClientPortal() {
 
   if (error || !data) {
     return (
-      <div className="min-h-screen bg-gray-50 font-sans text-[#0F1E38]">
+      <div className="h-screen overflow-y-auto bg-gray-50 font-sans text-[#0F1E38]">
         <Header />
         <ErrorCard
           title="We couldn't load your books"
@@ -289,7 +289,7 @@ export function ClientPortal() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 font-sans text-[#0F1E38]">
+    <div className="h-screen overflow-y-auto bg-gray-50 font-sans text-[#0F1E38]">
       <Header data={data} />
 
       <main className="max-w-5xl mx-auto px-5 sm:px-8 py-8 space-y-10">

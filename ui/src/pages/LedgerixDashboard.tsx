@@ -371,7 +371,7 @@ export function LedgerixDashboard() {
   if (!secret) return <SecretPrompt onSubmit={handleSubmitSecret} error={authError} />;
 
   return (
-    <div className="min-h-screen bg-[#0F1E38] text-white font-sans">
+    <div className="h-screen overflow-y-auto bg-[#0F1E38] text-white font-sans">
       {/* Header */}
       <header className="sticky top-0 z-10 bg-[#0F1E38]/95 backdrop-blur border-b border-white/10">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
