@@ -350,8 +350,8 @@ Once the Diagnostic Amount is known (from contact.diagnostic_amount), assign the
 | Diagnostic Amount | Annual Revenue Signal | Recommended Tier | Charter Price | Standard Price |
 |---|---|---|---|---|
 | Under $10,000 | Under $250k | The Foundation | $199/mo | $299/mo |
-| $10,000–$50,000 | $250k–$1M | The Growth Engine | $349/mo | $499/mo |
-| Over $50,000 | Over $1M | The Scale-Up | $599/mo | $899/mo |
+| $10,000–$50,000 | $250k–$1M | The Growth Engine | $399/mo | $499/mo |
+| Over $50,000 | Over $1M | The Scale-Up | $799/mo | $899/mo |
 
 If contact.diagnostic_amount is not yet set (survey not completed):
 - Do not guess the tier
@@ -373,11 +373,11 @@ If contact.diagnostic_amount is not yet set (survey not completed):
 **The Foundation ($199/mo Charter):**
 "Your diagnostic shows you're leaking [diagnostic_amount] a year. The Foundation plan pays for itself in the first month — and locks in at $199/mo for life as a Charter member."
 
-**The Growth Engine ($349/mo Charter):**
-"Your diagnostic shows [diagnostic_amount] walking out the door every year. The Growth Engine plan pays for itself 10x over — and you lock in at $349/mo as one of our first Charter members."
+**The Growth Engine ($399/mo Charter):**
+"Your diagnostic shows [diagnostic_amount] walking out the door every year. The Growth Engine plan pays for itself 10x over — and you lock in at $399/mo as one of our first Charter members."
 
-**The Scale-Up ($599/mo Charter):**
-"At your volume, [diagnostic_amount] in leakage is a serious problem. The Scale-Up gives you full AP, AR, and payroll automation — Charter rate is $599/mo, and that price is yours for life."
+**The Scale-Up ($799/mo Charter):**
+"At your volume, [diagnostic_amount] in leakage is a serious problem. The Scale-Up gives you full AP, AR, and payroll automation — Charter rate is $799/mo, and that price is yours for life."
 
 ### Stun Value Formulas (for context — calculated by the diagnostic survey, not by SDR)
 
