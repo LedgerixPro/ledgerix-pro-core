@@ -643,7 +643,9 @@ Two cron routines drive this agent and must be re-registered after a DB reset �
 
 ## 24. Register all cron routines
 
-Run after a DB reset or fresh Railway deploy. Requires a valid board API key (see Section 23 for how to create one).
+Run after a DB reset or fresh Railway deploy. Requires a valid board API key. The board API key is set as an environment variable (PAPERCLIP_BOARD_API_KEY) in Railway. For the current production deployment, use: pcp_board_railway_admin_key_2026
+
+NOTE: The assigneeAgentId values below are for the production Railway DB. For local dev after a DB reset, the UUIDs will differ. Query `SELECT id FROM agents WHERE name = '<agent-name>' AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';` after re-seeding and substitute.
 
 ```bash
 TOKEN="pcp_board_railway_admin_key_2026"
@@ -753,7 +755,7 @@ echo "Reporter monthly deep dive routine: $ROUTINE_ID"
 # 11. Quality Control daily spot-check — Mon-Fri 7:30am Arizona
 ROUTINE_ID=$(curl -s -X POST "$BASE/api/companies/$COMPANY_ID/routines" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"title":"Daily QC Spot-Check — Quality Control","description":"Runs Mon-Fri at 7:30am Arizona. Reviews 20% sample of yesterday'"'"'s bookkeeping runs.","priority":"medium","status":"active","assigneeAgentId":"3c12d5c8-de3d-4bde-81dd-9df30d4addb4"}' \
+  -d '{"title":"Daily QC Spot-Check — Quality Control","description":"Runs Mon-Fri at 7:30am Arizona. Reviews 20% sample of yesterdays bookkeeping runs.","priority":"medium","status":"active","assigneeAgentId":"3c12d5c8-de3d-4bde-81dd-9df30d4addb4"}' \
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
 curl -s -X POST "$BASE/api/routines/$ROUTINE_ID/triggers" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
