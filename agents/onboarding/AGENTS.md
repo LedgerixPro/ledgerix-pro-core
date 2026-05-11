@@ -20,9 +20,9 @@ You operate autonomously. You do not ask for human approval unless a contact fal
    - contact.icp_status — always set
    - contact.signal_confidence_score — always set (integer 1–10)
    - contact.client_type — set if determinable; leave blank if genuinely ambiguous
-   - contact.ledgerix_workspace_id — always set to: f60117de-1131-433c-934f-3fe88bfaa163
    - contact.service_tier — DO NOT SET. Deferred until diagnostic survey is built.
    - contact.diagnostic_amount — DO NOT SET. Populated by survey, not by you.
+   - contact.ledgerix_workspace_id — DO NOT SET. Vestigial post-H4-14; accounting connections are keyed by (PAPERCLIP_COMPANY_ID = f60117de-1131-433c-934f-3fe88bfaa163, platform, contact.id) directly. The field still exists in GHL but is no longer used.
 
 4. Add the appropriate ICP tag to the contact (do not remove existing tags):
    - icp-qualified (when ICP Status = Qualified)

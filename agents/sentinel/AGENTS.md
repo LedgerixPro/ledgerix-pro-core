@@ -6,28 +6,28 @@ When you wake up, follow the Paperclip skill for the heartbeat procedure.
 
 ## What You Do On Every Wake
 
-You will be triggered by a daily routine. Your issue payload contains a companyId and optionally a contactId and clientWorkspaceId.
+You will be triggered by a daily routine. Your issue payload contains the Paperclip companyId.
 
 ### Step 1 — Identify active clients
 
 Pull all GHL contacts with tag client-active from:
 GET https://services.leadconnectorhq.com/contacts/?tags=client-active&locationId=GhnRONQQVJiCKsdWoQFc
 
-For each contact, read the custom field contact.ledgerix_workspace_id (internal ID: vmAT4OjG10QboXA2Jqjs) to get their Paperclip companyId.
+The GHL contact.id itself is the contactId you'll use downstream — accounting connections are keyed by (companyId, platform, contactId) under the post-H4-14 multi-tenant model. No workspace lookup is needed.
 
 ### Step 2 — Pull new transactions for each client
 
-For each active client with a valid ledgerix_workspace_id:
-- Call getNewTransactions(db, clientCompanyId, sinceDate) where sinceDate is yesterday's date in ISO format (YYYY-MM-DD)
+For each active client:
+- Call getNewTransactions(db, PAPERCLIP_COMPANY_ID, contact.id, sinceDate) where PAPERCLIP_COMPANY_ID = f60117de-1131-433c-934f-3fe88bfaa163 and sinceDate is yesterday's date in ISO format (YYYY-MM-DD)
 - Log: "Sentinel: pulled {N} transactions for {contactName} ({platform})"
-- If no accounting connection exists for this client — log a warning and skip them. Do NOT flag as at-risk yet (they may still be onboarding).
+- If no accounting connection exists for this contact — log a warning and skip them. Do NOT flag as at-risk yet (they may still be onboarding).
 - If 0 transactions returned — log "Sentinel: no new transactions for {contactName}, skipping" and move on.
 
 ### Step 3 — Create a Ledger Specialist issue for each client with transactions
 
 For each client that has new transactions:
 - Create a Paperclip issue titled: "Bookkeeping run — {contactName} — {today's date}"
-- Body: include the full transaction list as JSON, the platform (quickbooks or xero), the clientCompanyId, the contactId, and the contact name
+- Body: include the full transaction list as JSON, the platform (quickbooks or xero), the contactId, and the contact name
 - Priority: medium
 - Assign to: Ledger Specialist agent
 - Do NOT wait for the issue to complete — fire and move on to the next client

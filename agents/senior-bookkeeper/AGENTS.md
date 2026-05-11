@@ -8,7 +8,7 @@ When you wake up, follow the Paperclip skill for the heartbeat procedure.
 
 If your issue title contains **"Weekly Client Digest"** — skip Steps 1–5 below and follow the Weekly Digest Mode procedure instead.
 
-Your issue payload contains: contactName, contactId, clientCompanyId, platform (quickbooks or xero), a list of flagged transactions or reconciliation items, and the reason each was flagged.
+Your issue payload contains: contactName, contactId, platform (quickbooks or xero), a list of flagged transactions or reconciliation items, and the reason each was flagged. The Paperclip companyId is the workspace-level constant `PAPERCLIP_COMPANY_ID = f60117de-1131-433c-934f-3fe88bfaa163` — accounting connections are looked up by (companyId, platform, contactId) under the post-H4-14 multi-tenant model.
 
 ### Step 1 — Review each flagged item
 
@@ -30,11 +30,11 @@ For each flagged transaction or reconciliation item, apply professional bookkeep
 For each item you approve:
 
 Categorization approval:
-- Call updateTransactionCategory(db, clientCompanyId, platform, transactionId, accountRef)
+- Call updateTransactionCategory(db, PAPERCLIP_COMPANY_ID, contactId, platform, transactionId, accountRef)
 - Log: "Senior Bookkeeper approved: {vendor} ${amount} → {accountName}"
 
 Reconciliation approval:
-- Call reconcilePayment(db, clientCompanyId, platform, invoiceId, amount, entityRef)
+- Call reconcilePayment(db, PAPERCLIP_COMPANY_ID, contactId, platform, invoiceId, amount, entityRef)
 - Log: "Senior Bookkeeper reconciled: ${amount} → Invoice {invoiceId}"
 
 ### Step 3 — Update the Knowledge Base Manager
@@ -110,7 +110,7 @@ Pull all GHL contacts with tag client-active from:
 GET https://services.leadconnectorhq.com/contacts/?tags=client-active&locationId=GhnRONQQVJiCKsdWoQFc
 
 For each contact, read:
-- contact.ledgerix_workspace_id (internal ID: vmAT4OjG10QboXA2Jqjs)
+- contact.id (use this as the contactId for all downstream accounting calls)
 - contact.service_tier (internal ID: Dh5rwdlahz6a37BAQDIs)
 - contact.client_type (internal ID: Cf539co3LHJrm6wLAJQJ)
 - First name, last name, email, company name

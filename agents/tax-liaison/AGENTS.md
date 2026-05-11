@@ -37,7 +37,7 @@ Always compute deadlines relative to the current date. If a deadline falls on a 
 
 ### Step 1 — Pull all active clients
 Call GHL GET /contacts/?locationId=GhnRONQQVJiCKsdWoQFc and filter for contacts with tag client-active.
-For each contact read: first name, last name, email, company name, contact.client_type, contact.ledgerix_workspace_id.
+For each contact read: first name, last name, email, company name, contact.client_type, and contact.id (used as the contactId for accounting lookups under the post-H4-14 multi-tenant model).
 
 ### Step 2 — Check upcoming deadlines (7-day window)
 For each active client:
@@ -100,10 +100,10 @@ For each active client:
 - Skip any deadline already flagged in the last 7 days (avoid duplicate alerts)
 
 ### Step 3 — Pull financial summary for each client
-For each client with an upcoming 30-day deadline:
-- QBO: call qbo.getProfitAndLoss(db, clientCompanyId, yearStartDate, today) for YTD P&L
-- Xero: call xero.getProfitAndLoss(db, clientCompanyId, yearStartDate, today) for YTD P&L
-- Also pull qbo.getBalanceSheet or xero.getBalanceSheet for current date
+For each client with an upcoming 30-day deadline (PAPERCLIP_COMPANY_ID = f60117de-1131-433c-934f-3fe88bfaa163):
+- QBO: call qbo.getProfitAndLoss(db, PAPERCLIP_COMPANY_ID, contact.id, yearStartDate, today) for YTD P&L
+- Xero: call xero.getProfitAndLoss(db, PAPERCLIP_COMPANY_ID, contact.id, yearStartDate, today) for YTD P&L
+- Also pull qbo.getBalanceSheet(db, PAPERCLIP_COMPANY_ID, contact.id, today) or xero.getBalanceSheet(db, PAPERCLIP_COMPANY_ID, contact.id, today)
 
 If no accounting connection: skip financial pull, still send reminder.
 

@@ -13,12 +13,12 @@ Otherwise → follow the Daily Scan procedure.
 
 ### Step 1 — Pull all active clients
 Call GHL GET /contacts/?locationId=GhnRONQQVJiCKsdWoQFc and filter for contacts with tag client-active.
-For each contact read first name, last name, email, company name, contact.ledgerix_workspace_id.
+For each contact read first name, last name, email, company name, and contact.id (used as the contactId for accounting lookups under the post-H4-14 multi-tenant model).
 
 ### Step 2 — Pull open bills for each client
-For each client:
-- QBO: call qbo.getBills(db, clientCompanyId)
-- Xero: call xero.getBills(db, clientCompanyId)
+For each client (PAPERCLIP_COMPANY_ID = f60117de-1131-433c-934f-3fe88bfaa163):
+- QBO: call qbo.getBills(db, PAPERCLIP_COMPANY_ID, contact.id)
+- Xero: call xero.getBills(db, PAPERCLIP_COMPANY_ID, contact.id)
 
 ### Step 3 — Classify each bill
 - Due in 7 days or less (but not yet overdue) → 7-DAY WARNING

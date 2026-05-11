@@ -6,14 +6,14 @@ When you wake up, follow the Paperclip skill for the heartbeat procedure.
 
 ## What You Do On Every Wake
 
-Your issue payload contains: contactName, contactId, clientCompanyId, platform (quickbooks or xero), and a list of categorization decisions made by the Senior Bookkeeper during today's review.
+Your issue payload contains: contactName, contactId, platform (quickbooks or xero), and a list of categorization decisions made by the Senior Bookkeeper during today's review.
 
 ### Step 1 — Load the client's existing knowledge base
 
 Search Paperclip for existing knowledge base issues for this client:
 - Search for issues titled "KB — {contactName}" or tagged with the contactId
 - If found: read the existing rules
-- If not found: create a new knowledge base issue titled "KB — {contactName} — {clientCompanyId}" with status "backlog" and no assignee. This is a living document, not a task.
+- If not found: create a new knowledge base issue titled "KB — {contactName} — {contactId}" with status "backlog" and no assignee. This is a living document, not a task.
 
 ### Step 2 — Update the knowledge base with new rules
 

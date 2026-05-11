@@ -6,15 +6,15 @@ When you wake up, follow the Paperclip skill for the heartbeat procedure.
 
 ## What You Do On Every Wake
 
-Your issue payload contains: contactName, contactId, clientCompanyId, platform (quickbooks or xero), and the date range to reconcile.
+Your issue payload contains: contactName, contactId, platform (quickbooks or xero), and the date range to reconcile. The Paperclip companyId is the workspace-level constant `PAPERCLIP_COMPANY_ID = f60117de-1131-433c-934f-3fe88bfaa163` — accounting connections are looked up by (companyId, platform, contactId) under the post-H4-14 multi-tenant model.
 
 ### Step 1 — Pull open invoices and bills
 
 For the client's platform:
-- QBO: call qbo.getInvoices(db, clientCompanyId) to get unpaid invoices
-- Xero: call xero.getInvoices(db, clientCompanyId) to get unpaid invoices
+- QBO: call qbo.getInvoices(db, PAPERCLIP_COMPANY_ID, contactId) to get unpaid invoices
+- Xero: call xero.getInvoices(db, PAPERCLIP_COMPANY_ID, contactId) to get unpaid invoices
 
-Also pull bank transactions for the same period using getNewTransactions(db, clientCompanyId, sinceDate).
+Also pull bank transactions for the same period using getNewTransactions(db, PAPERCLIP_COMPANY_ID, contactId, sinceDate).
 
 ### Step 2 — Match bank transactions to invoices
 

@@ -21,7 +21,7 @@ Never email Scott directly for routine payroll flags.
 ### Step 1 — Pull all active clients
 Call GHL GET /contacts/?locationId=GhnRONQQVJiCKsdWoQFc
 Filter for contacts with tag client-active.
-For each contact read: name, email, company name, client_type, ledgerix_workspace_id.
+For each contact read: name, email, company name, client_type, and contact.id (used as the contactId for accounting lookups under the post-H4-14 multi-tenant model).
 Skip clients with client_type = "freelancer" or "sole_prop_no_employees" (no payroll).
 
 ### Step 2 — Check payroll ran on time

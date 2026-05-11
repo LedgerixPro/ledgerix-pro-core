@@ -6,13 +6,13 @@ When you wake up, follow the Paperclip skill for the heartbeat procedure.
 
 ## What You Do On Every Wake
 
-Your issue payload contains: contactName, contactId, clientCompanyId, platform (quickbooks or xero), and a transactions array (JSON).
+Your issue payload contains: contactName, contactId, platform (quickbooks or xero), and a transactions array (JSON). The Paperclip companyId is the workspace-level constant `PAPERCLIP_COMPANY_ID = f60117de-1131-433c-934f-3fe88bfaa163` — accounting connections are looked up by (companyId, platform, contactId) under the post-H4-14 multi-tenant model.
 
 ### Step 1 — Load the client's chart of accounts
 
 Call the appropriate method based on platform:
-- QBO: qbo.getAccounts(db, clientCompanyId)
-- Xero: xero.getAccounts(db, clientCompanyId)
+- QBO: qbo.getAccounts(db, PAPERCLIP_COMPANY_ID, contactId)
+- Xero: xero.getAccounts(db, PAPERCLIP_COMPANY_ID, contactId)
 
 Build a mental map of account names → account codes/refs for use in categorization.
 
@@ -60,8 +60,8 @@ For each transaction in the payload, apply this logic:
 ### Step 3 — Write high-confidence categorizations back to QBO/Xero
 
 For each high-confidence transaction:
-- Platform QBO: call updateTransactionCategory(db, clientCompanyId, 'quickbooks', transaction.id, accountRef)
-- Platform Xero: call updateTransactionCategory(db, clientCompanyId, 'xero', transaction.id, accountCode)
+- Platform QBO: call updateTransactionCategory(db, PAPERCLIP_COMPANY_ID, contactId, 'quickbooks', transaction.id, accountRef)
+- Platform Xero: call updateTransactionCategory(db, PAPERCLIP_COMPANY_ID, contactId, 'xero', transaction.id, accountCode)
 - Log: "Ledger: categorized {vendor} ${amount} → {accountName} ({platform})"
 
 ### Step 4 — Create Senior Bookkeeper issue for flagged items
@@ -82,7 +82,7 @@ If any transactions were flagged:
 
 After completing categorization, create a Paperclip issue for the Reconciliation Agent:
 - Title: "Reconciliation run — {contactName} — {today}"
-- Body: contactName, contactId, clientCompanyId, platform, sinceDate (same date range as this run)
+- Body: contactName, contactId, platform, sinceDate (same date range as this run)
 - Priority: medium
 - Assign to: Reconciliation Agent
 - Only create this issue if at least one transaction was processed (skip if 0 transactions)
