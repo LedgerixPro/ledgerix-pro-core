@@ -138,7 +138,9 @@ openssl rand -hex 32
 
 # 2. Update .env with the new value (replace the existing GHL_WEBHOOK_SECRET line)
 
-# 3. Restart pnpm dev so the new env is loaded
+# 3. Local dev: restart pnpm dev so the new env is loaded.
+#    Production (Railway): update the GHL_WEBHOOK_SECRET env var in the Railway dashboard
+#    and trigger a redeploy for the new value to take effect.
 ```
 
 Then, in GHL UI for every workflow that hits /api/webhooks/ghl:
@@ -529,7 +531,7 @@ WHERE name = 'Knowledge Base Manager'
 The agent instructions file lives at:
 agents/knowledge-base-manager/AGENTS.md
 
-The KB itself lives in a Paperclip issue per client (status: backlog, no assignee), titled `KB — {contactName} — {clientCompanyId}`. The KB issues survive DB resets only if the database is preserved — a full `rm -rf data/pglite` will wipe accumulated rules.
+The KB itself lives in a Paperclip issue per client (status: backlog, no assignee), titled `KB — {contactName} — {contactId}`. The KB issues survive DB resets only if the database is preserved — a full `rm -rf data/pglite` will wipe accumulated rules.
 
 ---
 
