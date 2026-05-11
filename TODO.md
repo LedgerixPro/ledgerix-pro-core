@@ -178,8 +178,9 @@ Priority-ordered build list. Updated: 2026-05-01.
 - [x] Client Health Monitor agent — event-driven health alerts for invoice.overdue, accounting.stale, nps.low. Routes to CRO, moves contacts to At Risk stage, SMS notification. Weekly heartbeat deferred until 5 active clients. Completed: 2026-05-03
 - [x] AR Specialist agent — 3-touch invoice collection sequence (7/14/30 days), bill.due internal visibility, escalates to CRO at 30 days, SMS + at-risk tagging. Completed: 2026-05-03
 - [x] Invoice Paid webhooks — QBO (CloudEvents format, ahead of May 15 deadline) and Xero (ITR handshake verified) both live. Auto-dispatches invoice.paid → AR Specialist. Growth pattern implemented (auto-register on OAuth). Completed: 2026-05-03
+- [x] Backup Recovery Runbook — RESET.md Section 31 added. Step-by-step recovery from Railway container backups at /home/paperclip/.paperclip/instances/default/data/backups/ (filename pattern paperclip-YYYYMMDD-HHMMSS.sql.gz). Covers list/identify/download/restore/verify/post-restore-health with explicit destructive-action warnings. Completed: 2026-05-11
 
 ---
 
-*Last updated: 2026-05-08*
+*Last updated: 2026-05-11*
 *Project root: /Users/scotthansbury/Projects/ledgerix-pro-core*

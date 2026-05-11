@@ -1035,6 +1035,141 @@ Required env var: `GOOGLE_PLACE_ID` — used to construct the Google review link
 
 ---
 
+## 31. Backup Recovery Runbook
+
+Production-data restore for the Railway-hosted Paperclip database. Backups are written by `runDatabaseBackup` (`packages/db/src/backup-lib.ts`) — either on the manual `POST /api/instance/database-backups` admin endpoint or on a scheduled cron — and land in the container at:
+
+```
+/home/paperclip/.paperclip/instances/default/data/backups/
+```
+
+Filenames follow the pattern `paperclip-YYYYMMDD-HHMMSS.sql.gz` (local server time, which on Railway is UTC unless overridden). Both `.sql` (intermediate) and `.sql.gz` (final) files may be present; restore from the `.sql.gz`.
+
+**Before you start.** A restore overwrites the live database. Confirm you actually want to roll back before running step 4. If the goal is to extract a single table or row, restore into a scratch DB first instead of replacing prod.
+
+### Step 1 — List available backups
+
+Open a shell inside the running Railway container:
+
+```sh
+railway ssh
+```
+
+Inside the container, list backups newest-first:
+
+```sh
+ls -lt /home/paperclip/.paperclip/instances/default/data/backups/ | head -20
+```
+
+If `railway ssh` is not available for this service, hit the debug listing endpoint instead (add one ad-hoc if missing — see `server/src/routes/debug.ts` for the existing pattern):
+
+```sh
+curl -sS https://api.ledgerixpro.com/api/debug/list-backups | jq .
+```
+
+### Step 2 — Identify which backup to restore
+
+Filenames embed the timestamp directly. To pick a backup taken just before some incident, sort by mtime and read the suffix:
+
+```
+paperclip-20260510-021500.sql.gz   ← 2026-05-10 02:15:00 UTC
+paperclip-20260510-021502.sql.gz   ← same moment, intermediate
+```
+
+Spot-check the file is non-empty (`ls -lh` should show a sane size — typically tens of KB to a few MB for the current scale).
+
+### Step 3 — Download the backup file to your laptop
+
+From a local terminal:
+
+```sh
+# Replace <file> with the backup filename you chose
+railway ssh -- cat /home/paperclip/.paperclip/instances/default/data/backups/<file> > /tmp/<file>
+```
+
+Or, if `railway ssh` doesn't support stream redirect on this version, base64 it through the SSH session:
+
+```sh
+railway ssh -- base64 /home/paperclip/.paperclip/instances/default/data/backups/<file> | base64 -d > /tmp/<file>
+```
+
+Sanity-check: `gunzip -t /tmp/<file>` should exit 0.
+
+### Step 4 — Restore into the Railway PostgreSQL database
+
+Set `RAILWAY_DATABASE_URL` to the Railway Postgres public connection string (from the Railway dashboard → Postgres service → Connect tab). Then:
+
+```sh
+# Step 4a — Quiesce the app so it doesn't write during restore.
+#           Use the Railway dashboard to set the app service to 0 replicas,
+#           OR set a maintenance env var and redeploy. Wait for the app to
+#           stop appearing in `railway logs` before continuing.
+
+# Step 4b — Wipe the public schema so the restore lands on a clean slate.
+#           This is destructive and intentional — abort if uncertain.
+/opt/homebrew/opt/libpq/bin/psql "$RAILWAY_DATABASE_URL" \
+  -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres;"
+
+# Step 4c — Stream the restore.
+gunzip -c /tmp/<file> | /opt/homebrew/opt/libpq/bin/psql "$RAILWAY_DATABASE_URL"
+```
+
+A clean restore prints a stream of `SET / CREATE TABLE / INSERT 0 N` lines and exits 0. Any `ERROR:` line stops the restore — capture it, investigate, and retry.
+
+### Step 5 — Verify the restore was successful
+
+Row-count the key tables — the numbers should match what you expected from the chosen backup timestamp:
+
+```sh
+/opt/homebrew/opt/libpq/bin/psql "$RAILWAY_DATABASE_URL" -c "
+SELECT 'companies' AS tbl, COUNT(*) FROM companies
+UNION ALL SELECT 'agents', COUNT(*) FROM agents
+UNION ALL SELECT 'routines', COUNT(*) FROM routines
+UNION ALL SELECT 'routine_triggers', COUNT(*) FROM routine_triggers
+UNION ALL SELECT 'issues', COUNT(*) FROM issues
+UNION ALL SELECT 'accounting_connections', COUNT(*) FROM accounting_connections
+ORDER BY 1;
+"
+```
+
+Spot-check that the Ledgerix Pro company row is present and at least one `claude_local` agent has a non-null `adapter_config.instructionsFilePath`:
+
+```sh
+/opt/homebrew/opt/libpq/bin/psql "$RAILWAY_DATABASE_URL" -c "
+SELECT name, adapter_type, adapter_config->>'instructionsFilePath' AS path
+FROM agents
+WHERE company_id = 'f60117de-1131-433c-934f-3fe88bfaa163' AND adapter_type = 'claude_local'
+ORDER BY name;
+"
+```
+
+### Step 6 — Restart the app and verify post-restore health
+
+1. **Restart the app service.** Set the Railway app service back to its normal replica count (or trigger a redeploy via an empty commit — see Section 24 history for the pattern). Wait for the `/api/health` healthcheck to go green.
+2. **Verify heartbeat agents resume.** All `claude_local` agents with `runtime_config.heartbeat.enabled = true` should re-register on boot. Check the logs for `heartbeat scheduled` lines, or query:
+   ```sh
+   /opt/homebrew/opt/libpq/bin/psql "$RAILWAY_DATABASE_URL" -c "
+   SELECT name, runtime_config->'heartbeat'->>'enabled' AS heartbeat
+   FROM agents
+   WHERE company_id = 'f60117de-1131-433c-934f-3fe88bfaa163' AND adapter_type = 'claude_local';
+   "
+   ```
+3. **Verify cron routines are still scheduled.** Confirm `routine_triggers.next_run_at` is in the future for every enabled trigger:
+   ```sh
+   /opt/homebrew/opt/libpq/bin/psql "$RAILWAY_DATABASE_URL" -c "
+   SELECT r.title, t.cron_expression, t.next_run_at, t.enabled
+   FROM routines r
+   JOIN routine_triggers t ON t.routine_id = r.id
+   WHERE r.company_id = 'f60117de-1131-433c-934f-3fe88bfaa163' AND t.enabled = true
+   ORDER BY t.next_run_at;
+   "
+   ```
+   If any `next_run_at` is in the past or NULL, the scheduler will pick them up on its next tick and either fire-and-recompute (catch-up policy `skip_missed`) or wait until the next valid cron slot. No manual intervention needed.
+4. **Reconnect OAuth if needed.** If the chosen backup pre-dates any QBO/Xero OAuth reconnection, the encrypted refresh tokens in `accounting_connections` may have rotated. A 401 from `qboRequest` or `xeroRequest` after restore means re-running `/oauth/{quickbooks,xero}/connect` for that contact.
+5. **Sentry check.** Look at the next 15 minutes of `railway logs` — any 500s, unhandled rejections, or `pg` connection errors mean the restore is partial or the schema is out of step with the deployed code (e.g. a migration is missing). In that case, run `pnpm db:migrate` against `RAILWAY_DATABASE_URL` to bring the schema forward.
+
+---
+
 ## Full reset sequence
 
 ```sh
