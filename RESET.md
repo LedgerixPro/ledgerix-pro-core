@@ -59,7 +59,7 @@ psql --version
 
 ---
 
-## 4. Re-seed the 24-agent workforce
+## 4. Re-seed the 25-agent workforce
 
 After the company row exists, recreate all 24 agents with correct names, titles, and
 reporting structure. The script is idempotent — safe to run multiple times.
