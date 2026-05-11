@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --import tsx
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
@@ -127,6 +127,29 @@ if (!bindHost && process.env.npm_config_bind_host) {
 if (bindMode === "custom" && !bindHost) {
   console.error("[paperclip] --bind custom requires --bind-host <host>");
   process.exit(1);
+}
+
+// Merge project-root .env into process.env before building child env so vars
+// like GHL_WEBHOOK_SECRET flow through without manual shell injection.
+// Uses override:false semantics — shell env always wins.
+// DATABASE_URL is excluded: root .env often holds a URL for external tooling
+// (db clients, migration scripts) that is NOT a running postgres during dev.
+// Database connectivity for the dev server is configured via ~/.paperclip/.env
+// or the server config file, both of which the server's own config cascade handles.
+const ROOT_ENV_EXCLUDED_KEYS = new Set(["DATABASE_URL", "DATABASE_MIGRATION_URL"]);
+const rootEnvPath = path.join(repoRoot, ".env");
+if (existsSync(rootEnvPath)) {
+  for (const line of readFileSync(rootEnvPath, "utf-8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx < 1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const raw = trimmed.slice(eqIdx + 1);
+    if (key && !(key in process.env) && !ROOT_ENV_EXCLUDED_KEYS.has(key)) {
+      process.env[key] = raw.replace(/^(['"])(.*)\1$/s, "$2");
+    }
+  }
 }
 
 const env: NodeJS.ProcessEnv = {

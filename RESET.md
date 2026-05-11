@@ -61,7 +61,7 @@ psql --version
 
 ## 4. Re-seed the 25-agent workforce
 
-After the company row exists, recreate all 24 agents with correct names, titles, and
+After the company row exists, recreate all 25 agents with correct names, titles, and
 reporting structure. The script is idempotent — safe to run multiple times.
 
 ```sh
@@ -1187,7 +1187,7 @@ psql postgres://paperclip:paperclip@127.0.0.1:54329/paperclip \
       VALUES ('f60117de-1131-433c-934f-3fe88bfaa163', 'Ledgerix Pro', 'active', 'LED', 1, 0, 0) \
       ON CONFLICT (id) DO NOTHING;"
 
-# 5. Re-seed the 24-agent workforce
+# 5. Re-seed the 25-agent workforce
 node_modules/.pnpm/node_modules/.bin/tsx scripts/seed-agents.ts
 
 # 6. Cloudflare Tunnel starts automatically at login — no manual step needed

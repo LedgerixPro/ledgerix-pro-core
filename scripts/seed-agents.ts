@@ -11,7 +11,7 @@
  */
 
 const COMPANY_ID = "f60117de-1131-433c-934f-3fe88bfaa163";
-const API_BASE = "http://localhost:3100/api";
+const API_BASE = process.env.API_BASE ?? "http://localhost:3100/api";
 
 // ---------------------------------------------------------------------------
 // Roster — ordered parents-before-children so reportsTo resolution always
