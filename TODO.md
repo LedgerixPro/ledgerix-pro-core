@@ -146,6 +146,12 @@ Priority-ordered build list. Updated: 2026-05-01.
 
 ---
 
+## Technical Debt
+
+- [ ] RESET.md Section 9 diagnostic table still references .env file for secret management — update to reflect Railway env vars (dashboard, not file) for production troubleshooting context.
+
+---
+
 ## Completed ✅
 
 - [x] Paperclip running locally at localhost:3100
