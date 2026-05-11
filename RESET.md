@@ -643,12 +643,14 @@ Two cron routines drive this agent and must be re-registered after a DB reset â€
 
 ## 24. Register all cron routines
 
-Run after a DB reset or fresh Railway deploy. Requires a valid board API key. The board API key is set as an environment variable (PAPERCLIP_BOARD_API_KEY) in Railway. For the current production deployment, use: pcp_board_railway_admin_key_2026
+Run after a DB reset or fresh Railway deploy. Requires a valid board API key. The board API key is set as an environment variable (PAPERCLIP_BOARD_API_KEY) in Railway. For the current production deployment, use: <PAPERCLIP_BOARD_API_KEY>
 
 NOTE: The assigneeAgentId values below are for the production Railway DB. For local dev after a DB reset, the UUIDs will differ. Query `SELECT id FROM agents WHERE name = '<agent-name>' AND company_id = 'f60117de-1131-433c-934f-3fe88bfaa163';` after re-seeding and substitute.
 
+Replace `<PAPERCLIP_BOARD_API_KEY>` with the value from your Railway environment variables.
+
 ```bash
-TOKEN="pcp_board_railway_admin_key_2026"
+TOKEN="<PAPERCLIP_BOARD_API_KEY>"
 BASE="https://api.ledgerixpro.com"
 COMPANY_ID="f60117de-1131-433c-934f-3fe88bfaa163"
 
