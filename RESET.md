@@ -1170,7 +1170,7 @@ ORDER BY name;
    ```
    If any `next_run_at` is in the past or NULL, the scheduler will pick them up on its next tick and either fire-and-recompute (catch-up policy `skip_missed`) or wait until the next valid cron slot. No manual intervention needed.
 4. **Reconnect OAuth if needed.** If the chosen backup pre-dates any QBO/Xero OAuth reconnection, the encrypted refresh tokens in `accounting_connections` may have rotated. A 401 from `qboRequest` or `xeroRequest` after restore means re-running `/oauth/{quickbooks,xero}/connect` for that contact.
-5. **Sentry check.** Look at the next 15 minutes of `railway logs` — any 500s, unhandled rejections, or `pg` connection errors mean the restore is partial or the schema is out of step with the deployed code (e.g. a migration is missing). In that case, run `pnpm db:migrate` against `RAILWAY_DATABASE_URL` to bring the schema forward.
+5. **Log check.** Look at the next 15 minutes of `railway logs` — any 500s, unhandled rejections, or `pg` connection errors mean the restore is partial or the schema is out of step with the deployed code (e.g. a migration is missing). In that case, run `pnpm db:migrate` against `RAILWAY_DATABASE_URL` to bring the schema forward.
 
 ---
 
