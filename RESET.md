@@ -159,7 +159,7 @@ Pattern is the same for every event type. Three things change per workflow: the 
 2. Action: + Add Action → Webhook (the free one, not Custom Webhook)
 3. Configure:
    - Method: POST
-   - URL: `https://<your-ngrok-url>/api/webhooks/ghl`
+   - URL: `https://api.ledgerixpro.com/api/webhooks/ghl`
    - Custom Data:
      - `event`: a stable identifier (e.g. `contact.created`, `invoice.paid`, `opportunity.won`)
      - `locationId`: `GhnRONQQVJiCKsdWoQFc`
@@ -183,15 +183,13 @@ Quick reference for the most common webhook errors and their fixes.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `403 Hostname not allowed` | ngrok hostname not in Paperclip allowlist | Run `pnpm paperclipai allowed-hostname <hostname>` and restart |
 | `401 Missing x-webhook-signature header or x-ledgerix-secret header` | Neither auth header sent | Confirm GHL workflow has `X-Ledgerix-Secret` in Headers and is Published |
 | `401 Invalid shared secret` | Header sent but value doesn't match `.env` | Re-paste secret from `.env` into GHL workflow header, save, republish |
 | `400 Payload missing locationId` | Custom data missing `locationId` field | Add `locationId: GhnRONQQVJiCKsdWoQFc` to GHL workflow Custom Data |
 | `200 OK` but `routed: false`, `targetAgent: null` in logs | Dispatcher has no route for the event type | Add a routing entry in server/src/services/dispatcher.ts for the event value |
-| Request never reaches Paperclip | ngrok URL changed since GHL was configured, or ngrok is down | Check http://localhost:4040 for active tunnel; update GHL workflow URL if changed |
+| Request never reaches Railway | Railway deployment failed or container is not running | Check Railway dashboard, redeploy if needed |
 
 Useful diagnostic tools:
-- `http://localhost:4040` — ngrok request inspector (live request/response, including headers and body)
 - Paperclip terminal logs — look for `GHL webhook received` and `GHL dispatch routing decision` lines
 - GHL workflow → Execution Logs tab — shows what GHL sent and what response it got
 
