@@ -4,7 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="index, follow" />
-  <title>Ledgerix Pro LLC — SMS Consent</title>
+  <title>SMS Opt-In Consent — Ledgerix Pro</title>
+  <meta name="description" content="Ledgerix Pro LLC SMS opt-in consent disclosure for A2P 10DLC compliance." />
+  <meta name="consent-text-version" content="v2026-05-11" />
   <style>
     :root {
       --bg: #0F1E38;
@@ -32,30 +34,27 @@
       padding: 24px 20px 80px;
     }
 
-    .back-link {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      color: var(--accent);
-      text-decoration: none;
-      font-size: 14px;
-      font-weight: 500;
-      margin-bottom: 32px;
-      transition: opacity 0.15s;
+    header {
+      margin-bottom: 24px;
     }
-    .back-link:hover { opacity: 0.8; }
+
+    .brand-tag {
+      color: var(--muted);
+      font-size: 14px;
+      margin: 0 0 8px;
+    }
 
     h1 {
       font-size: 32px;
       font-weight: 700;
-      margin: 0 0 8px;
+      margin: 0 0 16px;
       letter-spacing: -0.02em;
     }
 
-    .subtitle {
+    .lede {
       color: var(--muted);
-      font-size: 14px;
-      margin-bottom: 40px;
+      font-size: 16px;
+      margin: 0 0 24px;
     }
 
     h2 {
@@ -87,45 +86,57 @@
     }
     a:hover { text-decoration: underline; }
 
-    .consent-box {
+    .cta-link {
+      word-break: break-all;
+    }
+
+    .primary-cta {
+      display: inline-block;
+      margin: 16px 0;
+      padding: 12px 24px;
+      background: var(--accent);
+      color: var(--bg);
+      font-weight: 700;
+      border-radius: 6px;
+      text-decoration: none;
+    }
+    .primary-cta:hover { text-decoration: none; opacity: 0.92; }
+
+    .disclosure-box {
       margin: 24px 0 32px;
       padding: 28px;
       border: 2px solid var(--rule);
       border-radius: 12px;
       background: rgba(255, 255, 255, 0.03);
     }
-    .consent-box label {
-      display: flex;
-      align-items: flex-start;
-      gap: 14px;
-      font-size: 15px;
-      color: rgba(255, 255, 255, 0.85);
-      line-height: 1.55;
-      cursor: pointer;
+    .disclosure-box h2 {
+      margin-top: 0;
     }
-    .consent-box input[type="checkbox"] {
-      margin-top: 2px;
-      width: 24px;
-      height: 24px;
-      flex-shrink: 0;
-      accent-color: var(--accent);
-      cursor: pointer;
-    }
-    .consent-box .optional-note {
-      margin-top: 12px;
+    .disclosure-note {
+      margin: 0 0 16px;
       font-size: 13px;
       color: var(--muted);
       font-style: italic;
     }
 
-    .info-callout {
-      margin: 24px 0;
+    .consent-text {
+      margin: 0;
       padding: 16px 20px;
       border-left: 3px solid var(--accent);
       background: rgba(245, 166, 35, 0.06);
       border-radius: 4px;
+      font-size: 15px;
+      color: rgba(255, 255, 255, 0.92);
+      line-height: 1.6;
     }
-    .info-callout p { margin: 0; font-size: 15px; }
+    .consent-text strong { color: var(--text); }
+
+    .footnote {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+      font-style: italic;
+    }
 
     footer {
       margin-top: 64px;
@@ -147,71 +158,63 @@
       h2 { font-size: 18px; }
       p, li { font-size: 15px; }
       .container { padding: 20px 16px 60px; }
+      .disclosure-box { padding: 20px; }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <a href="/diagnostic" class="back-link">← Back to Diagnostic Form</a>
+    <header>
+      <div class="brand-tag">Ledgerix Pro LLC · SMS Messaging Program</div>
+      <h1>SMS Opt-In Consent</h1>
+      <p class="lede">The consent disclosure below matches exactly what appears on our opt-in form. By providing a phone number on the Ledgerix Pro diagnostic form and checking the consent box, you agree to the terms shown below.</p>
+    </header>
 
-    <h1>SMS Opt-In Consent</h1>
-    <p class="subtitle">Ledgerix Pro LLC · SMS Messaging Program</p>
+    <section>
+      <h2>How to Opt In</h2>
+      <p>To opt in to SMS messages from Ledgerix Pro LLC, visit our diagnostic form at:</p>
+      <p><a class="cta-link" href="https://api.ledgerixpro.com/diagnostic">https://api.ledgerixpro.com/diagnostic</a></p>
+      <p>Complete the form. On the final page (Step 4 of 4), if you provide a phone number, you must check the SMS consent box to submit. The consent box is unchecked by default and consent is required to submit a phone number — phone numbers are not collected without explicit consent.</p>
+      <p><a class="primary-cta" href="https://api.ledgerixpro.com/diagnostic">Go to Opt-In Form →</a></p>
+    </section>
 
-    <p>The consent disclosure below matches exactly what appears on our opt-in form.</p>
+    <section class="disclosure-box">
+      <h2>Opt-In Consent Disclosure</h2>
+      <p class="disclosure-note">This is the exact text users see and affirmatively agree to when checking the SMS consent box on the opt-in form (consent text version v2026-05-11):</p>
+      <blockquote class="consent-text">
+        I agree to receive marketing and informational SMS messages from Ledgerix Pro LLC regarding bookkeeping services and my account. Message frequency varies. Msg &amp; data rates may apply. Reply <strong>HELP</strong> for help, <strong>STOP</strong> to opt out at any time. View our <a href="https://api.ledgerixpro.com/privacy-policy.html">Privacy Policy</a> and <a href="https://api.ledgerixpro.com/terms-of-service.html">Terms of Service</a>.
+      </blockquote>
+    </section>
 
-    <p>
-      To opt in to SMS messages from Ledgerix Pro LLC, visit our diagnostic form at:<br>
-      <a href="https://api.ledgerixpro.com/diagnostic">https://api.ledgerixpro.com/diagnostic</a><br>
-      Complete the form and check the SMS consent box on the final page.
-    </p>
+    <section>
+      <h2>Program Disclosure Details</h2>
+      <ul>
+        <li><strong>Business name:</strong> Ledgerix Pro LLC</li>
+        <li><strong>Message types:</strong> Marketing and informational SMS messages regarding bookkeeping services and your account, including account updates, bookkeeping service notifications, appointment reminders, and promotional offers</li>
+        <li><strong>Message frequency:</strong> Varies based on account activity</li>
+        <li><strong>Cost:</strong> Msg &amp; data rates may apply. Carriers are not liable for delayed or undelivered messages.</li>
+        <li><strong>Opt out:</strong> Reply STOP to any message to opt out at any time</li>
+        <li><strong>Help:</strong> Reply HELP for assistance, or contact us at <a href="mailto:scott@ledgerixpro.com">scott@ledgerixpro.com</a> or <a href="tel:+14806602815">(480) 660-2815</a></li>
+        <li><strong>Consent requirement:</strong> Consent is required to submit a phone number on our opt-in form. The consent checkbox is unchecked by default. Users who do not wish to receive SMS can submit the diagnostic form without providing a phone number.</li>
+        <li><strong>Age requirement:</strong> You must be 18 years of age or older to opt in to SMS communications</li>
+        <li><strong>No third-party sharing:</strong> No mobile information or SMS opt-in data will be shared with third parties or affiliates for marketing or promotional purposes under any circumstances.</li>
+      </ul>
+      <p class="footnote">This consent is collected on the final page of our diagnostic form at <a href="https://api.ledgerixpro.com/diagnostic">api.ledgerixpro.com/diagnostic</a>.</p>
+    </section>
 
-    <a href="https://api.ledgerixpro.com/diagnostic" style="background:#F5A623; color:#0F1E38; padding:12px 24px; border-radius:6px; font-weight:bold; text-decoration:none; display:inline-block; margin:16px 0;">
-      Go to Opt-In Form →
-    </a>
-
-    <h2>Opt-In Consent Form</h2>
-    <div class="consent-box">
-      <label>
-        <input type="checkbox" />
-        <span>
-          I agree to receive marketing and informational SMS messages from Ledgerix Pro LLC regarding bookkeeping
-          services and my account. Message frequency varies. Msg & data rates may apply. <strong>Reply STOP to opt
-          out at any time.</strong> View our <a href="/privacy-policy.html">Privacy Policy</a>.
-        </span>
-      </label>
-      <p class="optional-note">Checkbox is unchecked by default and is optional — not required to submit the diagnostic form.</p>
-    </div>
-
-    <h2>Disclosure Details</h2>
-    <ul>
-      <li><strong>Business name:</strong> Ledgerix Pro LLC</li>
-      <li><strong>Message types:</strong> Marketing and informational SMS messages regarding bookkeeping services and your account, including account updates, bookkeeping service notifications, appointment reminders, and promotional offers</li>
-      <li><strong>Message frequency:</strong> Varies based on account activity</li>
-      <li><strong>Cost:</strong> Msg &amp; data rates may apply</li>
-      <li><strong>Opt out:</strong> <strong>Reply STOP</strong> to any message to opt out at any time</li>
-      <li><strong>Help:</strong> <strong>Reply HELP</strong> for assistance, or contact us at <a href="mailto:scott@ledgerixpro.com">scott@ledgerixpro.com</a> or <a href="tel:+14806602815">(480) 660-2815</a></li>
-      <li><strong>Optional:</strong> The consent checkbox is optional and not required to submit the diagnostic form</li>
-      <li><strong>Age requirement:</strong> You must be 18 years of age or older to opt in to SMS communications</li>
-    </ul>
-
-    <div class="info-callout">
-      <p>
-        This consent is collected on the final page of our diagnostic form at
-        <a href="/diagnostic">api.ledgerixpro.com/diagnostic</a>.
-      </p>
-    </div>
-
-    <h2>Related Documents</h2>
-    <ul>
-      <li><a href="/privacy-policy.html">Privacy Policy</a> — how we collect, use, and protect your information</li>
-      <li><a href="/terms-of-service.html">Terms of Service</a> — full terms covering our SMS Program, carrier liability, and age restriction</li>
-    </ul>
+    <section>
+      <h2>Related Documents</h2>
+      <ul>
+        <li><a href="https://api.ledgerixpro.com/privacy-policy.html">Privacy Policy</a> — how we collect, use, and protect your information, including SMS opt-in data</li>
+        <li><a href="https://api.ledgerixpro.com/terms-of-service.html">Terms of Service</a> — full terms covering our SMS Program (Section 4), carrier liability disclaimer (Section 5), and age restriction (Section 2)</li>
+      </ul>
+    </section>
 
     <footer>
       <p><strong>Ledgerix Pro LLC</strong></p>
       <p><a href="mailto:scott@ledgerixpro.com">scott@ledgerixpro.com</a> · <a href="tel:+14806602815">(480) 660-2815</a></p>
       <p>Phoenix, Arizona</p>
-      <p><a href="/privacy-policy.html">Privacy Policy</a> · <a href="/terms-of-service.html">Terms of Service</a></p>
+      <p><a href="https://api.ledgerixpro.com/privacy-policy.html">Privacy Policy</a> · <a href="https://api.ledgerixpro.com/terms-of-service.html">Terms of Service</a></p>
       <p class="copyright">© 2026 Ledgerix Pro LLC · AI-Powered Bookkeeping</p>
     </footer>
   </div>
