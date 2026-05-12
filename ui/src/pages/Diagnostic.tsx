@@ -121,6 +121,7 @@ export function DiagnosticPage() {
   const [smsConsent, setSmsConsent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // -------------------------------------------------------------------------
   // GHL chat widget — mount/unmount with the diagnostic page
@@ -206,8 +207,9 @@ export function DiagnosticPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+    setSubmitError(null);
     try {
-      await fetch("/api/diagnostic", {
+      const res = await fetch("/api/diagnostic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -230,11 +232,29 @@ export function DiagnosticPage() {
           },
         }),
       });
+
+      if (res.ok) {
+        setSubmitted(true);
+      } else {
+        // Try to parse server error message; fall back to a generic one.
+        let serverMessage: string | null = null;
+        try {
+          const errBody = (await res.json()) as { error?: string; message?: string };
+          serverMessage = errBody.message ?? errBody.error ?? null;
+        } catch {
+          // ignore JSON parse errors
+        }
+        setSubmitError(
+          serverMessage ??
+            "We couldn't submit your diagnostic. Please check your information and try again.",
+        );
+      }
     } catch {
-      // Server route not yet wired — show success state regardless
+      setSubmitError(
+        "Network error — please check your connection and try again.",
+      );
     } finally {
       setSubmitting(false);
-      setSubmitted(true);
     }
   };
 
@@ -648,6 +668,45 @@ export function DiagnosticPage() {
                     </div>
 
                     <div>
+                      <label className="flex items-start gap-2 text-xs text-white/80 leading-relaxed cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={smsConsent}
+                          onChange={(e) => setSmsConsent(e.target.checked)}
+                          className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/30 bg-transparent accent-[#F5A623]"
+                        />
+                        <span>
+                          I agree to receive marketing and informational SMS messages from Ledgerix Pro LLC regarding bookkeeping services and my account. Message frequency varies. Msg & data rates may apply. Reply <strong>HELP</strong> for help, <strong>STOP</strong> to opt out at any time. View our{" "}
+                          <a
+                            href="/privacy-policy.html"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[#F5A623] underline"
+                          >
+                            Privacy Policy
+                          </a>
+                          {" "}and{" "}
+                          <a
+                            href="/terms-of-service.html"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[#F5A623] underline"
+                          >
+                            Terms of Service
+                          </a>
+                          .
+                        </span>
+                      </label>
+                      {phone.trim().length > 0 && !smsConsent && (
+                        <p className="mt-2 text-xs text-[#F5A623]">
+                          SMS consent is required to submit with a phone number. Check the box above to agree, or remove your phone number to continue without SMS.
+                        </p>
+                      )}
+                    </div>
+
+                    <div>
                       <label className="block text-sm font-medium mb-1.5">Company Name</label>
                       <input
                         required
@@ -660,34 +719,15 @@ export function DiagnosticPage() {
                       />
                     </div>
 
-                    <div>
-                      <label className="flex items-start gap-2 text-xs text-white/80 leading-relaxed cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={smsConsent}
-                          onChange={(e) => setSmsConsent(e.target.checked)}
-                          className="mt-0.5 h-4 w-4 shrink-0 rounded border-white/30 bg-transparent accent-[#F5A623]"
-                        />
-                        <span>
-                          I agree to receive marketing and informational SMS messages from Ledgerix Pro LLC regarding bookkeeping services and my account. Message frequency varies. Msg & data rates may apply. Reply STOP to opt out at any time. View our{" "}
-                          <a
-                            href="/privacy-policy.html"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="text-[#F5A623] underline"
-                          >
-                            Privacy Policy
-                          </a>
-                          .
-                        </span>
-                      </label>
-                    </div>
-
                     <div className="sticky bottom-0 bg-[#0F1E38] -mx-5 px-5 pt-2 pb-6">
+                      {submitError && (
+                        <div className="mb-3 rounded-lg border border-[#F5A623]/40 bg-[#F5A623]/10 px-4 py-3 text-sm text-[#F5A623]">
+                          {submitError}
+                        </div>
+                      )}
                       <button
                         type="submit"
-                        disabled={submitting}
+                        disabled={submitting || (phone.trim().length > 0 && !smsConsent)}
                         className="w-full rounded-xl bg-[#F5A623] text-[#0F1E38] font-bold py-4 text-base hover:bg-[#e8971e] transition-colors disabled:opacity-50"
                       >
                         {submitting ? "Sending…" : "Get My Full Diagnostic Report"}
