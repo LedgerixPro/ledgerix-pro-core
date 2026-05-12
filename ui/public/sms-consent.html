@@ -131,6 +131,16 @@
     }
     .consent-text strong { color: var(--text); }
 
+    .consent-preview { margin-top: 1.5rem; padding: 1.25rem; border: 1px dashed var(--rule); border-radius: 0.5rem; background: rgba(255,255,255,0.02); }
+    .preview-note { font-size: 0.85rem; color: var(--muted); margin: 0 0 1rem 0; line-height: 1.5; }
+    .preview-form { display: flex; flex-direction: column; gap: 1rem; }
+    .preview-checkbox-label { display: flex; align-items: flex-start; gap: 0.75rem; cursor: not-allowed; font-size: 0.9rem; line-height: 1.55; }
+    .preview-checkbox-label input[type="checkbox"] { margin-top: 0.2rem; flex-shrink: 0; width: 1rem; height: 1rem; cursor: not-allowed; }
+    .preview-checkbox-label span { color: var(--text); }
+    .preview-checkbox-label strong { color: var(--text); font-weight: 600; }
+    .preview-checkbox-label a { color: var(--accent); }
+    .preview-submit { padding: 0.75rem 1rem; background: var(--accent); color: #0F1E38; border: none; border-radius: 0.5rem; font-weight: 600; font-size: 0.9rem; cursor: not-allowed; opacity: 0.6; }
+
     .footnote {
       margin-top: 12px;
       font-size: 13px;
@@ -184,6 +194,18 @@
       <blockquote class="consent-text">
         I agree to receive marketing and informational SMS messages from Ledgerix Pro LLC regarding bookkeeping services and my account. Message frequency varies. Msg &amp; data rates may apply. Reply <strong>HELP</strong> for help, <strong>STOP</strong> to opt out at any time. View our <a href="https://api.ledgerixpro.com/privacy-policy.html">Privacy Policy</a> and <a href="https://api.ledgerixpro.com/terms-of-service.html">Terms of Service</a>.
       </blockquote>
+      <div class="consent-preview" role="region" aria-label="Consent form preview">
+        <p class="preview-note"><strong>Preview:</strong> Below is a visual replica of the SMS consent checkbox as it appears on our live opt-in form at <a href="https://api.ledgerixpro.com/diagnostic">api.ledgerixpro.com/diagnostic</a> (Step 4 of 4). This is not a functional form — to actually opt in, please use the diagnostic form linked above. This preview is provided so that compliance reviewers and automated scanners can verify our consent presentation in static HTML.</p>
+        <form class="preview-form" onsubmit="event.preventDefault(); return false;" aria-disabled="true">
+          <label class="preview-checkbox-label">
+            <input type="checkbox" id="sms-consent-preview" name="sms_consent_preview" disabled />
+            <span>
+              I agree to receive marketing and informational SMS messages from <strong>Ledgerix Pro LLC</strong> regarding bookkeeping services and my account. Message frequency varies. Msg &amp; data rates may apply. Reply <strong>HELP</strong> for help, <strong>STOP</strong> to opt out at any time. View our <a href="https://api.ledgerixpro.com/privacy-policy.html">Privacy Policy</a> and <a href="https://api.ledgerixpro.com/terms-of-service.html">Terms of Service</a>.
+            </span>
+          </label>
+          <button type="button" class="preview-submit" disabled aria-disabled="true">Get My Full Diagnostic Report (preview only — use diagnostic form to submit)</button>
+        </form>
+      </div>
     </section>
 
     <section>
