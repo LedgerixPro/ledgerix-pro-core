@@ -7,6 +7,8 @@ export const FIELD_IDS = {
   nps_score:                "Dde0m2983zNBRgrCqjvU",
   ledgerix_workspace_id:    "vmAT4OjG10QboXA2Jqjs",
   nurture_month:            "sMQegZrU2giDsyaNKnjt",
+  intake_lookback_days:     "hPSEYJlOUrhP31tgnMh5",
+  intake_mode:              "zNjn0GEpygCcNB1j4h7v",
 } as const;
 
 export type FieldKey = keyof typeof FIELD_IDS;
