@@ -25,7 +25,22 @@ function isoDate(d: Date): string {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
+// Xero returns dates in Microsoft .NET format: /Date(<epoch-ms>[+-]<offset>)/
+// The millisecond timestamp is UTC epoch — the offset is informational only and
+// must not be re-applied, or the date would double-shift. QBO returns ISO-8601,
+// which `new Date(s)` handles directly. Fall through to native parsing for
+// anything else.
+const XERO_DATE_RE = /^\/Date\((-?\d+)([+-]\d{4})?\)\/$/;
+
 function parseTransactionDate(s: string): Date {
+  const xeroMatch = s.match(XERO_DATE_RE);
+  if (xeroMatch) {
+    const ms = parseInt(xeroMatch[1], 10);
+    if (Number.isFinite(ms)) {
+      const d = new Date(ms);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  }
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) {
     throw new Error(`Invalid transaction date: ${s}`);
