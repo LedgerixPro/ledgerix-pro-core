@@ -560,16 +560,48 @@ export const xero = {
     }));
   },
 
+  // Xero's /BankTransactions endpoint returns at most 100 records per page (1-indexed).
+  // For backfills spanning weeks/months, a single call silently truncates. Loop with
+  // ?page=N until a page returns fewer than 100 records, or until MAX_PAGES is hit.
   async getTransactions(db: Db, companyId: string, contactId: string | null, sinceDate: string): Promise<Transaction[]> {
-    const params = new URLSearchParams({ where: `Date>${xeroDateTimeLiteral(sinceDate)}` });
-    const res = await xeroRequest<{ BankTransactions?: XeroBankTransaction[] }>(
-      db,
-      companyId,
-      contactId,
-      "GET",
-      `/BankTransactions?${params}`,
-    );
-    return (res.BankTransactions ?? []).map((t) => ({
+    const XERO_PAGE_SIZE = 100;
+    const MAX_PAGES = 50;
+    const baseWhere = `Date>${xeroDateTimeLiteral(sinceDate)}`;
+    const all: XeroBankTransaction[] = [];
+    let page = 1;
+    let exhausted = false;
+
+    while (page <= MAX_PAGES) {
+      const params = new URLSearchParams({ where: baseWhere, page: String(page) });
+      const res = await xeroRequest<{ BankTransactions?: XeroBankTransaction[] }>(
+        db,
+        companyId,
+        contactId,
+        "GET",
+        `/BankTransactions?${params}`,
+      );
+      const batch = res.BankTransactions ?? [];
+      all.push(...batch);
+      if (batch.length < XERO_PAGE_SIZE) {
+        exhausted = true;
+        break;
+      }
+      page += 1;
+    }
+
+    if (!exhausted) {
+      logger.warn(
+        { companyId, contactId, totalPages: MAX_PAGES, totalRecords: all.length, maxPages: MAX_PAGES },
+        "Xero BankTransactions pagination hit page cap; results may be truncated",
+      );
+    } else if (page > 1) {
+      logger.info(
+        { companyId, contactId, totalPages: page, totalRecords: all.length },
+        "Xero BankTransactions pagination completed",
+      );
+    }
+
+    return all.map((t) => ({
       id: t.BankTransactionID,
       type: t.Type,
       date: t.Date,
