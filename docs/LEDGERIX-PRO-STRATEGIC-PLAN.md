@@ -274,3 +274,16 @@ The following infrastructure categories are real and will require attention as L
 ---
 
 **END OF STRATEGIC PLAN**
+
+### Ledgerix Pro's own books — accounting platform
+
+Ledgerix Pro LLC uses **QuickBooks Online (QBO)** for its own company books. This is a deliberate architectural decision:
+
+- **Ledgerix Pro LLC's own books → QBO.** Self-billing of clients (the `POST /api/accounting/v1/invoices` endpoint per the API spec) creates invoices in Ledgerix Pro's own QBO. Monthly recurring revenue, setup fees, refunds, and all company expenses live here.
+- **Xero → reserved for client books only.** Xero is one of the two supported client platforms (alongside QBO). Ledgerix Pro itself does NOT maintain its books in Xero.
+
+**Rationale:** Separating the platforms makes operational and architectural reality match. One real company in QBO (Ledgerix Pro LLC), distinct client companies in Xero or QBO depending on each client's existing platform. This avoids ambiguity in queries, audit logs, and data isolation between "our books" and "client books."
+
+**Implementation note:** This is enforced architecturally in the `POST /api/accounting/v1/invoices` endpoint, which rejects `platform=xero` and always operates against Ledgerix Pro's QBO connection.
+
+**Historical note (May 16, 2026):** During Phase 4b smoke testing, a Xero trial organisation named "Ledgerix Pro LLC" was discovered in the local DB — an artifact of the initial Xero developer-account setup process. It was created when the founder set up Ledgerix Pro's Xero developer credentials and was never intentionally used for company books. It was disconnected and removed from both the Xero side (DELETE /connections) and the local `accounting_connections` table to align operational state with this architectural intent.

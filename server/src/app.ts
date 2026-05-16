@@ -40,6 +40,7 @@ import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { ghlWebhookRoutes } from "./routes/webhooks/ghl.js";
 import { accountingWebhookRoutes } from "./routes/webhooks/accounting.js";
+import { accountingRoutes } from "./routes/accounting.js";
 import { ledgerixDashboardRoutes, portalSlugRedirectRoutes } from "./routes/ledgerix-dashboard.js";
 import { debugRoutes } from "./routes/debug.js";
 import { diagnosticRoutes } from "./routes/diagnostic.js";
@@ -282,6 +283,7 @@ export async function createApp(
   api.use(adapterRoutes());
   api.use(ghlWebhookRoutes(db));
   api.use(accountingWebhookRoutes(db));
+  api.use(accountingRoutes(db));
   api.use(ledgerixDashboardRoutes(db));
   api.use(debugRoutes());
   api.use(diagnosticRoutes(db));
