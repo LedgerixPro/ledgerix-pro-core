@@ -17,6 +17,13 @@ export interface Transaction {
   vendor: string | null;
   accountRef: string | null;
   description: string | null;
+  // Whether the transaction has been reconciled against a bank-statement line.
+  // Populated from Xero's IsReconciled field. Null for QBO (no equivalent field
+  // on Purchase/Deposit/Transfer) and for any Xero response that omits it.
+  isReconciled: boolean | null;
+  // Status string from the source platform (e.g. Xero AUTHORISED / DELETED /
+  // VOIDED). Null when the source doesn't expose a status concept for the type.
+  status: string | null;
 }
 
 // Open-bill snapshot from QBO/Xero. daysDue is signed: positive = days until due,
@@ -103,6 +110,8 @@ interface XeroBankTransaction {
   Contact?: { Name?: string };
   BankAccount?: { Name?: string };
   LineItems?: Array<{ Description?: string }>;
+  IsReconciled?: boolean;
+  Status?: string;
 }
 
 // Full QBO Purchase shape for read-modify-write categorization
@@ -193,7 +202,9 @@ export const qbo = {
     return qboRequest(db, companyId, contactId, "GET", `/reports/BalanceSheet?${params}`);
   },
 
-  // Open bills (Bill entity in QBO) with non-zero balance, ordered by due date
+  // Open bills (Bill entity in QBO) with non-zero balance, ordered by due date.
+  // QBO's QBQL does not support > or < comparisons on Balance, so we fetch all
+  // and filter client-side.
   async getBills(db: Db, companyId: string, contactId: string | null): Promise<Bill[]> {
     const res = await qboRequest<{ QueryResponse: { Bill?: QboBill[] } }>(
       db,
@@ -201,17 +212,19 @@ export const qbo = {
       contactId,
       "GET",
       `/query?${new URLSearchParams({
-        query: "SELECT * FROM Bill WHERE Balance > 0 ORDER BY DueDate ASC",
+        query: "SELECT * FROM Bill ORDER BY DueDate ASC",
       })}`,
     );
-    return (res.QueryResponse.Bill ?? []).map((b) => ({
-      id: b.Id,
-      vendorName: b.VendorRef?.name ?? "",
-      amount: b.TotalAmt ?? 0,
-      balance: b.Balance ?? 0,
-      dueDate: b.DueDate ?? "",
-      daysDue: computeDaysDue(b.DueDate),
-    }));
+    return (res.QueryResponse.Bill ?? [])
+      .filter((b) => (b.Balance ?? 0) > 0)
+      .map((b) => ({
+        id: b.Id,
+        vendorName: b.VendorRef?.name ?? "",
+        amount: b.TotalAmt ?? 0,
+        balance: b.Balance ?? 0,
+        dueDate: b.DueDate ?? "",
+        daysDue: computeDaysDue(b.DueDate),
+      }));
   },
 
   async getTransactions(db: Db, companyId: string, contactId: string | null, sinceDate: string): Promise<Transaction[]> {
@@ -232,6 +245,8 @@ export const qbo = {
       vendor: p.EntityRef?.name ?? null,
       accountRef: p.AccountRef?.name ?? null,
       description: p.PrivateNote ?? null,
+      isReconciled: null,
+      status: null,
     }));
 
     const deposits: Transaction[] = (depositRes.QueryResponse.Deposit ?? []).map((d) => ({
@@ -242,6 +257,8 @@ export const qbo = {
       vendor: null,
       accountRef: d.DepositToAccountRef?.name ?? null,
       description: d.PrivateNote ?? null,
+      isReconciled: null,
+      status: null,
     }));
 
     return [...purchases, ...deposits];
@@ -267,6 +284,8 @@ export const qbo = {
       vendor: p.EntityRef?.name ?? null,
       accountRef: p.AccountRef?.name ?? null,
       description: p.PrivateNote ?? null,
+      isReconciled: null,
+      status: null,
     }));
 
     const deposits: Transaction[] = (depositRes.QueryResponse.Deposit ?? []).map((d) => ({
@@ -277,6 +296,8 @@ export const qbo = {
       vendor: null,
       accountRef: d.DepositToAccountRef?.name ?? null,
       description: d.PrivateNote ?? null,
+      isReconciled: null,
+      status: null,
     }));
 
     const transfers: Transaction[] = (transferRes.QueryResponse.Transfer ?? []).map((t) => ({
@@ -287,6 +308,8 @@ export const qbo = {
       vendor: null,
       accountRef: t.FromAccountRef?.name ?? null,
       description: t.PrivateNote ?? null,
+      isReconciled: null,
+      status: null,
     }));
 
     return [...purchases, ...deposits, ...transfers];
@@ -609,6 +632,8 @@ export const xero = {
       vendor: t.Contact?.Name ?? null,
       accountRef: t.BankAccount?.Name ?? null,
       description: t.Reference ?? t.LineItems?.[0]?.Description ?? null,
+      isReconciled: typeof t.IsReconciled === "boolean" ? t.IsReconciled : null,
+      status: t.Status ?? null,
     }));
   },
 
