@@ -32,7 +32,7 @@ function isoDate(d: Date): string {
 // anything else.
 const XERO_DATE_RE = /^\/Date\((-?\d+)([+-]\d{4})?\)\/$/;
 
-function parseTransactionDate(s: string): Date {
+export function parseTransactionDate(s: string): Date {
   const xeroMatch = s.match(XERO_DATE_RE);
   if (xeroMatch) {
     const ms = parseInt(xeroMatch[1], 10);
