@@ -677,6 +677,19 @@ export async function startServer(): Promise<StartedServer> {
       .catch((err) => {
         logger.error({ err }, "startup heartbeat recovery failed");
       });
+
+    // Routine scheduler is disabled in local_trusted deployment mode so that
+    // running `pnpm dev` cannot fire scheduled routines (which would invoke
+    // agents holding real production GHL/QBO/Xero credentials and produce
+    // real outbound emails/SMS). See May 17 2026 incident.
+    const routineSchedulerEnabled = config.deploymentMode !== "local_trusted";
+    if (!routineSchedulerEnabled) {
+      logger.warn(
+        { deploymentMode: config.deploymentMode },
+        "[startup] Routine scheduler DISABLED — deploymentMode is local_trusted. Routines exist in DB but will not fire automatically. Use the manual trigger endpoint (POST /api/companies/.../routines/:id/trigger) to test routines locally.",
+      );
+    }
+
     setInterval(() => {
       void heartbeat
         .tickTimers(new Date())
@@ -689,16 +702,18 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "heartbeat timer tick failed");
         });
 
-      void routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        });
+      if (routineSchedulerEnabled) {
+        void routines
+          .tickScheduledTriggers(new Date())
+          .then((result) => {
+            if (result.triggered > 0) {
+              logger.info({ ...result }, "routine scheduler tick enqueued runs");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "routine scheduler tick failed");
+          });
+      }
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.

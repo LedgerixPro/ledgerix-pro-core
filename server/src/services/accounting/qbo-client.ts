@@ -3,6 +3,7 @@ import { accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { encrypt, decrypt } from "./encrypt.js";
 import { logger } from "../../middleware/logger.js";
+import { assertExternalWriteAllowed } from "../external-write-guard.js";
 
 const TOKEN_ENDPOINT = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 
@@ -114,6 +115,7 @@ export async function qboRequest<T = unknown>(
     .then((rows) => rows[0] ?? null);
 
   if (!connection) throw new Error(`No QBO connection found for companyId=${companyId} contactId=${contactId}`);
+  assertExternalWriteAllowed("QBO", method, path);
 
   const url = `${getBaseUrl(connection.realmId)}${path}`;
 

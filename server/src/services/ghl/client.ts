@@ -1,4 +1,5 @@
 import { logger } from "../../middleware/logger.js";
+import { assertExternalWriteAllowed } from "../external-write-guard.js";
 
 const GHL_BASE_URL = "https://services.leadconnectorhq.com";
 const GHL_API_VERSION = "2021-07-28";
@@ -23,6 +24,7 @@ export async function ghlRequest<T = unknown>(
   if (!token) {
     throw new GHLApiError(0, "GHL_PRIVATE_TOKEN is not set");
   }
+  assertExternalWriteAllowed("GHL", method, path);
 
   const url = `${GHL_BASE_URL}${path}`;
   const start = Date.now();
