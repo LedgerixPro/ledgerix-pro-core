@@ -23,22 +23,22 @@ Ledgerix Pro is a lifestyle bootstrap business. No outside investment, no exit a
 ### Scale target at maturity
 
 - 50 clients
-- ~$29,230/month gross monthly recurring revenue
-- ~$30,114/month total revenue (including ~$884/month setup fees from steady-state new client acquisition)
-- ~$285k/year founder net income
+- ~$29,230/month gross monthly recurring revenue [TODO: recompute with new pricing — Growth Engine $599 and Scale-Up $1,299]
+- ~$30,114/month total revenue (including ~$884/month setup fees from steady-state new client acquisition) [TODO: recompute with new pricing]
+- ~$285k/year founder net income [TODO: recompute with new pricing and cost-side assumptions]
 - Operational team: founder + 1 US-based lead contractor (~10 hrs/week) + 1 offshore bookkeeper (~25 hrs/week)
 
 ### Pricing structure
 
 **Monthly recurring (Standard pricing):**
 - Foundation tier: $299/month — freelancers and micro-businesses
-- Growth Engine tier: $519/month — local trades and service businesses
-- Scale-Up tier: $899/month — agencies and law firms
+- Growth Engine tier: $599/month — local trades and service businesses
+- Scale-Up tier: $1,299/month — agencies and law firms
 
-**Charter pricing (first 10 clients only):**
+**Charter pricing (first 10 paying clients only):**
 - Foundation: $199/month
 - Growth Engine: $399/month
-- Scale-Up: $799/month
+- Scale-Up: $999/month
 
 **One-time setup/migration fees (all clients, including Charter — no waivers):**
 - Foundation: $249
@@ -48,11 +48,36 @@ Ledgerix Pro is a lifestyle bootstrap business. No outside investment, no exit a
 Setup fee covers: chart of accounts review, vendor categorization rules, platform connection, workflow training, and (for non-QBO/Xero prospects) data migration. Variance between clean-setup and full-migration work is absorbed into the single fee structure for v1; future iteration may split setup-only vs. setup+migration tiers if margin analysis warrants.
 
 **Target client mix at 50 clients:**
-- 10 grandfathered Charter pricing clients (~$419/month blended average)
+- 10 grandfathered Charter pricing clients (~$419/month blended average) [TODO: recompute with new Charter pricing — Scale-Up Charter now $999]
 - 15% Foundation tier (new acquisition de-emphasized after first 10 clients)
 - 55% Growth Engine tier
 - 30% Scale-Up tier
-- Blended average revenue per new client: ~$626/month
+- Blended average revenue per new client: ~$626/month [TODO: recompute with new Standard pricing — Growth Engine $599 and Scale-Up $1,299]
+
+### Tier qualification model
+
+Industry framing drives the marketing pitch; the qualifiers below drive the price quoted at the discovery call. Most qualifiers must match to land a client in a given tier. If a client splits across tiers (for example, Growth Engine on transaction volume but Scale-Up on entity count), price to the higher tier and call out the upgrade rationale in the proposal.
+
+| Qualifier | Foundation | Growth Engine | Scale-Up |
+|---|---|---|---|
+| Monthly transaction volume | Up to 75 | 75–300 | 300+ |
+| Bank/credit accounts | 1–2 | 2–5 | 5+ |
+| Employees on payroll | 0–2 | 3–15 | 10–25 |
+| Accounting integrations | 1 platform | 2–3 platforms (FSM, etc.) | 3+ platforms |
+| Annual revenue | Under $500K | $500K–$3M | $2M+ |
+| Job costing required | No | Yes | Yes |
+| Trust/multi-entity | No | No | Yes |
+| Industry flags | None | ROC, TPT, seasonal | IOLTA, E&O, accrual |
+
+**Charter Pricing Window**
+
+Charter pricing applies to the first 10 paying clients only. After client #10, the Charter column closes and new clients onboard at Standard pricing.
+
+**Charter benefit follows the client across tiers.** As long as service is continuous, Charter clients keep Charter pricing for the duration of their relationship with Ledgerix Pro — even as their business grows from one tier to the next. A Foundation Charter client whose qualifiers move them to Growth Engine pays Growth Engine Charter ($399/mo), not Standard ($599/mo). Same applies for Scale-Up: Charter clients who grow into Scale-Up pay Scale-Up Charter ($999/mo), not Standard ($1,299/mo). The benefit also applies on tier downgrades: a Scale-Up Charter client whose qualifiers shrink to Growth Engine pays Growth Engine Charter, not Standard.
+
+**Continuity rule:** if a Charter client cancels service and later returns, they re-enter at Standard pricing for whichever tier they qualify for. The Charter benefit is granted to the first 10 paying clients as a thank-you for choosing Ledgerix Pro early; it is not transferable, sellable, or recoverable after cancellation.
+
+For the authoritative qualifier definitions and edge cases, see Enterprise Architecture v3.2 Section 7.1.
 
 ### Client platform requirement
 
