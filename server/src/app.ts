@@ -44,6 +44,7 @@ import { accountingRoutes } from "./routes/accounting.js";
 import { ledgerixDashboardRoutes, portalSlugRedirectRoutes } from "./routes/ledgerix-dashboard.js";
 import { debugRoutes } from "./routes/debug.js";
 import { diagnosticRoutes } from "./routes/diagnostic.js";
+import { leadsTierFitRoutes } from "./routes/leads-tier-fit.js";
 import { quickbooksOAuthRoutes } from "./routes/oauth/quickbooks.js";
 import { xeroOAuthRoutes } from "./routes/oauth/xero.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -287,6 +288,7 @@ export async function createApp(
   api.use(ledgerixDashboardRoutes(db));
   api.use(debugRoutes());
   api.use(diagnosticRoutes(db));
+  api.use(leadsTierFitRoutes(db));
   api.use(quickbooksOAuthRoutes(db));
   api.use(xeroOAuthRoutes(db));
   api.use(
@@ -320,6 +322,25 @@ export async function createApp(
   }));
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+  // Tier-Fit Audit lead magnet — explicit static HTML route.
+  // File lives at server/public/free-audit.html; Dockerfile COPY server/ wholesale
+  // puts it at /app/server/public/free-audit.html in prod. tsx runs on src in both
+  // dev and prod, so __dirname is always server/src/ at runtime.
+  // Registered BEFORE the SPA catch-all (lines 362/406) so it takes precedence.
+  const freeAuditHtmlPath = path.resolve(__dirname, "../public/free-audit.html");
+  app.get("/free-audit", (_req, res) => {
+    res.sendFile(freeAuditHtmlPath, (err) => {
+      if (err) {
+        const errno = (err as NodeJS.ErrnoException).code;
+        const status = errno === "ENOENT" ? 404 : 500;
+        if (!res.headersSent) {
+          res.status(status).send(status === 404 ? "Not Found" : "Internal Server Error");
+        }
+      }
+    });
+  });
+
   if (opts.uiMode === "static") {
     // Try published location first (server/ui-dist/), then monorepo dev location (../../ui/dist)
     const candidates = [

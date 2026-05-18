@@ -9,6 +9,17 @@ export const FIELD_IDS = {
   nurture_month:            "sMQegZrU2giDsyaNKnjt",
   intake_lookback_days:     "hPSEYJlOUrhP31tgnMh5",
   intake_mode:              "zNjn0GEpygCcNB1j4h7v",
+  // Tier-Fit Audit (added 2026-05-17 for /api/leads/tier-fit endpoint)
+  audit_industry:           "jiY0Yke2HVpOEZbNytbp",
+  audit_transactions:       "59tBryNrq3TrgeucyPHm",
+  audit_accounts:           "F3H8omBRJZvPigG2TwXk",
+  audit_employees:          "ER6KqiFKH27VrqTkZHWb",
+  audit_revenue:            "IxiOzeTwQszErRSBl9fH",
+  audit_flags:              "VD2LJGyzxhQm345z66RQ",
+  audit_recommended_tier:   "6vsiYPKHMvIh0ILxdboo",
+  audit_loss_estimate:      "bBYq6ErNgluOwF0q8Uul",
+  audit_diagnostic_json:    "u6PW3A0G9lPBEGShfMm1",
+  audit_submitted_at:       "wmFoo5IXtEpzeRUQ9Eff",
 } as const;
 
 export type FieldKey = keyof typeof FIELD_IDS;

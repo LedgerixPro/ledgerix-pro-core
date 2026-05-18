@@ -1,0 +1,1241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Free Tier-Fit Audit · Ledgerix Pro</title>
+<meta name="description" content="See exactly which Ledgerix Pro tier fits your business — and how much you're losing every month to bookkeeping latency. Free 2-minute audit.">
+<style>
+  :root {
+    --brand: #1F3A5F;
+    --brand-dark: #122644;
+    --accent: #2E75B6;
+    --accent-light: #E7F0F9;
+    --highlight: #F5C400;
+    --highlight-bg: #FFF4D6;
+    --highlight-dark: #856404;
+    --success: #2D7A4A;
+    --success-bg: #E5F3EA;
+    --danger: #B23A3A;
+    --danger-bg: #FDECEC;
+    --text: #1A1A1A;
+    --text-muted: #595959;
+    --text-soft: #8A8A8A;
+    --bg: #FFFFFF;
+    --bg-soft: #F7F9FC;
+    --border: #E1E6ED;
+    --border-strong: #C8D0DB;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --max-w: 720px;
+    --shadow-card: 0 1px 3px rgba(31, 58, 95, 0.06), 0 4px 12px rgba(31, 58, 95, 0.04);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: var(--text);
+    background: var(--bg-soft);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  .container { max-width: var(--max-w); margin: 0 auto; padding: 0 20px; }
+
+  nav {
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 0;
+  }
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 0 20px;
+  }
+  .logo {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--brand);
+    letter-spacing: -0.02em;
+    text-decoration: none;
+  }
+  .logo span { color: var(--accent); }
+  .nav-meta {
+    font-size: 13px;
+    color: var(--text-soft);
+  }
+
+  .hero {
+    padding: 40px 0 24px;
+    text-align: center;
+  }
+  .hero-eyebrow {
+    display: inline-block;
+    padding: 5px 12px;
+    background: var(--accent-light);
+    border-radius: 16px;
+    font-size: 12px;
+    color: var(--brand);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .hero h1 {
+    font-size: clamp(26px, 4vw, 36px);
+    font-weight: 800;
+    color: var(--brand);
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin-bottom: 12px;
+  }
+  .hero p {
+    font-size: 16px;
+    color: var(--text-muted);
+    max-width: 560px;
+    margin: 0 auto;
+  }
+
+  .progress {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin: 24px 0 32px;
+  }
+  .progress-dot {
+    width: 32px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    transition: background 0.2s;
+  }
+  .progress-dot.active { background: var(--accent); }
+  .progress-dot.done { background: var(--success); }
+
+  .card {
+    background: var(--bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    padding: 32px 28px;
+    box-shadow: var(--shadow-card);
+  }
+
+  .step { display: none; }
+  .step.active { display: block; }
+  .step h2 {
+    font-size: 22px;
+    color: var(--brand);
+    margin-bottom: 8px;
+    letter-spacing: -0.01em;
+  }
+  .step-subtitle {
+    color: var(--text-muted);
+    font-size: 15px;
+    margin-bottom: 28px;
+  }
+
+  .field { margin-bottom: 24px; }
+  .field-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--brand);
+    margin-bottom: 10px;
+  }
+  .field-hint {
+    font-size: 13px;
+    color: var(--text-soft);
+    margin-top: 6px;
+  }
+  .options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+  }
+  .option {
+    padding: 12px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .option:hover {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+  .option.selected {
+    border-color: var(--accent);
+    background: var(--accent-light);
+    color: var(--brand);
+    box-shadow: inset 0 0 0 1px var(--accent);
+  }
+
+  .checkbox-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .checkbox-option {
+    padding: 12px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-size: 14px;
+    user-select: none;
+  }
+  .checkbox-option:hover {
+    border-color: var(--accent);
+    background: var(--accent-light);
+  }
+  .checkbox-option.selected {
+    border-color: var(--accent);
+    background: var(--accent-light);
+    color: var(--brand);
+  }
+  .checkbox-box {
+    width: 18px;
+    height: 18px;
+    border: 1.5px solid var(--border-strong);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    background: var(--bg);
+    transition: all 0.15s;
+  }
+  .checkbox-option.selected .checkbox-box {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .checkbox-option.selected .checkbox-box::after {
+    content: '';
+    width: 6px;
+    height: 10px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg) translate(-1px, -1px);
+  }
+
+  .numeric-input {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    font-family: inherit;
+    background: var(--bg);
+    color: var(--text);
+    transition: border-color 0.15s;
+  }
+  .numeric-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-light);
+  }
+  .numeric-prefix {
+    position: relative;
+  }
+  .numeric-prefix::before {
+    content: '$';
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-soft);
+    font-size: 16px;
+    pointer-events: none;
+  }
+  .numeric-prefix .numeric-input {
+    padding-left: 26px;
+  }
+
+  .step-nav {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .btn {
+    padding: 12px 24px;
+    border-radius: var(--radius-sm);
+    font-size: 15px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .btn-primary {
+    background: var(--brand);
+    color: white;
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--brand-dark);
+    transform: translateY(-1px);
+  }
+  .btn-primary:disabled {
+    background: var(--border-strong);
+    cursor: not-allowed;
+  }
+  .btn-secondary {
+    background: var(--bg);
+    color: var(--brand);
+    border: 1px solid var(--border-strong);
+  }
+  .btn-secondary:hover {
+    background: var(--bg-soft);
+    border-color: var(--brand);
+  }
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+  }
+  .btn-ghost:hover { color: var(--brand); }
+
+  .result-hero {
+    text-align: center;
+    padding: 8px 0 24px;
+  }
+  .result-loss-label {
+    font-size: 14px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .result-loss-amount {
+    font-size: clamp(40px, 7vw, 56px);
+    font-weight: 800;
+    color: var(--danger);
+    letter-spacing: -0.03em;
+    line-height: 1;
+    margin-bottom: 8px;
+  }
+  .result-loss-period {
+    font-size: 18px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  .result-loss-context {
+    margin-top: 20px;
+    padding: 16px;
+    background: var(--danger-bg);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 14px;
+    text-align: left;
+    line-height: 1.6;
+  }
+  .result-loss-context strong { color: var(--danger); }
+
+  .result-breakdown {
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .breakdown-title {
+    font-size: 13px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .breakdown-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .breakdown-row:last-child { border-bottom: none; font-weight: 600; }
+  .breakdown-label { color: var(--text-muted); }
+  .breakdown-value { color: var(--text); font-variant-numeric: tabular-nums; }
+
+  .tier-rec {
+    margin-top: 28px;
+    padding: 24px;
+    background: var(--accent-light);
+    border-radius: var(--radius);
+    border: 1px solid var(--accent);
+  }
+  .tier-rec-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 8px;
+  }
+  .tier-rec-name {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--brand);
+    margin-bottom: 4px;
+  }
+  .tier-rec-tagline {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+  }
+  .tier-rec-pricing {
+    display: flex;
+    gap: 24px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .tier-rec-charter {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .tier-rec-charter-amount {
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--brand);
+    letter-spacing: -0.02em;
+  }
+  .tier-rec-charter-period {
+    font-size: 14px;
+    color: var(--text-muted);
+  }
+  .tier-rec-charter-label {
+    background: var(--success);
+    color: white;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-left: 8px;
+  }
+  .tier-rec-standard {
+    font-size: 14px;
+    color: var(--text-muted);
+  }
+  .tier-rec-features {
+    list-style: none;
+    margin-top: 16px;
+    margin-bottom: 20px;
+  }
+  .tier-rec-features li {
+    padding: 6px 0;
+    font-size: 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .tier-rec-features li::before {
+    content: '✓';
+    color: var(--accent);
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .roi-callout {
+    margin-top: 20px;
+    padding: 14px 18px;
+    background: var(--success-bg);
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--success);
+    font-size: 14px;
+    color: var(--text);
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+  .roi-callout strong { color: var(--success); }
+
+  .contact-form {
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+  }
+  .contact-form h3 {
+    font-size: 17px;
+    color: var(--brand);
+    margin-bottom: 4px;
+  }
+  .contact-form-sub {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+  }
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .form-grid .field { margin-bottom: 0; }
+
+  .cta-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .cta-row .btn { flex: 1; min-width: 200px; }
+
+  .secondary-cta {
+    margin-top: 16px;
+    text-align: center;
+    font-size: 14px;
+    color: var(--text-muted);
+  }
+  .secondary-cta a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  .secondary-cta a:hover { text-decoration: underline; }
+
+  .trust-row {
+    margin-top: 32px;
+    padding: 20px;
+    background: var(--bg);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 16px;
+  }
+  .trust-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .trust-item-icon {
+    width: 28px;
+    height: 28px;
+    background: var(--accent-light);
+    color: var(--accent);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .footer {
+    text-align: center;
+    margin-top: 40px;
+    padding-bottom: 32px;
+    font-size: 13px;
+    color: var(--text-soft);
+  }
+  .footer a { color: var(--text-muted); }
+
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  @media (max-width: 600px) {
+    .form-grid { grid-template-columns: 1fr; }
+    .tier-rec-pricing { gap: 12px; }
+    .step-nav { flex-direction: column-reverse; }
+    .step-nav .btn { width: 100%; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-inner">
+    <a href="https://api.ledgerixpro.com" class="logo">Ledgerix <span>Pro</span></a>
+    <span class="nav-meta">Free 2-minute audit</span>
+  </div>
+</nav>
+
+<main>
+<div class="container">
+
+  <header class="hero">
+    <span class="hero-eyebrow">Tier-Fit Audit</span>
+    <h1 id="hero-h1">Find out which tier fits your business — and what bad bookkeeping is costing you.</h1>
+    <p id="hero-p">Six questions. Sixty seconds. Get a personalized loss estimate and tier recommendation.</p>
+  </header>
+
+  <div class="progress" aria-label="Form progress">
+    <div class="progress-dot active" data-dot="1"></div>
+    <div class="progress-dot" data-dot="2"></div>
+    <div class="progress-dot" data-dot="3"></div>
+  </div>
+
+  <div class="card">
+
+    <section class="step active" data-step="1">
+      <h2>Tell us about your business</h2>
+      <p class="step-subtitle">Six quick questions to identify the right tier.</p>
+
+      <div class="field">
+        <label class="field-label">What does your business do?</label>
+        <div class="options" data-input="industry">
+          <div class="option" data-value="trades">Trades / service</div>
+          <div class="option" data-value="agency">Agency / creative</div>
+          <div class="option" data-value="law">Law firm</div>
+          <div class="option" data-value="small-biz">Small biz / retail</div>
+          <div class="option" data-value="other">Other</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Roughly how many transactions per month across all accounts?</label>
+        <div class="options" data-input="transactions">
+          <div class="option" data-value="under-50">Under 50</div>
+          <div class="option" data-value="50-150">50–150</div>
+          <div class="option" data-value="150-300">150–300</div>
+          <div class="option" data-value="300-plus">300+</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">How many bank + credit card accounts?</label>
+        <div class="options" data-input="accounts">
+          <div class="option" data-value="1">Just 1</div>
+          <div class="option" data-value="2">2</div>
+          <div class="option" data-value="3-5">3–5</div>
+          <div class="option" data-value="5-plus">5 or more</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Employees on payroll (not counting yourself)?</label>
+        <div class="options" data-input="employees">
+          <div class="option" data-value="0-2">0–2</div>
+          <div class="option" data-value="3-10">3–10</div>
+          <div class="option" data-value="10-20">10–20</div>
+          <div class="option" data-value="20-plus">20+</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Roughly what's your annual revenue?</label>
+        <div class="options" data-input="revenue">
+          <div class="option" data-value="under-500k">Under $500K</div>
+          <div class="option" data-value="500k-1m">$500K–$1M</div>
+          <div class="option" data-value="1m-3m">$1M–$3M</div>
+          <div class="option" data-value="3m-plus">$3M+</div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Any of these apply? (Check all that fit.)</label>
+        <div class="checkbox-grid" data-input="flags">
+          <div class="checkbox-option" data-value="job-costing">
+            <div class="checkbox-box"></div>
+            <span>I need job-level profit tracking (job costing)</span>
+          </div>
+          <div class="checkbox-option" data-value="trust-account">
+            <div class="checkbox-box"></div>
+            <span>We hold client trust funds (IOLTA, escrow, retainers)</span>
+          </div>
+          <div class="checkbox-option" data-value="multi-entity">
+            <div class="checkbox-box"></div>
+            <span>Multiple legal entities to consolidate</span>
+          </div>
+          <div class="checkbox-option" data-value="inventory">
+            <div class="checkbox-box"></div>
+            <span>We carry significant inventory or truck stock</span>
+          </div>
+          <div class="checkbox-option" data-value="prevailing-wage">
+            <div class="checkbox-box"></div>
+            <span>Prevailing wage or certified payroll required</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-nav">
+        <span></span>
+        <button class="btn btn-primary" id="to-step-2" disabled>Continue</button>
+      </div>
+    </section>
+
+    <section class="step" data-step="2">
+      <h2 id="step2-title">One more question</h2>
+      <p class="step-subtitle" id="step2-sub">This is what powers your personalized loss estimate.</p>
+
+      <div id="step2-content"></div>
+
+      <div class="step-nav">
+        <button class="btn btn-ghost" data-back="1">← Back</button>
+        <button class="btn btn-primary" id="to-step-3" disabled>See my results</button>
+      </div>
+    </section>
+
+    <section class="step" data-step="3">
+      <div class="result-hero">
+        <div class="result-loss-label">Estimated monthly leak</div>
+        <div class="result-loss-amount" id="loss-amount">$0</div>
+        <div class="result-loss-period">per month, in lost profit</div>
+
+        <div class="result-loss-context" id="loss-context">
+          Based on your inputs, your books are quietly costing you real money every month.
+        </div>
+      </div>
+
+      <div class="result-breakdown">
+        <div class="breakdown-title">How we calculated this</div>
+        <div id="breakdown-rows"></div>
+      </div>
+
+      <div class="tier-rec">
+        <div class="tier-rec-label">Recommended tier</div>
+        <div class="tier-rec-name" id="tier-name">The Growth Engine</div>
+        <div class="tier-rec-tagline" id="tier-tagline">For local trades and service businesses</div>
+
+        <div class="tier-rec-pricing">
+          <div class="tier-rec-charter">
+            <span class="tier-rec-charter-amount" id="tier-charter">$399</span>
+            <span class="tier-rec-charter-period">/mo</span>
+            <span class="tier-rec-charter-label">Charter</span>
+          </div>
+        </div>
+        <div class="tier-rec-standard">
+          Standard pricing after first 10 clients: <span id="tier-standard-strikethrough" style="text-decoration: line-through;">$599/mo</span>
+        </div>
+
+        <ul class="tier-rec-features" id="tier-features"></ul>
+
+        <div class="roi-callout" id="roi-callout">
+          You'd <strong>recover your monthly fee</strong> in the first week.
+        </div>
+      </div>
+
+      <div class="contact-form">
+        <h3>Claim your Charter spot</h3>
+        <p class="contact-form-sub">Charter pricing is limited to the first 10 clients. Email this report and book a 15-minute call.</p>
+
+        <div class="form-grid">
+          <div class="field">
+            <label class="field-label" for="first-name">First name</label>
+            <input type="text" id="first-name" class="numeric-input" placeholder="Scott" autocomplete="given-name">
+          </div>
+          <div class="field">
+            <label class="field-label" for="last-name">Last name</label>
+            <input type="text" id="last-name" class="numeric-input" placeholder="Hansbury" autocomplete="family-name">
+          </div>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label class="field-label" for="email">Work email</label>
+            <input type="email" id="email" class="numeric-input" placeholder="scott@yourbusiness.com" autocomplete="email">
+          </div>
+          <div class="field">
+            <label class="field-label" for="phone">Phone (optional)</label>
+            <input type="tel" id="phone" class="numeric-input" placeholder="(480) 555-0123" autocomplete="tel">
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="company">Business name</label>
+          <input type="text" id="company" class="numeric-input" placeholder="Acme HVAC LLC" autocomplete="organization">
+        </div>
+
+        <div class="cta-row">
+          <button class="btn btn-primary" id="submit-form">Claim my Charter spot</button>
+        </div>
+
+        <div class="secondary-cta">
+          Not ready yet? <a href="#" id="email-only">Just email me the report</a>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="trust-row">
+    <div class="trust-item">
+      <div class="trust-item-icon">✓</div>
+      <span>Human auditor on every entry</span>
+    </div>
+    <div class="trust-item">
+      <div class="trust-item-icon">$</div>
+      <span>Charter pricing locked for life</span>
+    </div>
+    <div class="trust-item">
+      <div class="trust-item-icon">AZ</div>
+      <span>Local team in Scottsdale, AZ</span>
+    </div>
+  </div>
+
+  <footer class="footer">
+    © 2026 Ledgerix Pro LLC · <a href="mailto:scott@ledgerixpro.com">scott@ledgerixpro.com</a>
+  </footer>
+
+</div>
+</main>
+
+<script>
+const state = {
+  step: 1,
+  industry: null,
+  transactions: null,
+  accounts: null,
+  employees: null,
+  revenue: null,
+  flags: [],
+  diag: {}
+};
+
+const REVENUE_MIDPOINTS = {
+  'under-500k': 300000,
+  '500k-1m': 750000,
+  '1m-3m': 2000000,
+  '3m-plus': 5000000
+};
+
+const TRANSACTION_MIDPOINTS = {
+  'under-50': 25,
+  '50-150': 100,
+  '150-300': 225,
+  '300-plus': 400
+};
+
+const TIER_DATA = {
+  foundation: {
+    name: 'The Foundation',
+    tagline: 'For freelancers and micro-businesses',
+    charter: 199,
+    standard: 299,
+    features: [
+      'Full bookkeeping in Xero or QuickBooks',
+      'Monthly P&L, balance sheet, cash flow',
+      'Bank and credit card reconciliation',
+      'Federal and Arizona tax deadline alerts',
+      'Client portal access'
+    ]
+  },
+  growth: {
+    name: 'The Growth Engine',
+    tagline: 'For local trades and service businesses',
+    charter: 399,
+    standard: 599,
+    features: [
+      'Everything in Foundation',
+      'Job-level P&L and job costing',
+      'ROC contractor license tracking',
+      'Arizona TPT compliance monitoring',
+      'Seasonal cash flow planning',
+      'FSM integration (ServiceTitan, Jobber, etc.)'
+    ]
+  },
+  scale: {
+    name: 'The Scale-Up',
+    tagline: 'For agencies, law firms, and multi-entity businesses',
+    charter: 999,
+    standard: 1299,
+    features: [
+      'Everything in Growth Engine',
+      'Trust account / IOLTA compliance',
+      'E&O insurance tracking',
+      'Multi-entity consolidation',
+      'Retainer revenue recognition (accrual)',
+      'Project-level profitability dashboards'
+    ]
+  }
+};
+
+const DIAG_QUESTIONS = {
+  trades: {
+    title: 'About your last completed job',
+    sub: "We'll compare your margin against Valley HVAC and trades benchmarks.",
+    fields: [
+      { id: 'jobRevenue', label: 'What did you invoice for that job?', type: 'currency', placeholder: '12000' },
+      { id: 'jobCost', label: 'Roughly what did materials + labor cost you?', type: 'currency', placeholder: '9500' }
+    ],
+    calc: (d, s) => {
+      const rev = +d.jobRevenue || 0;
+      const cost = +d.jobCost || 0;
+      if (rev <= 0) return null;
+      const margin = (rev - cost) / rev;
+      const benchmark = 0.30;
+      const gap = Math.max(0, benchmark - margin);
+      const monthlyRev = REVENUE_MIDPOINTS[s.revenue] / 12;
+      const rawLeak = Math.round(monthlyRev * gap);
+      const cap = Math.round(monthlyRev * 0.25);
+      const capped = Math.min(rawLeak, cap);
+      const wasCapped = rawLeak > cap;
+      const rows = [
+        { label: 'Your reported job margin', value: (margin * 100).toFixed(1) + '%' },
+        { label: 'Valley trades benchmark', value: '30.0%' },
+        { label: 'Margin gap', value: (gap * 100).toFixed(1) + '%' },
+        { label: 'Estimated monthly revenue', value: '$' + Math.round(monthlyRev).toLocaleString() }
+      ];
+      if (wasCapped) {
+        rows.push({ label: 'Raw monthly leak', value: '$' + rawLeak.toLocaleString() });
+        rows.push({ label: 'Conservative estimate (capped at 25% of revenue)', value: '$' + capped.toLocaleString() });
+      } else {
+        rows.push({ label: 'Conservative monthly leak estimate', value: '$' + capped.toLocaleString() });
+      }
+      return {
+        amount: capped,
+        rows: rows,
+        context: 'Your last job ran at <strong>' + (margin * 100).toFixed(1) + '% margin</strong>, while Valley trades benchmarks land near 30%. Across your monthly revenue, that gap adds up fast.'
+      };
+    }
+  },
+  agency: {
+    title: 'About your client retainers',
+    sub: "We'll calculate your labor leakage — the hours worked but not invoiced.",
+    fields: [
+      { id: 'avgRetainer', label: 'Average monthly client retainer ($)', type: 'currency', placeholder: '8000' },
+      { id: 'deliveredHours', label: 'Hours your team actually delivers per retainer per month', type: 'number', placeholder: '60' },
+      { id: 'invoicedHours', label: 'Hours you actually invoice per retainer per month', type: 'number', placeholder: '40' }
+    ],
+    calc: (d, s) => {
+      const retainer = +d.avgRetainer || 0;
+      const delivered = +d.deliveredHours || 0;
+      const invoiced = +d.invoicedHours || 0;
+      if (delivered <= 0 || invoiced <= 0) return null;
+      const leakageRate = Math.max(0, (delivered - invoiced) / delivered);
+      const effectiveRate = retainer / delivered;
+      const leakedDollars = Math.round((delivered - invoiced) * effectiveRate);
+      const monthlyRev = REVENUE_MIDPOINTS[s.revenue] / 12;
+      const retainerCount = Math.max(1, Math.round(monthlyRev / retainer));
+      const rawLeak = leakedDollars * retainerCount;
+      const cap = Math.round(monthlyRev * 0.25);
+      const capped = Math.min(rawLeak, cap);
+      const wasCapped = rawLeak > cap;
+      const rows = [
+        { label: 'Hours delivered per retainer', value: delivered + ' hrs' },
+        { label: 'Hours invoiced per retainer', value: invoiced + ' hrs' },
+        { label: 'Labor leakage rate', value: (leakageRate * 100).toFixed(1) + '%' },
+        { label: 'Effective billable rate', value: '$' + effectiveRate.toFixed(0) + '/hr' },
+        { label: 'Leaked dollars per retainer', value: '$' + leakedDollars.toLocaleString() },
+        { label: 'Estimated retainer count', value: retainerCount.toString() }
+      ];
+      if (wasCapped) {
+        rows.push({ label: 'Raw monthly labor leakage', value: '$' + rawLeak.toLocaleString() });
+        rows.push({ label: 'Conservative estimate (capped at 25% of revenue)', value: '$' + capped.toLocaleString() });
+      } else {
+        rows.push({ label: 'Monthly labor leakage', value: '$' + capped.toLocaleString() });
+      }
+      return {
+        amount: capped,
+        rows: rows,
+        context: 'Your team delivers <strong>' + delivered + ' hours</strong> per retainer but only invoices for ' + invoiced + '. That ' + (leakageRate * 100).toFixed(0) + '% leakage compounds across every client every month.'
+      };
+    }
+  },
+  'small-biz': {
+    title: 'About your bookkeeping time',
+    sub: "We'll calculate the opportunity cost of doing this work yourself.",
+    fields: [
+      { id: 'daysBehind', label: 'How many days behind is your bookkeeping right now?', type: 'number', placeholder: '14' },
+      { id: 'weeklyHours', label: 'Hours per week you or your team spend on bookkeeping', type: 'number', placeholder: '8' }
+    ],
+    calc: (d, s) => {
+      const daysBehind = +d.daysBehind || 0;
+      const weeklyHours = +d.weeklyHours || 0;
+      if (weeklyHours <= 0) return null;
+      const monthlyHours = weeklyHours * 4.33;
+      const ownerRate = 150;
+      const timeCost = Math.round(monthlyHours * ownerRate);
+      const latencyPenalty = Math.min(0.05, daysBehind / 600);
+      const monthlyRev = REVENUE_MIDPOINTS[s.revenue] / 12;
+      const latencyCost = Math.round(monthlyRev * latencyPenalty);
+      const rawTotal = timeCost + latencyCost;
+      const cap = Math.round(monthlyRev * 0.25);
+      const capped = Math.min(rawTotal, cap);
+      const wasCapped = rawTotal > cap;
+      const rows = [
+        { label: 'Weekly bookkeeping hours', value: weeklyHours + ' hrs' },
+        { label: 'Monthly hours (×4.33)', value: monthlyHours.toFixed(1) + ' hrs' },
+        { label: 'Blended owner rate', value: '$150/hr' },
+        { label: 'Monthly time cost', value: '$' + timeCost.toLocaleString() },
+        { label: 'Days behind on books', value: daysBehind + ' days' },
+        { label: 'Latency penalty (missed insights)', value: '$' + latencyCost.toLocaleString() }
+      ];
+      if (wasCapped) {
+        rows.push({ label: 'Raw total leak', value: '$' + rawTotal.toLocaleString() });
+        rows.push({ label: 'Conservative estimate (capped at 25% of revenue)', value: '$' + capped.toLocaleString() });
+      } else {
+        rows.push({ label: 'Total monthly leak', value: '$' + capped.toLocaleString() });
+      }
+      return {
+        amount: capped,
+        rows: rows,
+        context: 'You\'re spending <strong>' + monthlyHours.toFixed(0) + ' hours a month</strong> on bookkeeping at an estimated $150/hr opportunity cost — plus the cost of running your business with ' + daysBehind + '-day-old numbers.'
+      };
+    }
+  }
+};
+
+DIAG_QUESTIONS.law = DIAG_QUESTIONS['small-biz'];
+DIAG_QUESTIONS.other = DIAG_QUESTIONS['small-biz'];
+
+function pickTier(s) {
+  if (s.flags.includes('trust-account') || s.flags.includes('multi-entity')) return 'scale';
+  if (s.revenue === '3m-plus') return 'scale';
+  if (s.employees === '20-plus') return 'scale';
+  if (s.accounts === '5-plus' && s.revenue === '1m-3m') return 'scale';
+
+  if (s.flags.includes('job-costing') || s.flags.includes('inventory') || s.flags.includes('prevailing-wage')) {
+    if (s.revenue === 'under-500k' && s.employees === '0-2' && s.transactions === 'under-50') return 'foundation';
+    return 'growth';
+  }
+  if (s.industry === 'trades') return 'growth';
+
+  if (s.revenue === 'under-500k' && s.employees === '0-2' && s.transactions === 'under-50') return 'foundation';
+  if (s.revenue === '1m-3m' || s.employees === '10-20' || s.transactions === '300-plus') return 'growth';
+  if (s.revenue === '500k-1m' && (s.employees === '3-10' || s.transactions === '150-300')) return 'growth';
+  return 'foundation';
+}
+
+function step1Complete() {
+  return state.industry && state.transactions && state.accounts && state.employees && state.revenue;
+}
+
+document.querySelectorAll('.options').forEach(group => {
+  const key = group.dataset.input;
+  group.addEventListener('click', e => {
+    const opt = e.target.closest('.option');
+    if (!opt) return;
+    group.querySelectorAll('.option').forEach(o => o.classList.remove('selected'));
+    opt.classList.add('selected');
+    state[key] = opt.dataset.value;
+    document.getElementById('to-step-2').disabled = !step1Complete();
+  });
+});
+
+document.querySelectorAll('.checkbox-grid').forEach(group => {
+  group.addEventListener('click', e => {
+    const opt = e.target.closest('.checkbox-option');
+    if (!opt) return;
+    opt.classList.toggle('selected');
+    const val = opt.dataset.value;
+    if (opt.classList.contains('selected')) {
+      if (!state.flags.includes(val)) state.flags.push(val);
+    } else {
+      state.flags = state.flags.filter(f => f !== val);
+    }
+  });
+});
+
+function buildStep2() {
+  const industry = state.industry;
+  const config = DIAG_QUESTIONS[industry] || DIAG_QUESTIONS['small-biz'];
+  document.getElementById('step2-title').textContent = config.title;
+  document.getElementById('step2-sub').textContent = config.sub;
+
+  const container = document.getElementById('step2-content');
+  container.innerHTML = '';
+  state.diag = {};
+
+  config.fields.forEach(f => {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'field';
+
+    const label = document.createElement('label');
+    label.className = 'field-label';
+    label.textContent = f.label;
+    label.setAttribute('for', f.id);
+    wrapper.appendChild(label);
+
+    const inputWrap = document.createElement('div');
+    if (f.type === 'currency') inputWrap.className = 'numeric-prefix';
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = f.id;
+    input.className = 'numeric-input';
+    input.placeholder = f.placeholder;
+    input.min = '0';
+    input.step = f.type === 'currency' ? '100' : '1';
+    input.addEventListener('input', () => {
+      state.diag[f.id] = input.value;
+      validateStep2();
+    });
+    inputWrap.appendChild(input);
+    wrapper.appendChild(inputWrap);
+
+    container.appendChild(wrapper);
+  });
+}
+
+function validateStep2() {
+  const industry = state.industry;
+  const config = DIAG_QUESTIONS[industry] || DIAG_QUESTIONS['small-biz'];
+  const allFilled = config.fields.every(f => {
+    const v = state.diag[f.id];
+    return v && +v > 0;
+  });
+  document.getElementById('to-step-3').disabled = !allFilled;
+}
+
+function goToStep(n) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.querySelector('.step[data-step="' + n + '"]').classList.add('active');
+  document.querySelectorAll('.progress-dot').forEach(d => {
+    const dn = +d.dataset.dot;
+    d.classList.remove('active', 'done');
+    if (dn < n) d.classList.add('done');
+    if (dn === n) d.classList.add('active');
+  });
+  state.step = n;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+document.getElementById('to-step-2').addEventListener('click', () => {
+  buildStep2();
+  goToStep(2);
+});
+
+document.querySelectorAll('[data-back]').forEach(b => {
+  b.addEventListener('click', () => goToStep(+b.dataset.back));
+});
+
+document.getElementById('to-step-3').addEventListener('click', () => {
+  const industry = state.industry;
+  const config = DIAG_QUESTIONS[industry] || DIAG_QUESTIONS['small-biz'];
+  const result = config.calc(state.diag, state);
+  if (!result) {
+    document.getElementById('to-step-3').disabled = true;
+    return;
+  }
+
+  document.getElementById('loss-amount').textContent = '$' + result.amount.toLocaleString();
+  document.getElementById('loss-context').innerHTML = result.context;
+
+  const breakdown = document.getElementById('breakdown-rows');
+  breakdown.innerHTML = '';
+  result.rows.forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'breakdown-row';
+    row.innerHTML = '<span class="breakdown-label">' + r.label + '</span><span class="breakdown-value">' + r.value + '</span>';
+    breakdown.appendChild(row);
+  });
+
+  const tierKey = pickTier(state);
+  const tier = TIER_DATA[tierKey];
+  document.getElementById('tier-name').textContent = tier.name;
+  document.getElementById('tier-tagline').textContent = tier.tagline;
+  document.getElementById('tier-charter').textContent = '$' + tier.charter;
+  document.getElementById('tier-standard-strikethrough').textContent = '$' + tier.standard + '/mo';
+
+  const featList = document.getElementById('tier-features');
+  featList.innerHTML = '';
+  tier.features.forEach(f => {
+    const li = document.createElement('li');
+    li.textContent = f;
+    featList.appendChild(li);
+  });
+
+  const roiRatio = (result.amount / tier.charter).toFixed(1);
+  let roiText = '';
+  if (result.amount > tier.charter * 8) {
+    roiText = "You'd recover your monthly fee in the <strong>first 4 days</strong> — every month after that is pure margin recovery.";
+  } else if (result.amount > tier.charter * 4) {
+    roiText = "You'd recover your monthly fee in the <strong>first week</strong> — every month after that is profit you're putting back in your pocket.";
+  } else if (result.amount > tier.charter * 2) {
+    roiText = "You'd recover your monthly fee <strong>" + roiRatio + "× over</strong>, every single month.";
+  } else if (result.amount > tier.charter) {
+    roiText = "You'd <strong>net positive every month</strong>, even after our fee.";
+  } else {
+    roiText = "Conservative estimate. Real recovery is usually <strong>2–3× higher</strong> once we get into your books.";
+  }
+  document.getElementById('roi-callout').innerHTML = roiText;
+
+  state.recommendedTier = tierKey;
+  state.lossEstimate = result.amount;
+  state.breakdown = result.rows;
+
+  goToStep(3);
+});
+
+document.getElementById('submit-form').addEventListener('click', () => {
+  submitToGHL(false);
+});
+
+document.getElementById('email-only').addEventListener('click', e => {
+  e.preventDefault();
+  submitToGHL(true);
+});
+
+function submitToGHL(emailOnly) {
+  const payload = {
+    firstName: document.getElementById('first-name').value.trim(),
+    lastName: document.getElementById('last-name').value.trim(),
+    email: document.getElementById('email').value.trim(),
+    phone: document.getElementById('phone').value.trim(),
+    company: document.getElementById('company').value.trim(),
+    intent: emailOnly ? 'email-report-only' : 'charter-spot-claim',
+    industry: state.industry,
+    transactions: state.transactions,
+    accounts: state.accounts,
+    employees: state.employees,
+    revenue: state.revenue,
+    flags: state.flags,
+    diagnosticAnswers: state.diag,
+    recommendedTier: state.recommendedTier,
+    monthlyLossEstimate: state.lossEstimate,
+    breakdown: state.breakdown,
+    submittedAt: new Date().toISOString(),
+    source: 'tier-fit-audit'
+  };
+
+  if (!payload.email || !payload.email.includes('@')) {
+    alert('Please enter a valid email address.');
+    return;
+  }
+
+  console.log('Submission payload:', payload);
+
+  fetch('/api/leads/tier-fit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).then(r => r.json()).then(data => {
+    showSuccess(emailOnly);
+  }).catch(err => {
+    showSuccess(emailOnly);
+  });
+}
+
+function showSuccess(emailOnly) {
+  const formContainer = document.querySelector('.contact-form');
+  const message = emailOnly
+    ? "Got it — we'll email your full Tier-Fit report within the hour. No call required."
+    : "Locked in. We'll email your report immediately and Scott will reach out within 1 business day to walk through your Charter spot.";
+  formContainer.innerHTML = '<div style="text-align: center; padding: 24px;">' +
+    '<div style="width: 56px; height: 56px; background: var(--success-bg); color: var(--success); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; margin: 0 auto 16px;">✓</div>' +
+    '<h3 style="color: var(--brand); margin-bottom: 8px;">You\'re all set, ' + (document.getElementById('first-name').value || 'thanks!') + '</h3>' +
+    '<p style="color: var(--text-muted);">' + message + '</p>' +
+    '</div>';
+}
+</script>
+
+</body>
+</html>
