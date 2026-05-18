@@ -1,13 +1,26 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import { ghl, ghlRequest } from "../services/ghl/index.js";
+import { GHLApiError, ghl, ghlRequest } from "../services/ghl/index.js";
 import type { GHLContact, GHLContactSearchResult } from "../services/ghl/index.js";
-import { agentBridgeService } from "../services/ghl/agent-bridge.js";
-import { heartbeatService } from "../services/heartbeat.js";
 
 const LOCATION_ID = "GhnRONQQVJiCKsdWoQFc";
-const COMPANY_ID = "f60117de-1131-433c-934f-3fe88bfaa163";
+
+// Detect the GHL "duplicated contacts" race condition: search returned no match
+// (eventual consistency) but the subsequent create failed because a parallel
+// request had just created the contact. GHL returns 400 with the existing
+// contactId in body.meta.contactId — recover by using it instead of failing.
+function extractDuplicateContactId(err: unknown): string | null {
+  if (!(err instanceof GHLApiError) || err.status !== 400) return null;
+  const body = err.body;
+  if (!body || typeof body !== "object") return null;
+  const message = (body as Record<string, unknown>).message;
+  if (typeof message !== "string" || !message.includes("duplicated contacts")) return null;
+  const meta = (body as Record<string, unknown>).meta;
+  if (!meta || typeof meta !== "object") return null;
+  const contactId = (meta as Record<string, unknown>).contactId;
+  return typeof contactId === "string" ? contactId : null;
+}
 
 // Short keys come in over the wire from the Tier-Fit Audit page; the canonical
 // names match the Strategic Plan and are what gets written to GHL / read by
@@ -136,16 +149,30 @@ export function leadsTierFitRoutes(db: Db) {
           ...(body.company ? { companyName: body.company } : {}),
         });
       } else {
-        const createRes = await ghlRequest<{ contact: GHLContact }>("POST", "/contacts", {
-          locationId: LOCATION_ID,
-          firstName: body.firstName,
-          lastName: body.lastName,
-          email,
-          phone: body.phone,
-          companyName: body.company,
-        });
-        contactId = createRes.contact.id;
-        wasNew = true;
+        try {
+          const createRes = await ghlRequest<{ contact: GHLContact }>("POST", "/contacts", {
+            locationId: LOCATION_ID,
+            firstName: body.firstName,
+            lastName: body.lastName,
+            email,
+            phone: body.phone,
+            companyName: body.company,
+          });
+          contactId = createRes.contact.id;
+          wasNew = true;
+        } catch (err) {
+          const recovered = extractDuplicateContactId(err);
+          if (recovered) {
+            contactId = recovered;
+            wasNew = false;
+            logger.warn(
+              { contactId, email },
+              "Tier-Fit Audit: duplicate-contact race detected, recovering with existing contactId",
+            );
+          } else {
+            throw err;
+          }
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -199,39 +226,11 @@ export function leadsTierFitRoutes(db: Db) {
       );
     }
 
-    // --- Onboarding agent invocation (best-effort) ---
-    // Always returns success to the client even if invocation fails — the lead
-    // data is the durable record; agent dispatch is dispatch logic that can be
-    // recovered/retried by ops.
-    try {
-      const heartbeat = heartbeatService(db);
-      const bridge = agentBridgeService(db);
-      const invocation = await bridge.invokeAgentForGhlEvent({
-        heartbeat,
-        companyId: COMPANY_ID,
-        targetAgentName: "Onboarding",
-        eventType: "audit.submitted",
-        contactId,
-        locationId: LOCATION_ID,
-        rawPayload: {
-          intent: body.intent,
-          recommendedTier: canonicalTier,
-          lossEstimate: body.monthlyLossEstimate,
-          source: body.source ?? "tier-fit-audit",
-          firstName: body.firstName,
-          lastName: body.lastName,
-          email,
-          company: body.company,
-          industry: body.industry,
-        },
-      });
-      logger.info({ contactId, invocation }, "Tier-Fit Audit: Onboarding agent invocation");
-    } catch (err) {
-      logger.error(
-        { err, contactId },
-        "Tier-Fit Audit: Onboarding agent invocation failed (non-fatal)",
-      );
-    }
+    // Onboarding agent is woken via the GHL contact.created webhook for every
+    // new contact, including audit submissions. The agent decides whether the
+    // event is an audit by reading the audit_* custom fields on the contact.
+    // Direct invocation was removed (2026-05-18) because it doubled wakeups
+    // and added ~17s to the request — see incident logs from that date.
 
     logger.info(
       { contactId, canonicalTier, intent: body.intent, wasNew },
