@@ -604,8 +604,8 @@
           <div class="option" data-value="trades">Trades / service</div>
           <div class="option" data-value="agency">Agency / creative</div>
           <div class="option" data-value="law">Law firm</div>
-          <div class="option" data-value="small-biz">Small biz / retail</div>
-          <div class="option" data-value="other">Other</div>
+          <div class="option" data-value="small-biz">Small biz</div>
+          <div class="option" data-value="midsize">Mid-Size biz</div>
         </div>
       </div>
 
@@ -993,8 +993,90 @@ const DIAG_QUESTIONS = {
   }
 };
 
-DIAG_QUESTIONS.law = DIAG_QUESTIONS['small-biz'];
-DIAG_QUESTIONS.other = DIAG_QUESTIONS['small-biz'];
+DIAG_QUESTIONS.law = {
+    title: 'About your trust accounting and billing',
+    sub: "Law-firm-specific risks: trust account reconciliation labor, compliance exposure, and billable hour leakage.",
+    fields: [
+      { id: 'trustTxns', label: 'How many trust account transactions (IOLTA deposits/disbursements) per month?', type: 'number', placeholder: '20' },
+      { id: 'reconHistory', label: 'Have you ever had a trust account reconciliation discrepancy?', type: 'select', options: [
+        { value: 'never', label: 'Never' },
+        { value: 'once-twice', label: 'Once or twice' },
+        { value: 'multiple', label: 'Multiple times' },
+        { value: 'not-sure', label: "I'm not sure" }
+      ]},
+      { id: 'billedPercent', label: 'What percentage of attorney hours actually get billed?', type: 'number', placeholder: '75', min: 0, max: 100 }
+    ],
+    calc: (d, s) => {
+      const trustTxns = +d.trustTxns || 0;
+      const reconHistory = d.reconHistory || 'never';
+      const billedPercent = Math.max(0, Math.min(100, +d.billedPercent || 0));
+      const monthlyRev = REVENUE_MIDPOINTS[s.revenue] / 12;
+
+      // Component A: Trust account reconciliation labor (10 min per txn at $150/hr)
+      const reconHours = trustTxns * (10 / 60);
+      const reconLabor = Math.round(reconHours * 150);
+
+      // Component B: Compliance risk reserve (varies by reconciliation history)
+      const complianceMap = {
+        'never': 0,
+        'once-twice': 500,
+        'multiple': 2000,
+        'not-sure': 1000
+      };
+      const complianceReserve = complianceMap[reconHistory] || 0;
+
+      // Component C: Billable hours leakage
+      let billingLeakage = 0;
+      if (billedPercent > 0 && billedPercent < 100) {
+        const impliedBilledHours = monthlyRev / 250;
+        const unbilledRatio = (100 - billedPercent) / 100;
+        const totalHours = impliedBilledHours / (billedPercent / 100);
+        const leakedHours = totalHours * unbilledRatio;
+        billingLeakage = Math.round(leakedHours * 0.5 * 250);
+      }
+
+      const rawTotal = reconLabor + complianceReserve + billingLeakage;
+      const cap = Math.round(monthlyRev * 0.25);
+      const capped = Math.min(rawTotal, cap);
+      const wasCapped = rawTotal > cap;
+
+      const reconHistoryLabel = {
+        'never': 'Never',
+        'once-twice': 'Once or twice',
+        'multiple': 'Multiple times',
+        'not-sure': "I'm not sure"
+      }[reconHistory];
+
+      const rows = [
+        { label: 'Trust account transactions per month', value: trustTxns.toString() },
+        { label: 'Reconciliation labor (10 min/txn at $150/hr)', value: '$' + reconLabor.toLocaleString() },
+        { label: 'Reconciliation discrepancy history', value: reconHistoryLabel },
+        { label: 'Compliance risk reserve', value: '$' + complianceReserve.toLocaleString() },
+        { label: 'Attorney hours billed', value: billedPercent + '%' },
+        { label: 'Billable hours leakage (conservative)', value: '$' + billingLeakage.toLocaleString() }
+      ];
+      if (wasCapped) {
+        rows.push({ label: 'Raw total leak', value: '$' + rawTotal.toLocaleString() });
+        rows.push({ label: 'Conservative estimate (capped at 25% of revenue)', value: '$' + capped.toLocaleString() });
+      } else {
+        rows.push({ label: 'Total monthly leak', value: '$' + capped.toLocaleString() });
+      }
+
+      let contextMsg = 'Law firms typically lose money in three places: trust account reconciliation labor, compliance exposure, and billable hours that never make it to an invoice.';
+      if (billedPercent > 0 && billedPercent < 80) {
+        contextMsg = 'Your <strong>' + billedPercent + '%</strong> billable rate suggests significant leakage — every unbilled hour is pure revenue lost. Combined with trust account labor, this adds up fast.';
+      } else if (reconHistory === 'multiple' || reconHistory === 'not-sure') {
+        contextMsg = 'Trust account reconciliation issues are a bar association risk that compounds quickly. Combined with billable leakage, even small inefficiencies become meaningful exposure.';
+      }
+
+      return {
+        amount: capped,
+        rows: rows,
+        context: contextMsg
+      };
+    }
+  };
+DIAG_QUESTIONS.midsize = DIAG_QUESTIONS['small-biz'];
 
 function pickTier(s) {
   if (s.flags.includes('trust-account') || s.flags.includes('multi-entity')) return 'scale';
