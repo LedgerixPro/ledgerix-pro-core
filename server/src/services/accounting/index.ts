@@ -749,6 +749,52 @@ export async function getNewTransactions(
   throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
 }
 
+// Platform-agnostic open-bills fetch. Routes to qbo.getBills or xero.getBills
+// based on the platform connected for the contact. Returns all open (unpaid,
+// non-zero-balance) bills, ordered by due date ascending.
+export async function getBills(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+): Promise<{ platform: "quickbooks" | "xero"; bills: Bill[] }> {
+  const connections = await db
+    .select({ platform: accountingConnections.platform })
+    .from(accountingConnections)
+    .where(
+      and(
+        eq(accountingConnections.companyId, companyId),
+        contactFilter(contactId),
+      ),
+    );
+
+  if (connections.length === 0) {
+    throw new Error(`No accounting connection found for companyId=${companyId} contactId=${contactId}`);
+  }
+
+  const platforms = new Set(connections.map((c) => c.platform));
+  const hasQbo = platforms.has("quickbooks");
+  const hasXero = platforms.has("xero");
+
+  if (hasQbo && hasXero) {
+    logger.warn(
+      { companyId, contactId },
+      "Both QBO and Xero connected — preferring QBO for getBills",
+    );
+  }
+
+  if (hasQbo) {
+    const bills = await qbo.getBills(db, companyId, contactId);
+    return { platform: "quickbooks", bills };
+  }
+
+  if (hasXero) {
+    const bills = await xero.getBills(db, companyId, contactId);
+    return { platform: "xero", bills };
+  }
+
+  throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+}
+
 // Platform-agnostic write-back. Routes to qbo.updateTransactionAccount or
 // xero.updateTransactionAccount based on the platform string.
 export async function updateTransactionCategory(
