@@ -16,6 +16,11 @@ export const activityLog = pgTable(
     agentId: uuid("agent_id").references(() => agents.id),
     runId: uuid("run_id").references(() => heartbeatRuns.id),
     details: jsonb("details").$type<Record<string, unknown>>(),
+    // Outcome of the action being logged. 'success' for completed writes,
+    // 'failure' for attempts that failed (validation, upstream errors, etc).
+    // Existing rows default to 'success' on backfill. Added Phase 4b for
+    // write endpoint audit logging per PHASE-4-ACCOUNTING-API-SPEC Section 2B.1.
+    status: text("status").notNull().default("success"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
