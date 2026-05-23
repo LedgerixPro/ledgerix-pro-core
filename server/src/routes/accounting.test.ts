@@ -1243,3 +1243,291 @@ describe("GET /api/accounting/v1/accounts — data handling", () => {
     expect(res.body.data[4999].id).toBe("acct-4999");
   });
 });
+
+// ============================================================================
+// GET /api/accounting/v1/reports
+// ============================================================================
+
+vi.mock("../services/accounting/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/index.js")>();
+  return {
+    ...actual,
+    getNewTransactions: vi.fn(),
+    getBills: vi.fn(),
+    getInvoices: vi.fn(),
+    getAccounts: vi.fn(),
+    getReports: vi.fn(),
+  };
+});
+
+import { getReports } from "../services/accounting/index.js";
+
+describe("GET /api/accounting/v1/reports", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 200 with normalized report on valid ProfitAndLoss request", async () => {
+    const mockReport = {
+      reportType: "ProfitAndLoss",
+      reportName: "Profit and Loss",
+      startDate: "2026-01-01",
+      endDate: "2026-01-31",
+      asOfDate: null,
+      rows: [
+        { label: "Income", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Sales", amount: 50000, type: "Row" as const, indent: 1, accountId: "acct-sales" },
+        { label: "Total Income", amount: 50000, type: "SummaryRow" as const, indent: 0, accountId: null },
+        { label: "Expenses", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Rent", amount: 5000, type: "Row" as const, indent: 1, accountId: "acct-rent" },
+        { label: "Total Expenses", amount: 5000, type: "SummaryRow" as const, indent: 0, accountId: null },
+        { label: "Net Profit", amount: 45000, type: "SummaryRow" as const, indent: 0, accountId: null },
+      ],
+    };
+    vi.mocked(getReports).mockResolvedValue({
+      platform: "xero",
+      report: mockReport,
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(mockReport);
+    expect(res.body.meta).toMatchObject({
+      platform: "xero",
+      rowCount: 7,
+    });
+    expect(typeof res.body.meta.fetchedAt).toBe("string");
+  });
+});
+
+describe("GET /api/accounting/v1/reports — input validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 400 when type is missing", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required parameter: type");
+  });
+
+  it("returns 400 when type is not a recognized report type", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "InvalidReportType",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid report type");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_parameter",
+      parameter: "type",
+    });
+    expect(res.body.details.allowed).toContain("ProfitAndLoss");
+  });
+
+  it("returns 400 when startDate is missing for ProfitAndLoss", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        endDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required parameter: startDate");
+  });
+
+  it("returns 400 when endDate is missing for ProfitAndLoss", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        startDate: "2026-01-01",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required parameter: endDate");
+  });
+
+  it("returns 400 when startDate is not in YYYY-MM-DD format", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        startDate: "01/01/2026",
+        endDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid date format for 'startDate'");
+  });
+
+  it("returns 400 when asOfDate is missing for BalanceSheet", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "BalanceSheet",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required parameter: asOfDate");
+  });
+});
+
+describe("GET /api/accounting/v1/reports — authentication and authorization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getReports).mockResolvedValue({
+      platform: "xero",
+      report: {
+        reportType: "ProfitAndLoss",
+        reportName: "Profit and Loss",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+        asOfDate: null,
+        rows: [],
+      },
+    });
+  });
+
+  it("returns 401 when actor type is none", async () => {
+    const app = buildTestApp({ type: "none", source: "none" });
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Unauthorized");
+  });
+
+  it("returns 403 when agent tries to access another company", async () => {
+    const app = buildTestApp({
+      type: "agent",
+      agentId: "agent-123",
+      companyId: "different-company-id",
+      source: "agent_key",
+    });
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent key cannot access another company");
+  });
+});
+
+describe("GET /api/accounting/v1/reports — service layer behavior", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 404 when service reports no accounting connection", async () => {
+    vi.mocked(getReports).mockRejectedValue(
+      new Error("No accounting connection found for contact xyz"),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("No accounting connection for contact");
+    expect(res.body.details).toMatchObject({ code: "no_connection" });
+  });
+
+  it("returns 501 for not-yet-implemented report types (BalanceSheet)", async () => {
+    vi.mocked(getReports).mockRejectedValue(
+      new Error("Report type not yet implemented: BalanceSheet"),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "BalanceSheet",
+        asOfDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(501);
+    expect(res.body.error).toBe("Report type not yet implemented");
+    expect(res.body.details).toMatchObject({
+      code: "not_implemented",
+      reportType: "BalanceSheet",
+    });
+  });
+
+  it("returns 500 when service throws an unexpected error", async () => {
+    vi.mocked(getReports).mockRejectedValue(
+      new Error("Database connection lost"),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "ProfitAndLoss",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("Internal server error");
+  });
+});

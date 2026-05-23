@@ -112,6 +112,93 @@ interface XeroAccount {
   Class?: string;
 }
 
+// Financial report row. Both QBO and Xero return reports as hierarchical
+// structures; this is a flattened normalized form. type values:
+//   "Header"     — section header rows (e.g., "Income", "Expenses"); amount usually 0
+//   "Section"    — group/subtotal rows (sometimes called Subtotal in platforms)
+//   "Row"        — data rows with an amount and a label
+//   "SummaryRow" — bottom-line totals (e.g., "Net Profit", "Total Equity")
+// indent encodes nesting depth (0 = top level). accountId is populated when
+// a row references a specific account in the chart of accounts; null otherwise
+// (e.g., subtotal/header rows that aggregate multiple accounts).
+export interface ReportRow {
+  label: string;
+  amount: number;
+  type: "Header" | "Section" | "Row" | "SummaryRow";
+  indent: number;
+  accountId: string | null;
+}
+
+// Normalized financial report. startDate/endDate are populated for period
+// reports (P&L, Cash Flow); asOfDate is populated for snapshot reports
+// (Balance Sheet, Trial Balance). The other date fields are null in each case.
+export interface Report {
+  reportType: string;
+  reportName: string;
+  startDate: string | null;
+  endDate: string | null;
+  asOfDate: string | null;
+  rows: ReportRow[];
+}
+
+// ---------------------------------------------------------------------------
+// QBO Report raw types (P&L, Balance Sheet, Cash Flow, Trial Balance share
+// this general structure; per-row contents differ by report)
+// ---------------------------------------------------------------------------
+
+interface QboColData {
+  value?: string;
+  id?: string;
+}
+
+interface QboReportRow {
+  type?: "Section" | "Data";
+  group?: string;
+  Header?: { ColData?: QboColData[] };
+  Rows?: { Row?: QboReportRow[] };
+  Summary?: { ColData?: QboColData[] };
+  ColData?: QboColData[];
+}
+
+interface QboReport {
+  Header?: {
+    Time?: string;
+    ReportName?: string;
+    ReportBasis?: string;
+    StartPeriod?: string;
+    EndPeriod?: string;
+    Currency?: string;
+    NoReportData?: boolean;
+  };
+  Columns?: { Column?: Array<{ ColTitle?: string; ColType?: string }> };
+  Rows?: { Row?: QboReportRow[] };
+}
+
+// ---------------------------------------------------------------------------
+// Xero Report raw types
+// ---------------------------------------------------------------------------
+
+interface XeroReportCell {
+  Value?: string;
+  Attributes?: Array<{ Id?: string; Value?: string }>;
+}
+
+interface XeroReportRow {
+  RowType?: "Header" | "Section" | "Row" | "SummaryRow";
+  Title?: string;
+  Cells?: XeroReportCell[];
+  Rows?: XeroReportRow[];
+}
+
+interface XeroReport {
+  ReportID?: string;
+  ReportName?: string;
+  ReportType?: string;
+  ReportTitles?: string[];
+  ReportDate?: string;
+  Rows?: XeroReportRow[];
+}
+
 interface QboBill {
   Id: string;
   TxnDate?: string;
@@ -138,6 +225,126 @@ function computeDaysDue(dueDate: string | undefined): number {
   today.setUTCHours(0, 0, 0, 0);
   due.setUTCHours(0, 0, 0, 0);
   return Math.floor((due.getTime() - today.getTime()) / 86_400_000);
+}
+
+// Parse a string like "6398.52" or "" or undefined into a number. Returns 0
+// for empty/missing/unparseable values rather than NaN so downstream consumers
+// don't have to defend against NaN.
+function parseReportAmount(value: string | undefined): number {
+  if (value === undefined || value === null || value === "") return 0;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Find the first attribute on a Xero report cell with Id="account" and return
+// its Value (the account UUID). Returns null if not present.
+function xeroAccountIdFromCell(cell: XeroReportCell | undefined): string | null {
+  if (!cell?.Attributes) return null;
+  const attr = cell.Attributes.find((a) => a.Id === "account");
+  return attr?.Value ?? null;
+}
+
+// Flatten a Xero ReportWithRow.Rows array into our normalized ReportRow[].
+// Walks the hierarchy depth-first, emitting one ReportRow per source row.
+// indent reflects nesting depth: 0 for top-level rows, +1 for each Section
+// we descend into.
+function flattenXeroRows(rows: XeroReportRow[] | undefined, indent: number): ReportRow[] {
+  if (!rows || rows.length === 0) return [];
+  const out: ReportRow[] = [];
+  for (const row of rows) {
+    const rowType = row.RowType ?? "Row";
+    if (rowType === "Section") {
+      // A Section row in Xero has a Title and nested Rows. We emit a Header
+      // row for the section title (if present) at the current indent, then
+      // recurse into the children at indent+1. Xero already emits a separate
+      // SummaryRow inside the section's Rows, so we don't synthesize one here.
+      if (row.Title) {
+        out.push({
+          label: row.Title,
+          amount: 0,
+          type: "Header",
+          indent,
+          accountId: null,
+        });
+      }
+      out.push(...flattenXeroRows(row.Rows, indent + 1));
+    } else {
+      // Header/Row/SummaryRow — emit as a leaf row using the first cell as
+      // label and the second cell as amount.
+      const labelCell = row.Cells?.[0];
+      const amountCell = row.Cells?.[1];
+      out.push({
+        label: labelCell?.Value ?? "",
+        amount: parseReportAmount(amountCell?.Value),
+        type: rowType,
+        indent,
+        accountId: xeroAccountIdFromCell(labelCell),
+      });
+    }
+  }
+  return out;
+}
+
+// Get the account ID from a QBO cell's `id` field. QBO uses a single `id`
+// property per cell (not an attributes array like Xero).
+function qboAccountIdFromColData(cell: QboColData | undefined): string | null {
+  return cell?.id ?? null;
+}
+
+// Flatten a QBO Rows.Row[] structure into our normalized ReportRow[].
+// QBO Section rows are decomposed:
+//   - The Header.ColData becomes a "Header" row at the current indent
+//   - The nested Rows.Row[] recurse at indent+1
+//   - The Summary.ColData becomes a "SummaryRow" at the current indent
+// QBO Data rows become "Row" type with label from ColData[0], amount from
+// the last ColData cell.
+function flattenQboRows(rows: QboReportRow[] | undefined, indent: number): ReportRow[] {
+  if (!rows || rows.length === 0) return [];
+  const out: ReportRow[] = [];
+  for (const row of rows) {
+    if (row.type === "Section") {
+      const headerCells = row.Header?.ColData ?? [];
+      const headerLabel = headerCells[0]?.value ?? row.group ?? "";
+      if (headerLabel) {
+        out.push({
+          label: headerLabel,
+          amount: 0,
+          type: "Header",
+          indent,
+          accountId: null,
+        });
+      }
+      out.push(...flattenQboRows(row.Rows?.Row, indent + 1));
+      const summaryCells = row.Summary?.ColData ?? [];
+      if (summaryCells.length > 0) {
+        const summaryLabel = summaryCells[0]?.value ?? "";
+        // For multi-column reports, the amount is the last cell. For single
+        // amount columns, it's still the last cell. Defensively pick the last.
+        const lastCell = summaryCells[summaryCells.length - 1];
+        out.push({
+          label: summaryLabel,
+          amount: parseReportAmount(lastCell?.value),
+          type: "SummaryRow",
+          indent,
+          accountId: null,
+        });
+      }
+    } else {
+      // Data row (or unspecified — treat as data). First cell is label,
+      // last cell is amount.
+      const cells = row.ColData ?? [];
+      const labelCell = cells[0];
+      const lastCell = cells[cells.length - 1];
+      out.push({
+        label: labelCell?.value ?? "",
+        amount: parseReportAmount(lastCell?.value),
+        type: "Row",
+        indent,
+        accountId: qboAccountIdFromColData(labelCell),
+      });
+    }
+  }
+  return out;
 }
 
 interface QboRef {
@@ -288,9 +495,34 @@ export const qbo = {
     }));
   },
 
-  async getProfitAndLoss(db: Db, companyId: string, contactId: string | null, startDate: string, endDate: string) {
+  // Profit & Loss report for a period. Returns the QBO report flattened into
+  // our normalized ReportRow[] shape. The QBO API returns the report as nested
+  // Section/Data rows with separate Header/Rows/Summary blocks per Section;
+  // flattenQboRows handles the recursion and emits Header + Row + SummaryRow
+  // outputs at appropriate indent levels.
+  async getProfitAndLoss(
+    db: Db,
+    companyId: string,
+    contactId: string | null,
+    startDate: string,
+    endDate: string,
+  ): Promise<Report> {
     const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
-    return qboRequest(db, companyId, contactId, "GET", `/reports/ProfitAndLoss?${params}`);
+    const res = await qboRequest<QboReport>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/reports/ProfitAndLoss?${params}`,
+    );
+    return {
+      reportType: "ProfitAndLoss",
+      reportName: res.Header?.ReportName ?? "ProfitAndLoss",
+      startDate: res.Header?.StartPeriod ?? startDate,
+      endDate: res.Header?.EndPeriod ?? endDate,
+      asOfDate: null,
+      rows: flattenQboRows(res.Rows?.Row, 0),
+    };
   },
 
   async getBalanceSheet(db: Db, companyId: string, contactId: string | null, asOfDate: string) {
@@ -695,9 +927,34 @@ export const xero = {
     }));
   },
 
-  async getProfitAndLoss(db: Db, companyId: string, contactId: string | null, fromDate: string, toDate: string) {
+  // Profit & Loss report for a period. Xero wraps the report in a Reports[0]
+  // structure with a Rows array that contains a mix of Header / Section /
+  // Row / SummaryRow types. Sections recurse into nested Rows arrays. We
+  // flatten via flattenXeroRows which handles the recursion uniformly.
+  async getProfitAndLoss(
+    db: Db,
+    companyId: string,
+    contactId: string | null,
+    fromDate: string,
+    toDate: string,
+  ): Promise<Report> {
     const params = new URLSearchParams({ fromDate, toDate });
-    return xeroRequest(db, companyId, contactId, "GET", `/Reports/ProfitAndLoss?${params}`);
+    const res = await xeroRequest<{ Reports?: XeroReport[] }>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/Reports/ProfitAndLoss?${params}`,
+    );
+    const report = res.Reports?.[0];
+    return {
+      reportType: report?.ReportType ?? "ProfitAndLoss",
+      reportName: report?.ReportName ?? "Profit and Loss",
+      startDate: fromDate,
+      endDate: toDate,
+      asOfDate: null,
+      rows: flattenXeroRows(report?.Rows, 0),
+    };
   },
 
   async getBalanceSheet(db: Db, companyId: string, contactId: string | null, date: string) {
@@ -1051,6 +1308,78 @@ export async function getAccounts(
   }
 
   throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+}
+
+// Supported report types as of Phase 4. ProfitAndLoss is the only one
+// implemented in the v1 service layer at the moment; the other types are
+// scheduled for tomorrow's session. The route validates the type before
+// dispatch so unsupported values fail at 400 with a clear error.
+export type SupportedReportType = "ProfitAndLoss" | "BalanceSheet" | "CashFlow" | "TrialBalance";
+
+export interface ReportDateParams {
+  // Period reports (P&L, Cash Flow) use startDate + endDate
+  startDate?: string;
+  endDate?: string;
+  // Snapshot reports (Balance Sheet, Trial Balance) use asOfDate
+  asOfDate?: string;
+}
+
+// Platform-agnostic financial-report fetch. Routes to qbo.getXxx or xero.getXxx
+// based on the connected platform AND the requested report type. The caller
+// supplies the dates appropriate to the report type (period vs snapshot). The
+// validate-and-extract responsibility belongs to the caller (route handler).
+export async function getReports(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  reportType: SupportedReportType,
+  params: ReportDateParams,
+): Promise<{ platform: "quickbooks" | "xero"; report: Report }> {
+  const connections = await db
+    .select({ platform: accountingConnections.platform })
+    .from(accountingConnections)
+    .where(
+      and(
+        eq(accountingConnections.companyId, companyId),
+        contactFilter(contactId),
+      ),
+    );
+
+  if (connections.length === 0) {
+    throw new Error(`No accounting connection found for companyId=${companyId} contactId=${contactId}`);
+  }
+
+  const platforms = new Set(connections.map((c) => c.platform));
+  const hasQbo = platforms.has("quickbooks");
+  const hasXero = platforms.has("xero");
+
+  if (hasQbo && hasXero) {
+    logger.warn(
+      { companyId, contactId, reportType },
+      "Both QBO and Xero connected — preferring QBO for getReports",
+    );
+  }
+
+  // Dispatch to the right platform method based on report type.
+  // For now only ProfitAndLoss is supported; throwing here signals the route
+  // to return a 501 Not Implemented for the other types until tomorrow's work.
+  if (reportType === "ProfitAndLoss") {
+    if (!params.startDate || !params.endDate) {
+      throw new Error("ProfitAndLoss requires startDate and endDate");
+    }
+    if (hasQbo) {
+      const report = await qbo.getProfitAndLoss(db, companyId, contactId, params.startDate, params.endDate);
+      return { platform: "quickbooks", report };
+    }
+    if (hasXero) {
+      const report = await xero.getProfitAndLoss(db, companyId, contactId, params.startDate, params.endDate);
+      return { platform: "xero", report };
+    }
+    throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+  }
+
+  // Placeholder for other report types — extended tomorrow.
+  throw new Error(`Report type not yet implemented: ${reportType}`);
 }
 
 // Platform-agnostic write-back. Routes to qbo.updateTransactionAccount or
