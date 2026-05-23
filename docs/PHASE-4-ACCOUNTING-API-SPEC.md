@@ -114,7 +114,7 @@ Eight endpoints total. Five reads, three writes. All under `/api/accounting/v1/`
 | `GET /api/accounting/v1/bills` | `getBills` | Fetch open bills (non-zero balance) for a client | AP Specialist |
 | `GET /api/accounting/v1/invoices` | `getInvoices` | Fetch open invoices (optionally filtered by customer/limit) | Reconciliation, AR Specialist |
 | `GET /api/accounting/v1/accounts` | `getAccounts` | Fetch the chart of accounts for a client | Ledger Specialist |
-| `GET /api/accounting/v1/reports` | `getProfitAndLoss` + `getBalanceSheet` | Fetch P&L or Balance Sheet for a date range | Tax Liaison |
+| `GET /api/accounting/v1/reports` | `getReports` (dispatches to `getProfitAndLoss`, `getBalanceSheet`, `getTrialBalance` per report type) | Fetch financial reports — P&L, Balance Sheet, or Trial Balance — for a date range | Tax Liaison, Reporter |
 
 **Write endpoints (3):**
 
@@ -132,7 +132,7 @@ To minimize risk and provide early wins, endpoints will be built in this sequenc
 
 1. **Transactions endpoint first** — unbreaks the most agents (4) with one wrapper. Tests the auth, logging, multi-tenant patterns end-to-end. If something is wrong with the foundation, we discover it here, not in endpoint 8.
 2. **Bills, Invoices, Accounts** (3 endpoints) — straightforward reads, similar shape to transactions.
-3. **Reports** (P&L + Balance Sheet) — one endpoint with a `type` query parameter dispatching to two underlying functions.
+3. **Reports** — one endpoint with a `type` query parameter dispatching to four supported report types (`ProfitAndLoss`, `BalanceSheet`, `TrialBalance`, `CashFlow`). Of these, three (P&L, Balance Sheet, Trial Balance) are implemented cross-platform; `CashFlow` returns `501 Not Implemented` because Xero does not expose a CashFlow report endpoint.
 4. **Write endpoints in order: transaction category, payment, invoice.** Writes are higher-risk; we ship them after reads are proven stable. Within writes, category-update is lowest-risk (single field on existing record), payment is medium (financial state change), invoice-create is highest (new record creation in Ledgerix Pro's own QBO).
 
 Each endpoint is its own commit. Each commit ships with its tests passing. CI runs on every push.
@@ -306,31 +306,37 @@ None in v1. Deferred to v2 per Section 1.4 decision #3.
 
 ### 2A.6 GET /api/accounting/v1/reports
 
-**Purpose:** Fetch financial reports (P&L or Balance Sheet) for a specific client and date range. Used by Tax Liaison and Reporter.
+**Purpose:** Fetch financial reports for a specific client. Used by Tax Liaison and Reporter.
 
-**Status:** Response shape marked as TBD during Phase 4b implementation. The exact normalization of Xero/QBO report responses requires investigation during the build. The high-level concept is locked; specific field structures will be refined during Phase 4b.
+**Status:** Shipped May 23, 2026. Three of four `SupportedReportType` values are implemented cross-platform; `CashFlow` returns 501 (see "Special cases" below).
 
 **Query parameters:**
 
-| Parameter | Type | Required | Default |
+| Parameter | Type | Required | Notes |
 |---|---|---|---|
 | `companyId` | UUID string | Yes | — |
 | `contactId` | string | Yes | — |
-| `type` | "pnl" or "balance-sheet" | Yes | — |
-| `from` | ISO 8601 date | Yes for pnl; Optional for balance-sheet | — |
-| `to` | ISO 8601 date | Yes | — |
-| `platform` | "xero" or "quickbooks" | No | Auto-select |
+| `type` | One of: `ProfitAndLoss`, `BalanceSheet`, `TrialBalance`, `CashFlow` | Yes | Returns 400 with `code: "invalid_parameter"` if not in this set |
+| `startDate` | YYYY-MM-DD | Yes for period reports (`ProfitAndLoss`, `CashFlow`) | — |
+| `endDate` | YYYY-MM-DD | Yes for period reports | — |
+| `asOfDate` | YYYY-MM-DD | Yes for snapshot reports (`BalanceSheet`, `TrialBalance`) | — |
+| `platform` | "xero" or "quickbooks" | No | Auto-select per connection |
 
-**Response shape (preliminary — finalize during Phase 4b):**
+**Response shape:**
 
-P&L response data contains: `reportType: "pnl"`, `periodStart`, `periodEnd`, `currency`, `totalRevenue`, `totalExpenses`, `netIncome`, `lineItems` array (each with `section` of revenue/expense/other, `accountName`, `amount`).
+Different envelope than list-style endpoints. `data` is a single `Report` object (not an array):
 
-Balance Sheet response data contains: `reportType: "balance-sheet"`, `asOfDate`, `currency`, `totalAssets`, `totalLiabilities`, `totalEquity`, `lineItems` array (each with `section` of asset/liability/equity, `accountName`, `amount`).
+`Report`: `{ reportType, reportName, startDate, endDate, asOfDate, rows: ReportRow[] }`. `startDate`/`endDate` are populated for period reports and null for snapshot reports. `asOfDate` is populated for snapshot reports and null for period reports.
+
+`ReportRow`: `{ label, amount, type, indent, accountId, debit?, credit? }`. `type` is one of `"Header" | "Section" | "Row" | "SummaryRow"`. `indent` encodes hierarchy depth (0 = top-level). `accountId` references the chart-of-accounts row (null for aggregate rows like section totals). `debit`/`credit` are populated ONLY on `TrialBalance` rows; for `TrialBalance`, `amount` is always 0 by design — consumers must read `debit`/`credit` explicitly. The flat row list mirrors the hierarchical source structure via the `indent` field.
+
+`meta`: `{ platform, fetchedAt, rowCount }`. No `recordCount` or `truncated` fields (reports are bounded by design).
 
 **Special cases:**
 
-- **Date range with no transactions:** Returns zeros for all aggregates, empty `lineItems` array. NOT an error.
-- **Balance sheet without `from`:** Uses platform default (typically inception-to-date).
+- **`CashFlow` requested:** Returns `501 Not Implemented` with `code: "not_implemented"`. Xero does not expose a CashFlow report endpoint, so cross-platform support is not possible in v1. Kept in `SupportedReportType` for future re-enablement. See ADR-002 D4.
+- **Date range with no data:** Returns the report with an empty `rows` array. Not an error.
+- **Aged Receivables / Aged Payables:** Not v1. Different fundamental row shape (per-contact aging buckets). Deferred to a future endpoint design.
 
 ---
 
@@ -788,7 +794,7 @@ Per Section 1.6:
 
 1. `GET /transactions` — first, smallest blast radius, unbreaks 4 agents
 2. `GET /bills`, `GET /invoices`, `GET /accounts` — straightforward reads
-3. `GET /reports` — last read, response shape spec is TBD per Section 2A.6
+3. `GET /reports` — shipped May 23 (commits 2b7777d4, 671be82f, 363d6498). 3 of 4 report types working; `CashFlow` returns 501 per ADR-002 D4.
 4. `POST /transactions/:txnId/category` — first write, lowest risk
 5. `POST /payments` — second write, requires Idempotency-Key
 6. `POST /invoices` — last write, operates on Ledgerix Pro's own QBO
