@@ -3,11 +3,12 @@ import type { Db } from "@paperclipai/db";
 import { HttpError, badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
-import { getBills, getInvoices, getNewTransactions } from "../services/accounting/index.js";
+import { getAccounts, getBills, getInvoices, getNewTransactions } from "../services/accounting/index.js";
 
 const MAX_TRANSACTIONS = 5000;
 const MAX_BILLS = 5000;
 const MAX_INVOICES = 5000;
+const MAX_ACCOUNTS = 5000;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function requireStringParam(req: Request, name: string): string {
@@ -228,6 +229,69 @@ export function accountingRoutes(db: Db) {
         latencyMs: Date.now() - startedAt,
       },
       "accounting.invoices.get",
+    );
+
+    res.json({
+      data,
+      meta: {
+        platform: result.platform,
+        fetchedAt,
+        recordCount: data.length,
+        truncated,
+      },
+    });
+  });
+
+  router.get("/accounting/v1/accounts", async (req, res) => {
+    const startedAt = Date.now();
+
+    const companyId = requireStringParam(req, "companyId");
+    const contactId = requireStringParam(req, "contactId");
+
+    if (contactId.length > 100) {
+      throw badRequest("Invalid contactId", {
+        code: "invalid_parameter",
+        parameter: "contactId",
+      });
+    }
+
+    assertCompanyAccess(req, companyId);
+
+    let result;
+    try {
+      result = await getAccounts(db, companyId, contactId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("No accounting connection found")) {
+        throw new HttpError(404, "No accounting connection for contact", {
+          code: "no_connection",
+        });
+      }
+      throw err;
+    }
+
+    const truncated = result.accounts.length > MAX_ACCOUNTS;
+    const data = truncated ? result.accounts.slice(0, MAX_ACCOUNTS) : result.accounts;
+    const fetchedAt = new Date().toISOString();
+
+    const actorId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? null
+        : req.actor.type === "board"
+          ? req.actor.userId ?? null
+          : null;
+
+    logger.info(
+      {
+        actorType: req.actor.type,
+        actorId,
+        companyId,
+        contactId,
+        endpoint: "GET /api/accounting/v1/accounts",
+        recordsReturned: data.length,
+        latencyMs: Date.now() - startedAt,
+      },
+      "accounting.accounts.get",
     );
 
     res.json({

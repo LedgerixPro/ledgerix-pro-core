@@ -964,3 +964,282 @@ describe("GET /api/accounting/v1/invoices — data handling", () => {
     expect(res.body.data[4999].id).toBe("inv-4999");
   });
 });
+
+// ============================================================================
+// GET /api/accounting/v1/accounts
+// ============================================================================
+
+vi.mock("../services/accounting/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/index.js")>();
+  return {
+    ...actual,
+    getNewTransactions: vi.fn(),
+    getBills: vi.fn(),
+    getInvoices: vi.fn(),
+    getAccounts: vi.fn(),
+  };
+});
+
+import { getAccounts } from "../services/accounting/index.js";
+
+describe("GET /api/accounting/v1/accounts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 200 with data and meta envelope on valid request", async () => {
+    const mockAccounts = [
+      {
+        id: "acct-1",
+        code: "200",
+        name: "Sales",
+        type: "REVENUE",
+        subType: "OPERATING_INCOME",
+        active: true,
+        description: "Income from primary business activity",
+        currencyCode: "USD",
+      },
+      {
+        id: "acct-2",
+        code: "400",
+        name: "Office Supplies",
+        type: "EXPENSE",
+        subType: "OPERATING_EXPENSE",
+        active: true,
+        description: "",
+        currencyCode: "USD",
+      },
+    ];
+    vi.mocked(getAccounts).mockResolvedValue({
+      platform: "xero",
+      accounts: mockAccounts,
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(mockAccounts);
+    expect(res.body.meta).toMatchObject({
+      platform: "xero",
+      recordCount: 2,
+      truncated: false,
+    });
+    expect(typeof res.body.meta.fetchedAt).toBe("string");
+    expect(new Date(res.body.meta.fetchedAt).toString()).not.toBe("Invalid Date");
+    expect(res.body.meta.since).toBeUndefined();
+  });
+});
+
+describe("GET /api/accounting/v1/accounts — input validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 400 when companyId is missing", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({ contactId: "test-contact-id" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required parameter: companyId");
+    expect(res.body.details).toMatchObject({
+      code: "missing_parameter",
+      parameter: "companyId",
+    });
+  });
+
+  it("returns 400 when contactId is missing", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({ companyId: "f60117de-1131-433c-934f-3fe88bfaa163" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Missing required parameter: contactId");
+    expect(res.body.details).toMatchObject({
+      code: "missing_parameter",
+      parameter: "contactId",
+    });
+  });
+
+  it("returns 400 when contactId exceeds 100 characters", async () => {
+    const app = buildTestApp(localBoardActor);
+    const longContactId = "x".repeat(101);
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: longContactId,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid contactId");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_parameter",
+      parameter: "contactId",
+    });
+  });
+});
+
+describe("GET /api/accounting/v1/accounts — authentication and authorization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getAccounts).mockResolvedValue({
+      platform: "xero",
+      accounts: [],
+    });
+  });
+
+  it("returns 401 when actor type is none", async () => {
+    const app = buildTestApp({ type: "none", source: "none" });
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Unauthorized");
+  });
+
+  it("returns 403 when agent tries to access another company", async () => {
+    const app = buildTestApp({
+      type: "agent",
+      agentId: "agent-123",
+      companyId: "different-company-id",
+      source: "agent_key",
+    });
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent key cannot access another company");
+  });
+
+  it("returns 200 when agent accesses its own company", async () => {
+    const app = buildTestApp({
+      type: "agent",
+      agentId: "agent-123",
+      companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+      source: "agent_key",
+    });
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(200);
+  });
+
+  it("returns 403 when board user lacks company in memberships", async () => {
+    const app = buildTestApp({
+      type: "board",
+      source: "session",
+      userId: "test-user",
+      companyIds: ["some-other-company"],
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("User does not have access to this company");
+  });
+});
+
+describe("GET /api/accounting/v1/accounts — service layer errors", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 404 when service reports no accounting connection", async () => {
+    vi.mocked(getAccounts).mockRejectedValue(
+      new Error("No accounting connection found for contact xyz"),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("No accounting connection for contact");
+    expect(res.body.details).toMatchObject({ code: "no_connection" });
+  });
+
+  it("returns 500 when service throws an unexpected error", async () => {
+    vi.mocked(getAccounts).mockRejectedValue(
+      new Error("Database connection lost"),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe("Internal server error");
+  });
+});
+
+describe("GET /api/accounting/v1/accounts — data handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("truncates response and sets truncated:true when service returns more than 5000 accounts", async () => {
+    const sixThousandAccounts = Array.from({ length: 6000 }, (_, i) => ({
+      id: `acct-${i}`,
+      code: String(100 + i),
+      name: `Account ${i}`,
+      type: "EXPENSE",
+      subType: "OPERATING_EXPENSE",
+      active: true,
+      description: "",
+      currencyCode: "USD",
+    }));
+    vi.mocked(getAccounts).mockResolvedValue({
+      platform: "xero",
+      accounts: sixThousandAccounts,
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/accounts")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(5000);
+    expect(res.body.meta.truncated).toBe(true);
+    expect(res.body.meta.recordCount).toBe(5000);
+    expect(res.body.data[0].id).toBe("acct-0");
+    expect(res.body.data[4999].id).toBe("acct-4999");
+  });
+});

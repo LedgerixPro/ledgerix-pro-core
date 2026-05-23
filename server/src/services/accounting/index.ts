@@ -72,6 +72,46 @@ interface XeroInvoice {
   AmountDue?: number;
 }
 
+// Chart of Accounts entry from QBO/Xero. type is normalized to one of five
+// standard accounting classes: ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE.
+// subType is platform-native (e.g., BANK, ACCOUNTS_RECEIVABLE, COST_OF_GOODS_SOLD)
+// because agents need the platform-specific value for categorization decisions.
+// Empty strings (not nulls) are used for absent optional fields to keep the
+// shape predictable for agent consumers.
+export interface Account {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  subType: string;
+  active: boolean;
+  description: string;
+  currencyCode: string;
+}
+
+interface QboAccount {
+  Id: string;
+  Name?: string;
+  AcctNum?: string;
+  Active?: boolean;
+  Classification?: string;
+  AccountType?: string;
+  AccountSubType?: string;
+  Description?: string;
+  CurrencyRef?: { value: string; name?: string };
+}
+
+interface XeroAccount {
+  AccountID: string;
+  Code?: string;
+  Name?: string;
+  Type?: string;
+  Status?: string;
+  Description?: string;
+  CurrencyCode?: string;
+  Class?: string;
+}
+
 interface QboBill {
   Id: string;
   TxnDate?: string;
@@ -223,8 +263,29 @@ export const qbo = {
     return qboRequest(db, companyId, contactId, "GET", `/companyinfo/${realmId}`);
   },
 
-  async getAccounts(db: Db, companyId: string, contactId: string | null) {
-    return qboRequest(db, companyId, contactId, "GET", qboQueryUrl("SELECT * FROM Account"));
+  // Chart of Accounts entries from QBO. Returns all accounts (active and inactive)
+  // ordered by Name. Filtering to active-only is a client responsibility because
+  // bookkeeping agents sometimes need to find inactive accounts to reactivate or
+  // explain historical entries. Classification is normalized to UPPERCASE for
+  // consistency with the Xero side (which uses uppercase natively).
+  async getAccounts(db: Db, companyId: string, contactId: string | null): Promise<Account[]> {
+    const res = await qboRequest<{ QueryResponse: { Account?: QboAccount[] } }>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      qboQueryUrl("SELECT * FROM Account ORDER BY Name"),
+    );
+    return (res.QueryResponse.Account ?? []).map((a) => ({
+      id: a.Id,
+      code: a.AcctNum ?? "",
+      name: a.Name ?? "",
+      type: (a.Classification ?? "").toUpperCase(),
+      subType: a.AccountSubType ?? a.AccountType ?? "",
+      active: a.Active ?? true,
+      description: a.Description ?? "",
+      currencyCode: a.CurrencyRef?.value ?? "",
+    }));
   },
 
   async getProfitAndLoss(db: Db, companyId: string, contactId: string | null, startDate: string, endDate: string) {
@@ -608,8 +669,30 @@ export const xero = {
     return xeroRequest(db, companyId, contactId, "GET", "/Contacts");
   },
 
-  async getAccounts(db: Db, companyId: string, contactId: string | null) {
-    return xeroRequest(db, companyId, contactId, "GET", "/Accounts");
+  // Chart of Accounts entries from Xero. Xero's response wraps results in an
+  // 'Accounts' array. Xero's 'Class' field is the high-level classification
+  // (ASSET/LIABILITY/EQUITY/REVENUE/EXPENSE) while 'Type' is more specific
+  // (BANK/EXPENSE/CURRENT/etc). We map Class -> our type and Type -> our subType
+  // so the API surface is consistent with QBO. Status ACTIVE/ARCHIVED maps to
+  // our boolean active field.
+  async getAccounts(db: Db, companyId: string, contactId: string | null): Promise<Account[]> {
+    const res = await xeroRequest<{ Accounts?: XeroAccount[] }>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      "/Accounts",
+    );
+    return (res.Accounts ?? []).map((a) => ({
+      id: a.AccountID,
+      code: a.Code ?? "",
+      name: a.Name ?? "",
+      type: a.Class ?? "",
+      subType: a.Type ?? "",
+      active: (a.Status ?? "ACTIVE") === "ACTIVE",
+      description: a.Description ?? "",
+      currencyCode: a.CurrencyCode ?? "",
+    }));
   },
 
   async getProfitAndLoss(db: Db, companyId: string, contactId: string | null, fromDate: string, toDate: string) {
@@ -922,6 +1005,49 @@ export async function getInvoices(
   if (hasXero) {
     const invoices = await xero.getInvoices(db, companyId, contactId);
     return { platform: "xero", invoices };
+  }
+
+  throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+}
+
+export async function getAccounts(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+): Promise<{ platform: "quickbooks" | "xero"; accounts: Account[] }> {
+  const connections = await db
+    .select({ platform: accountingConnections.platform })
+    .from(accountingConnections)
+    .where(
+      and(
+        eq(accountingConnections.companyId, companyId),
+        contactFilter(contactId),
+      ),
+    );
+
+  if (connections.length === 0) {
+    throw new Error(`No accounting connection found for companyId=${companyId} contactId=${contactId}`);
+  }
+
+  const platforms = new Set(connections.map((c) => c.platform));
+  const hasQbo = platforms.has("quickbooks");
+  const hasXero = platforms.has("xero");
+
+  if (hasQbo && hasXero) {
+    logger.warn(
+      { companyId, contactId },
+      "Both QBO and Xero connected — preferring QBO for getAccounts",
+    );
+  }
+
+  if (hasQbo) {
+    const accounts = await qbo.getAccounts(db, companyId, contactId);
+    return { platform: "quickbooks", accounts };
+  }
+
+  if (hasXero) {
+    const accounts = await xero.getAccounts(db, companyId, contactId);
+    return { platform: "xero", accounts };
   }
 
   throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
