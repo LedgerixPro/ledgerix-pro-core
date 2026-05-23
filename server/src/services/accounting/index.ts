@@ -525,9 +525,31 @@ export const qbo = {
     };
   },
 
-  async getBalanceSheet(db: Db, companyId: string, contactId: string | null, asOfDate: string) {
+  // Balance Sheet snapshot at a given date. Returns the QBO report flattened
+  // via the same flattenQboRows parser used by P&L — BS uses identical
+  // Section/Header/Rows/Summary nesting.
+  async getBalanceSheet(
+    db: Db,
+    companyId: string,
+    contactId: string | null,
+    asOfDate: string,
+  ): Promise<Report> {
     const params = new URLSearchParams({ as_of_date: asOfDate });
-    return qboRequest(db, companyId, contactId, "GET", `/reports/BalanceSheet?${params}`);
+    const res = await qboRequest<QboReport>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/reports/BalanceSheet?${params}`,
+    );
+    return {
+      reportType: "BalanceSheet",
+      reportName: res.Header?.ReportName ?? "BalanceSheet",
+      startDate: null,
+      endDate: null,
+      asOfDate: res.Header?.EndPeriod ?? asOfDate,
+      rows: flattenQboRows(res.Rows?.Row, 0),
+    };
   },
 
   // Open bills (Bill entity in QBO) with non-zero balance, ordered by due date.
@@ -957,9 +979,31 @@ export const xero = {
     };
   },
 
-  async getBalanceSheet(db: Db, companyId: string, contactId: string | null, date: string) {
+  // Balance Sheet snapshot at a given date. Same hierarchical structure as
+  // Xero's P&L (Reports[0].Rows[] with Header/Section/Row/SummaryRow).
+  async getBalanceSheet(
+    db: Db,
+    companyId: string,
+    contactId: string | null,
+    date: string,
+  ): Promise<Report> {
     const params = new URLSearchParams({ date });
-    return xeroRequest(db, companyId, contactId, "GET", `/Reports/BalanceSheet?${params}`);
+    const res = await xeroRequest<{ Reports?: XeroReport[] }>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/Reports/BalanceSheet?${params}`,
+    );
+    const report = res.Reports?.[0];
+    return {
+      reportType: report?.ReportType ?? "BalanceSheet",
+      reportName: report?.ReportName ?? "Balance Sheet",
+      startDate: null,
+      endDate: null,
+      asOfDate: date,
+      rows: flattenXeroRows(report?.Rows, 0),
+    };
   },
 
   // Open invoices (Type=ACCREC, AUTHORISED) with non-zero balance. ACCREC is the
@@ -1361,8 +1405,9 @@ export async function getReports(
   }
 
   // Dispatch to the right platform method based on report type.
-  // For now only ProfitAndLoss is supported; throwing here signals the route
-  // to return a 501 Not Implemented for the other types until tomorrow's work.
+  // CashFlow and TrialBalance are defined in SupportedReportType but not yet
+  // implemented in the service layer; falling through to the not-implemented
+  // throw signals the route to return 501.
   if (reportType === "ProfitAndLoss") {
     if (!params.startDate || !params.endDate) {
       throw new Error("ProfitAndLoss requires startDate and endDate");
@@ -1378,7 +1423,22 @@ export async function getReports(
     throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
   }
 
-  // Placeholder for other report types — extended tomorrow.
+  if (reportType === "BalanceSheet") {
+    if (!params.asOfDate) {
+      throw new Error("BalanceSheet requires asOfDate");
+    }
+    if (hasQbo) {
+      const report = await qbo.getBalanceSheet(db, companyId, contactId, params.asOfDate);
+      return { platform: "quickbooks", report };
+    }
+    if (hasXero) {
+      const report = await xero.getBalanceSheet(db, companyId, contactId, params.asOfDate);
+      return { platform: "xero", report };
+    }
+    throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+  }
+
+  // Placeholder for CashFlow and TrialBalance — implemented in a future session.
   throw new Error(`Report type not yet implemented: ${reportType}`);
 }
 

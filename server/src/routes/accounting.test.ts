@@ -1308,6 +1308,54 @@ describe("GET /api/accounting/v1/reports", () => {
     });
     expect(typeof res.body.meta.fetchedAt).toBe("string");
   });
+
+  it("returns 200 with normalized report on valid BalanceSheet request", async () => {
+    const mockReport = {
+      reportType: "BalanceSheet",
+      reportName: "Balance Sheet",
+      startDate: null,
+      endDate: null,
+      asOfDate: "2026-01-31",
+      rows: [
+        { label: "Assets", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Current Assets", amount: 0, type: "Header" as const, indent: 1, accountId: null },
+        { label: "Bank Checking", amount: 25000, type: "Row" as const, indent: 2, accountId: "acct-bank" },
+        { label: "Accounts Receivable", amount: 8500, type: "Row" as const, indent: 2, accountId: "acct-ar" },
+        { label: "Total Current Assets", amount: 33500, type: "SummaryRow" as const, indent: 1, accountId: null },
+        { label: "Total Assets", amount: 33500, type: "SummaryRow" as const, indent: 0, accountId: null },
+        { label: "Liabilities", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Accounts Payable", amount: 3200, type: "Row" as const, indent: 1, accountId: "acct-ap" },
+        { label: "Total Liabilities", amount: 3200, type: "SummaryRow" as const, indent: 0, accountId: null },
+        { label: "Equity", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Retained Earnings", amount: 30300, type: "Row" as const, indent: 1, accountId: "acct-re" },
+        { label: "Total Equity", amount: 30300, type: "SummaryRow" as const, indent: 0, accountId: null },
+      ],
+    };
+    vi.mocked(getReports).mockResolvedValue({
+      platform: "xero",
+      report: mockReport,
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "BalanceSheet",
+        asOfDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(mockReport);
+    expect(res.body.data.startDate).toBeNull();
+    expect(res.body.data.endDate).toBeNull();
+    expect(res.body.data.asOfDate).toBe("2026-01-31");
+    expect(res.body.meta).toMatchObject({
+      platform: "xero",
+      rowCount: 12,
+    });
+  });
 });
 
 describe("GET /api/accounting/v1/reports — input validation", () => {
@@ -1488,9 +1536,11 @@ describe("GET /api/accounting/v1/reports — service layer behavior", () => {
     expect(res.body.details).toMatchObject({ code: "no_connection" });
   });
 
-  it("returns 501 for not-yet-implemented report types (BalanceSheet)", async () => {
+  it("returns 501 for not-yet-implemented report types (CashFlow)", async () => {
+    // BalanceSheet was added May 23 (commit follows); CashFlow and TrialBalance
+    // remain unimplemented and continue to exercise the 501 translation path.
     vi.mocked(getReports).mockRejectedValue(
-      new Error("Report type not yet implemented: BalanceSheet"),
+      new Error("Report type not yet implemented: CashFlow"),
     );
 
     const app = buildTestApp(localBoardActor);
@@ -1499,15 +1549,16 @@ describe("GET /api/accounting/v1/reports — service layer behavior", () => {
       .query({
         companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
         contactId: "test-contact-id",
-        type: "BalanceSheet",
-        asOfDate: "2026-01-31",
+        type: "CashFlow",
+        startDate: "2026-01-01",
+        endDate: "2026-01-31",
       });
 
     expect(res.status).toBe(501);
     expect(res.body.error).toBe("Report type not yet implemented");
     expect(res.body.details).toMatchObject({
       code: "not_implemented",
-      reportType: "BalanceSheet",
+      reportType: "CashFlow",
     });
   });
 
