@@ -123,7 +123,15 @@ interface XeroAccount {
 // (e.g., subtotal/header rows that aggregate multiple accounts).
 export interface ReportRow {
   label: string;
+  // For single-amount reports (P&L, BalanceSheet): the row's value.
+  // For TrialBalance rows: always 0 — read debit/credit fields instead.
+  // Single-amount reports leave debit/credit undefined.
   amount: number;
+  // Trial Balance only. Undefined for all other report types. Both fields
+  // are present together (one may be 0 if the account only had activity on
+  // one side during the period).
+  debit?: number;
+  credit?: number;
   type: "Header" | "Section" | "Row" | "SummaryRow";
   indent: number;
   accountId: string | null;
@@ -347,6 +355,103 @@ function flattenQboRows(rows: QboReportRow[] | undefined, indent: number): Repor
   return out;
 }
 
+// Flatten a Xero Trial Balance Rows array. Differs from flattenXeroRows in
+// that data rows carry debit and credit values rather than a single amount.
+// Xero TB cell order varies but the most common layout is:
+//   [labelCell, debitCell, creditCell, ytdDebitCell, ytdCreditCell]
+// We use the FIRST debit/credit pair (period totals, cells 1 and 2) per the
+// spec's convention of "current period activity, not lifetime balance." If
+// only YTD columns are present (some Xero responses), we fall back to those.
+function flattenXeroTrialBalanceRows(rows: XeroReportRow[] | undefined, indent: number): ReportRow[] {
+  if (!rows || rows.length === 0) return [];
+  const out: ReportRow[] = [];
+  for (const row of rows) {
+    const rowType = row.RowType ?? "Row";
+    if (rowType === "Section") {
+      if (row.Title) {
+        out.push({
+          label: row.Title,
+          amount: 0,
+          type: "Header",
+          indent,
+          accountId: null,
+        });
+      }
+      out.push(...flattenXeroTrialBalanceRows(row.Rows, indent + 1));
+    } else {
+      const labelCell = row.Cells?.[0];
+      // Try period debit/credit first (cells 1, 2); fall back to YTD (cells 3, 4)
+      const cells = row.Cells ?? [];
+      let debitValue = cells[1]?.Value;
+      let creditValue = cells[2]?.Value;
+      if ((debitValue === undefined || debitValue === "") && cells.length > 3) {
+        debitValue = cells[3]?.Value;
+        creditValue = cells[4]?.Value;
+      }
+      out.push({
+        label: labelCell?.Value ?? "",
+        amount: 0,
+        debit: parseReportAmount(debitValue),
+        credit: parseReportAmount(creditValue),
+        type: rowType,
+        indent,
+        accountId: xeroAccountIdFromCell(labelCell),
+      });
+    }
+  }
+  return out;
+}
+
+// Flatten a QBO Trial Balance Rows.Row array. QBO TB Data rows typically have
+// ColData = [labelCell, debitCell, creditCell] (3 cells per row). Section rows
+// have the same Header + nested Rows + Summary structure as other QBO reports.
+// SummaryRow cells follow the same [label, debit, credit] layout.
+function flattenQboTrialBalanceRows(rows: QboReportRow[] | undefined, indent: number): ReportRow[] {
+  if (!rows || rows.length === 0) return [];
+  const out: ReportRow[] = [];
+  for (const row of rows) {
+    if (row.type === "Section") {
+      const headerCells = row.Header?.ColData ?? [];
+      const headerLabel = headerCells[0]?.value ?? row.group ?? "";
+      if (headerLabel) {
+        out.push({
+          label: headerLabel,
+          amount: 0,
+          type: "Header",
+          indent,
+          accountId: null,
+        });
+      }
+      out.push(...flattenQboTrialBalanceRows(row.Rows?.Row, indent + 1));
+      const summaryCells = row.Summary?.ColData ?? [];
+      if (summaryCells.length > 0) {
+        out.push({
+          label: summaryCells[0]?.value ?? "",
+          amount: 0,
+          debit: parseReportAmount(summaryCells[1]?.value),
+          credit: parseReportAmount(summaryCells[2]?.value),
+          type: "SummaryRow",
+          indent,
+          accountId: null,
+        });
+      }
+    } else {
+      const cells = row.ColData ?? [];
+      const labelCell = cells[0];
+      out.push({
+        label: labelCell?.value ?? "",
+        amount: 0,
+        debit: parseReportAmount(cells[1]?.value),
+        credit: parseReportAmount(cells[2]?.value),
+        type: "Row",
+        indent,
+        accountId: qboAccountIdFromColData(labelCell),
+      });
+    }
+  }
+  return out;
+}
+
 interface QboRef {
   value: string;
   name?: string;
@@ -549,6 +654,34 @@ export const qbo = {
       endDate: null,
       asOfDate: res.Header?.EndPeriod ?? asOfDate,
       rows: flattenQboRows(res.Rows?.Row, 0),
+    };
+  },
+
+  // Trial Balance snapshot at a given date. Returns one row per account with
+  // debit + credit columns. Uses flattenQboTrialBalanceRows which understands
+  // the multi-column cell layout. The single `amount` field is always 0 for
+  // TB rows; consumers must read debit/credit explicitly.
+  async getTrialBalance(
+    db: Db,
+    companyId: string,
+    contactId: string | null,
+    asOfDate: string,
+  ): Promise<Report> {
+    const params = new URLSearchParams({ date: asOfDate });
+    const res = await qboRequest<QboReport>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/reports/TrialBalance?${params}`,
+    );
+    return {
+      reportType: "TrialBalance",
+      reportName: res.Header?.ReportName ?? "TrialBalance",
+      startDate: null,
+      endDate: null,
+      asOfDate: res.Header?.EndPeriod ?? asOfDate,
+      rows: flattenQboTrialBalanceRows(res.Rows?.Row, 0),
     };
   },
 
@@ -1006,6 +1139,33 @@ export const xero = {
     };
   },
 
+  // Trial Balance snapshot at a given date. Xero TB rows have multiple cells
+  // per row (debit/credit pairs); flattenXeroTrialBalanceRows handles that.
+  async getTrialBalance(
+    db: Db,
+    companyId: string,
+    contactId: string | null,
+    date: string,
+  ): Promise<Report> {
+    const params = new URLSearchParams({ date });
+    const res = await xeroRequest<{ Reports?: XeroReport[] }>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/Reports/TrialBalance?${params}`,
+    );
+    const report = res.Reports?.[0];
+    return {
+      reportType: report?.ReportType ?? "TrialBalance",
+      reportName: report?.ReportName ?? "Trial Balance",
+      startDate: null,
+      endDate: null,
+      asOfDate: date,
+      rows: flattenXeroTrialBalanceRows(report?.Rows, 0),
+    };
+  },
+
   // Open invoices (Type=ACCREC, AUTHORISED) with non-zero balance. ACCREC is the
   // accounts-receivable invoice type (vs ACCPAY for bills). Filter to AUTHORISED
   // status to exclude DRAFT (not sent), PAID (fully collected), and VOIDED.
@@ -1438,7 +1598,24 @@ export async function getReports(
     throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
   }
 
-  // Placeholder for CashFlow and TrialBalance — implemented in a future session.
+  if (reportType === "TrialBalance") {
+    if (!params.asOfDate) {
+      throw new Error("TrialBalance requires asOfDate");
+    }
+    if (hasQbo) {
+      const report = await qbo.getTrialBalance(db, companyId, contactId, params.asOfDate);
+      return { platform: "quickbooks", report };
+    }
+    if (hasXero) {
+      const report = await xero.getTrialBalance(db, companyId, contactId, params.asOfDate);
+      return { platform: "xero", report };
+    }
+    throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+  }
+
+  // CashFlow is defined in SupportedReportType but cannot be implemented
+  // cross-platform: Xero does not expose a CashFlow report endpoint. Falling
+  // through to a clear not-implemented error so the route returns 501.
   throw new Error(`Report type not yet implemented: ${reportType}`);
 }
 

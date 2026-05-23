@@ -1356,6 +1356,67 @@ describe("GET /api/accounting/v1/reports", () => {
       rowCount: 12,
     });
   });
+
+  it("returns 200 with debit/credit fields on valid TrialBalance request", async () => {
+    // Trial Balance has a fundamentally different row shape: each data row
+    // carries both debit and credit values (one is typically 0 if the account
+    // only saw activity on one side). The amount field is 0 on TB rows by
+    // design — consumers must read debit/credit explicitly.
+    const mockReport = {
+      reportType: "TrialBalance",
+      reportName: "Trial Balance",
+      startDate: null,
+      endDate: null,
+      asOfDate: "2026-01-31",
+      rows: [
+        { label: "Assets", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Bank Checking", amount: 0, debit: 25000, credit: 0, type: "Row" as const, indent: 1, accountId: "acct-bank" },
+        { label: "Accounts Receivable", amount: 0, debit: 8500, credit: 0, type: "Row" as const, indent: 1, accountId: "acct-ar" },
+        { label: "Liabilities", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Accounts Payable", amount: 0, debit: 0, credit: 3200, type: "Row" as const, indent: 1, accountId: "acct-ap" },
+        { label: "Revenue", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Sales", amount: 0, debit: 0, credit: 50000, type: "Row" as const, indent: 1, accountId: "acct-sales" },
+        { label: "Expenses", amount: 0, type: "Header" as const, indent: 0, accountId: null },
+        { label: "Rent Expense", amount: 0, debit: 5000, credit: 0, type: "Row" as const, indent: 1, accountId: "acct-rent" },
+        { label: "TOTAL", amount: 0, debit: 38500, credit: 53200, type: "SummaryRow" as const, indent: 0, accountId: null },
+      ],
+    };
+    vi.mocked(getReports).mockResolvedValue({
+      platform: "quickbooks",
+      report: mockReport,
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .get("/accounting/v1/reports")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+        type: "TrialBalance",
+        asOfDate: "2026-01-31",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual(mockReport);
+    // Verify TB-specific properties: amount is 0 on data rows, debit/credit
+    // carry the actual values.
+    const bankRow = res.body.data.rows.find((r: { label: string }) => r.label === "Bank Checking");
+    expect(bankRow.amount).toBe(0);
+    expect(bankRow.debit).toBe(25000);
+    expect(bankRow.credit).toBe(0);
+    const salesRow = res.body.data.rows.find((r: { label: string }) => r.label === "Sales");
+    expect(salesRow.amount).toBe(0);
+    expect(salesRow.debit).toBe(0);
+    expect(salesRow.credit).toBe(50000);
+    // Header rows do not have debit/credit (undefined)
+    const assetsHeader = res.body.data.rows.find((r: { label: string }) => r.label === "Assets");
+    expect(assetsHeader.debit).toBeUndefined();
+    expect(assetsHeader.credit).toBeUndefined();
+    expect(res.body.meta).toMatchObject({
+      platform: "quickbooks",
+      rowCount: 10,
+    });
+  });
 });
 
 describe("GET /api/accounting/v1/reports — input validation", () => {
