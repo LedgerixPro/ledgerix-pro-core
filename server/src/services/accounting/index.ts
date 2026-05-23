@@ -37,6 +37,41 @@ export interface Bill {
   daysDue: number;
 }
 
+// Open-invoice snapshot from QBO/Xero (accounts receivable side). daysDue is
+// signed: positive = days until due, negative = days overdue. status reflects
+// the source platform's invoice state (e.g., AUTHORISED, PAID, VOIDED for Xero
+// or the QBO equivalent).
+export interface Invoice {
+  id: string;
+  customerName: string;
+  amount: number;
+  balance: number;
+  invoiceDate: string;
+  dueDate: string;
+  daysDue: number;
+  status: string;
+}
+
+interface QboInvoice {
+  Id: string;
+  TxnDate?: string;
+  DueDate?: string;
+  TotalAmt?: number;
+  Balance?: number;
+  CustomerRef?: { value: string; name?: string };
+}
+
+interface XeroInvoice {
+  InvoiceID: string;
+  Type?: string;
+  Status?: string;
+  Contact?: { Name?: string };
+  Date?: string;
+  DueDate?: string;
+  Total?: number;
+  AmountDue?: number;
+}
+
 interface QboBill {
   Id: string;
   TxnDate?: string;
@@ -224,6 +259,36 @@ export const qbo = {
         balance: b.Balance ?? 0,
         dueDate: b.DueDate ?? "",
         daysDue: computeDaysDue(b.DueDate),
+      }));
+  },
+
+  // Open invoices (Invoice entity in QBO) with non-zero balance, ordered by due date.
+  // QBO's QBQL does not support > or < comparisons on Balance, so we fetch all and
+  // filter client-side (same constraint as getBills). Status is derived from balance
+  // because QBO has no explicit AUTHORISED/PAID/VOIDED enum on Invoice.
+  async getInvoices(db: Db, companyId: string, contactId: string | null): Promise<Invoice[]> {
+    const res = await qboRequest<{ QueryResponse: { Invoice?: QboInvoice[] } }>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/query?${new URLSearchParams({
+        query: "SELECT * FROM Invoice ORDER BY DueDate ASC",
+      })}`,
+    );
+    return (res.QueryResponse.Invoice ?? [])
+      .filter((i) => (i.Balance ?? 0) > 0)
+      .map((i) => ({
+        id: i.Id,
+        customerName: i.CustomerRef?.name ?? "",
+        amount: i.TotalAmt ?? 0,
+        balance: i.Balance ?? 0,
+        invoiceDate: i.TxnDate ?? "",
+        dueDate: i.DueDate ?? "",
+        daysDue: computeDaysDue(i.DueDate),
+        // QBO doesn't expose an explicit invoice status field for AR; balance>0
+        // means it's open. Past-due distinction is encoded in daysDue (negative).
+        status: "AUTHORISED",
       }));
   },
 
@@ -557,9 +622,30 @@ export const xero = {
     return xeroRequest(db, companyId, contactId, "GET", `/Reports/BalanceSheet?${params}`);
   },
 
-  async getInvoices(db: Db, companyId: string, contactId: string | null) {
-    const params = new URLSearchParams({ Statuses: "AUTHORISED,VOIDED" });
-    return xeroRequest(db, companyId, contactId, "GET", `/Invoices?${params}`);
+  // Open invoices (Type=ACCREC, AUTHORISED) with non-zero balance. ACCREC is the
+  // accounts-receivable invoice type (vs ACCPAY for bills). Filter to AUTHORISED
+  // status to exclude DRAFT (not sent), PAID (fully collected), and VOIDED.
+  async getInvoices(db: Db, companyId: string, contactId: string | null): Promise<Invoice[]> {
+    const params = new URLSearchParams({ Type: "ACCREC", Statuses: "AUTHORISED" });
+    const res = await xeroRequest<{ Invoices?: XeroInvoice[] }>(
+      db,
+      companyId,
+      contactId,
+      "GET",
+      `/Invoices?${params}`,
+    );
+    return (res.Invoices ?? [])
+      .filter((i) => (i.AmountDue ?? 0) > 0)
+      .map((i) => ({
+        id: i.InvoiceID,
+        customerName: i.Contact?.Name ?? "",
+        amount: i.Total ?? 0,
+        balance: i.AmountDue ?? 0,
+        invoiceDate: i.Date ?? "",
+        dueDate: i.DueDate ?? "",
+        daysDue: computeDaysDue(i.DueDate),
+        status: i.Status ?? "AUTHORISED",
+      }));
   },
 
   // Open bills (Type=ACCPAY, AUTHORISED) — overdue is computed from DueDate.
@@ -790,6 +876,52 @@ export async function getBills(
   if (hasXero) {
     const bills = await xero.getBills(db, companyId, contactId);
     return { platform: "xero", bills };
+  }
+
+  throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+}
+
+// Platform-agnostic open-invoices fetch. Routes to qbo.getInvoices or
+// xero.getInvoices based on the platform connected for the contact. Returns
+// all open (non-zero-balance, AUTHORISED) invoices, ordered by due date.
+export async function getInvoices(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+): Promise<{ platform: "quickbooks" | "xero"; invoices: Invoice[] }> {
+  const connections = await db
+    .select({ platform: accountingConnections.platform })
+    .from(accountingConnections)
+    .where(
+      and(
+        eq(accountingConnections.companyId, companyId),
+        contactFilter(contactId),
+      ),
+    );
+
+  if (connections.length === 0) {
+    throw new Error(`No accounting connection found for companyId=${companyId} contactId=${contactId}`);
+  }
+
+  const platforms = new Set(connections.map((c) => c.platform));
+  const hasQbo = platforms.has("quickbooks");
+  const hasXero = platforms.has("xero");
+
+  if (hasQbo && hasXero) {
+    logger.warn(
+      { companyId, contactId },
+      "Both QBO and Xero connected — preferring QBO for getInvoices",
+    );
+  }
+
+  if (hasQbo) {
+    const invoices = await qbo.getInvoices(db, companyId, contactId);
+    return { platform: "quickbooks", invoices };
+  }
+
+  if (hasXero) {
+    const invoices = await xero.getInvoices(db, companyId, contactId);
+    return { platform: "xero", invoices };
   }
 
   throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
