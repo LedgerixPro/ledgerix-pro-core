@@ -50,6 +50,8 @@ export function publishPluginDomainEvent(event: PluginEvent): void {
   }).catch(() => {});
 }
 
+export type ActivityStatus = "success" | "failure";
+
 export interface LogActivityInput {
   companyId: string;
   actorType: "agent" | "user" | "system" | "plugin";
@@ -60,9 +62,14 @@ export interface LogActivityInput {
   agentId?: string | null;
   runId?: string | null;
   details?: Record<string, unknown> | null;
+  // Outcome of the action. Defaults to "success" if omitted, preserving
+  // backward compat with all pre-Phase-4b callers (who only logged successes).
+  // Phase 4b write endpoints set this explicitly to "failure" when logging
+  // attempts that did not complete (validation errors, upstream rejections).
+  status?: ActivityStatus;
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
+export async function logActivity(db: Db, input: LogActivityInput): Promise<{ id: string }> {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };
@@ -70,7 +77,8 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
-  await db.insert(activityLog).values({
+  const status: ActivityStatus = input.status ?? "success";
+  const inserted = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
@@ -80,7 +88,8 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
     details: redactedDetails,
-  });
+    status,
+  }).returning({ id: activityLog.id });
 
   publishLiveEvent({
     companyId: input.companyId,
@@ -94,6 +103,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
       details: redactedDetails,
+      status,
     },
   });
 
@@ -112,8 +122,11 @@ export async function logActivity(db: Db, input: LogActivityInput) {
         ...redactedDetails,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
+        status,
       },
     };
     publishPluginDomainEvent(event);
   }
+
+  return { id: inserted[0].id };
 }
