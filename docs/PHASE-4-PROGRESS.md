@@ -9,7 +9,7 @@
 ## Endpoint Status (8 total)
 
 ### Read endpoints (5)
-- [x] `GET /api/accounting/v1/transactions` — shipped May 16 (2f52a7f0), comprehensive tests pending
+- [x] `GET /api/accounting/v1/transactions` — shipped May 16 (2f52a7f0), comprehensive tests added May 23 (8ed906d8)
 - [ ] `GET /api/accounting/v1/bills` — pending
 - [ ] `GET /api/accounting/v1/invoices` — pending
 - [ ] `GET /api/accounting/v1/accounts` — pending
@@ -31,11 +31,18 @@
 - [ ] `createInvoice` — to build (for `POST /invoices`)
 
 ## Test Coverage Status
-- [ ] Vitest server-side infrastructure verified working
-- [ ] Mocking pattern established for Xero/QBO clients
-- [ ] Test fixtures + helpers created
-- [ ] Comprehensive tests for `GET /transactions` (sets the template)
+- [x] Vitest server-side infrastructure verified working (May 23, commit 8ed906d8)
+- [x] Mocking pattern established (vi.mock + minimal Express test app + supertest)
+- [x] Test helpers created (buildTestApp, localBoardActor in accounting.test.ts)
+- [x] Comprehensive tests for `GET /transactions` — 15 test cases (May 23, 8ed906d8)
 - [ ] Other endpoint tests: added as each endpoint ships
+
+### Pattern established for future endpoint tests
+- Mock service layer via vi.mock() (hoisted above route imports)
+- buildTestApp(actorOverride) helper creates minimal Express app
+- localBoardActor preset for tests not focused on auth
+- Test categories: happy path, input validation, auth/authz, service errors, data handling
+- Invocation: cd server && pnpm exec vitest run src/routes/accounting.test.ts
 
 ## Auth Infrastructure (verified May 23)
 Per server/src/middleware/auth.ts: actorMiddleware already supports 5 actor scenarios:
@@ -66,7 +73,14 @@ infrastructure — smaller scope than estimated.
 ## Session Log
 
 ### 2026-05-23 Saturday (8 hours planned)
-- Hour 1: Setup (auth middleware review, tracker created)
-- Hours 2-4: Test infrastructure build (Vitest server config, mocking pattern, comprehensive tests for GET /transactions)
-- Hours 5-8: Bills endpoint (getBills service function + GET /bills route + tests)
+- Hour 1: Setup (auth middleware review, tracker created) ✅
+- Hour 2-2.5: Comprehensive tests for GET /transactions endpoint shipped (commit 8ed906d8, 15 test cases, 390 lines) ✅
+- Hours 2.5-8: Bills endpoint (getBills service function + GET /bills route + tests) — in progress
+
+#### Findings
+- Server vitest.config.ts was bare (just environment:node) — no setup needed beyond what existed
+- supertest and @types/supertest already installed
+- No `test` script in server/package.json; invoke via `pnpm exec vitest run <file>`
+- First failed assumption (Option B decision): instance admin does NOT bypass company access for reads.
+  Documented in test comments. Behavior is intentional per Scott.
 
