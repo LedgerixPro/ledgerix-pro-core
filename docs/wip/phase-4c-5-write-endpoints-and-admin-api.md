@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-24 at end of Sunday session
+**Last updated:** 2026-05-24 mid-Sunday (Block 1 of split session — break in progress)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -173,21 +173,59 @@ Three options:
 
 ## Work Done (cumulative)
 
-(None as of session 1 start beyond the WIP doc itself.)
+- `e618231b` (Sunday 2026-05-24, Block 1) — activity_log.companyId nullable + compareAndSeed helper + this WIP doc
+  - Migration 0067_last_gateway.sql: ALTER TABLE activity_log ALTER COLUMN company_id DROP NOT NULL
+  - LogActivityInput type: companyId is now `string | null`
+  - publishLiveEvent and PluginEvent emissions skipped when companyId is null (per Option 1)
+  - compareAndSeed generic helper in server/src/services/admin/compare-and-seed.ts (no tests yet)
+  - WIP doc committed with Decisions 1, 2 (revised), 3 locked
 
 ## Next Steps (in order)
 
-1. **Session 1 (today, in-progress):** Lock decisions on admin endpoint pattern (DONE — Decision 1), draft this WIP doc, optionally start scaffolding admin endpoint base pattern if time permits. End session with WIP doc + EA + Brief + tracker reflecting today's work.
+### IMMEDIATE — Block 2 (Sunday 2026-05-24 post-break, ~2 hours)
 
-2. **Session 2:** Resolve Q4 (admin auth model) and Q5 (idempotency semantics). Scaffold the first admin endpoint base pattern (router setup, auth middleware, test scaffolding). Decide on Q1 (charter status) since it blocks Invoice work.
+1. **Fix admin.ts compile errors** (uncommitted file at server/src/routes/admin.ts):
+   - Change import path `from "../services/admin/compare-and-seed.ts"` to `.js` (ESM convention)
+   - Fix `effectiveToField` type errors at lines 75 and 144 — TypeScript narrowing issue. Likely needs explicit type annotation on the field name or a cast in the compareAndSeed call.
+   - Verify with `pnpm typecheck` from server directory
 
-3. **Session 3:** Implement `POST /api/admin/pricing/seed` end-to-end including tests. This becomes the template for all subsequent admin endpoints.
+2. **Mount admin router in app.ts**:
+   - Add `import { adminRoutes } from "./routes/admin.js";` to imports section (~line 26)
+   - Add `api.use(adminRoutes(db));` to the route mounting section (~line 210, after other api.use calls)
+   - Verify with `pnpm typecheck`
 
-4. **Session 4+:** Address Q2 (setup fees) and Q3 (get-transaction-by-id scope). Both block their respective write endpoints. Implement what's needed.
+3. **Write tests for admin endpoints** (`server/src/routes/admin.test.ts` — new file):
+   - Test successful seed (inserted: N, skipped: 0)
+   - Test re-run with identical data (inserted: 0, skipped: N)
+   - Test re-run with changed data (superseded + newRows)
+   - Test auth: unauthorized rejected
+   - Test auth: non-admin board user rejected
+   - Verify activity_log entry created with companyId: null
 
-5. **Sessions 5-N:** Re-implement the three write endpoints atop the now-complete safety layer. Wire Phase 4c.4 dispatcher to real writes.
+4. **Write tests for compareAndSeed helper** (`server/src/services/admin/compare-and-seed.test.ts` — new file):
+   - Test each branch: insert / skip / supersede
+   - Test identity-field mismatch handling
+   - Test the schemaLabel error paths
 
-6. **Final session:** Move all locked decisions from this WIP doc to ADR-004, summarize in PHASE-4-PROGRESS.md, update EA + Brief, delete this WIP doc.
+5. **Run full targeted test suite** to confirm 145+ tests still pass plus the new admin tests.
+
+6. **Commit Part 2** with clean message.
+
+7. **End-of-day documentation pass** (~30-45 min at end of Block 2):
+   - PHASE-4-PROGRESS.md updated with all of today's commits
+   - EA v3.3 + Brief v1.3 content drafted for Scott to add to Word
+   - WIP doc Session Log final entry for today
+   - Final commit
+
+### FUTURE SESSIONS
+
+8. **Session 3+:** Use the admin endpoints to seed pricing + thresholds (Phase 4c.1b + 4c.2b deferred runbook work). Single POST call each.
+
+9. **Session 4+:** Resolve Q1 (charter status), Q2 (setup fees), Q3 (get-transaction-by-id scope). Each is a significant architectural piece deserving its own focused session.
+
+10. **Sessions 5-N:** Re-implement the three write endpoints atop the now-complete safety layer. Wire Phase 4c.4 dispatcher stubs to real upstream writes.
+
+11. **Final session:** Move all locked decisions from this WIP doc to ADR-004, summarize in PHASE-4-PROGRESS.md, update EA + Brief, delete this WIP doc.
 
 ## Blockers
 
@@ -244,4 +282,30 @@ See commit `91a554f4` (the revert) and ADR-003 for the full reasoning.
 - No Phase 4c.5 code shipped yet — appropriate given the architectural decisions still pending
 
 **Discipline note for future sessions:**
-This WIP doc must be read at the start of every Phase 4c.5 session before any work begins. The 3 rejected options ("NOT Doing") and the locked Decision 1 are not up for re-litigation. Future Claude in particular should treat this as authoritative for Phase 4c.5 architectural questions.
+This WIP doc must be read at the start of every Phase 4c.5 session before any work begins. The 3 rejected options ("NOT Doing") and the locked Decisions 1, 2 (revised), 3 are not up for re-litigation. Future Claude in particular should treat this as authoritative for Phase 4c.5 architectural questions.
+
+### Session 1 Block 1 addendum — 2026-05-24 (Sunday, before break)
+
+**Architecture decisions resolved this block:**
+- Decision 2 (admin endpoint auth) — initially locked as "session-only first, CI/CD bearer path committed for future" (Lock 1B). REVISED later in same block after reading auth middleware code: existing `assertInstanceAdmin` natively supports session, board_key, and local_implicit paths — all identity-tracked. Decision 2 now reads "use existing assertInstanceAdmin."
+- Decision 3 (admin endpoint idempotency) — locked Option D-modified (version-aware). Implemented as `compareAndSeed` helper.
+- Decision B (activity_log.companyId nullable) — locked. Migration 0067 shipped.
+- Option 1 (skip live/plugin events for system-scoped operations) — locked. The current operations dashboard monitors agent health, not activity streams, so system-scoped admin operations don't need broadcast in real-time. Activity log query remains source of truth.
+
+**Shipped this block:**
+- Commit `e618231b`: Migration 0067 + LogActivityInput type + compareAndSeed helper + this WIP doc
+
+**Discoveries this block:**
+- The "verify before assuming" discipline (memory #7) played out twice. First when extending approvals.ts (logger not imported). Second when locking Decision 2 (assumed board_key was unattributed; turned out to be identity-tracked). Future sessions: read the relevant code BEFORE locking decisions, not after.
+- The real-time dashboard at api.ledgerixpro.com/dashboard does NOT consume activity_log live events directly — it monitors agent operations. This freed up Option 1 (skip events for system-scoped operations) as the right answer rather than requiring more infrastructure work.
+
+**State at block end:**
+- 10 commits shipped today (4c.1 through Part 1 of 4c.5)
+- 145 targeted tests still passing
+- admin.ts file drafted but has 3 typecheck errors — intentionally uncommitted
+- Phase 4c.5 has WIP doc + Decisions 1, 2 (revised), 3, B + helper module + nullable companyId migration
+- Block 2 (after break) picks up at "Fix admin.ts compile errors" per Next Steps section above
+
+### Session 1 Block 2 — 2026-05-24 (Sunday, after break — pending)
+
+(To be filled in at end of Block 2.)
