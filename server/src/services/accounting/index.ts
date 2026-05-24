@@ -1619,23 +1619,59 @@ export async function getReports(
   throw new Error(`Report type not yet implemented: ${reportType}`);
 }
 
-// Platform-agnostic write-back. Routes to qbo.updateTransactionAccount or
-// xero.updateTransactionAccount based on the platform string.
+// Platform-agnostic transaction category write-back. Looks up the platform
+// from accounting_connections (same pattern as getNewTransactions et al.)
+// and dispatches to qbo.updateTransactionAccount or xero.updateTransactionAccount.
+//
+// v1 limitation: does NOT return previousAccountRef. Capturing it would
+// require a pre-update fetch of the transaction, which requires building
+// per-platform get-transaction-by-id functions that don't exist yet
+// (transactions can be Purchases, Deposits, Invoices, Bills, etc. — each
+// with different upstream endpoints). Spec-acknowledged simplification:
+// the audit log "before" field will be null for category updates in v1.
 export async function updateTransactionCategory(
   db: Db,
   companyId: string,
   contactId: string | null,
-  platform: "quickbooks" | "xero",
   transactionId: string,
   accountRef: string,
-): Promise<void> {
-  if (platform === "quickbooks") {
-    return qbo.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
+): Promise<{ platform: "quickbooks" | "xero" }> {
+  const connections = await db
+    .select({ platform: accountingConnections.platform })
+    .from(accountingConnections)
+    .where(
+      and(
+        eq(accountingConnections.companyId, companyId),
+        contactFilter(contactId),
+      ),
+    );
+
+  if (connections.length === 0) {
+    throw new Error(`No accounting connection found for companyId=${companyId} contactId=${contactId}`);
   }
-  if (platform === "xero") {
-    return xero.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
+
+  const platforms = new Set(connections.map((c) => c.platform));
+  const hasQbo = platforms.has("quickbooks");
+  const hasXero = platforms.has("xero");
+
+  if (hasQbo && hasXero) {
+    logger.warn(
+      { companyId, contactId },
+      "Both QBO and Xero connected — preferring QBO for updateTransactionCategory",
+    );
   }
-  throw new Error(`Unsupported platform: ${platform}`);
+
+  if (hasQbo) {
+    await qbo.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
+    return { platform: "quickbooks" };
+  }
+
+  if (hasXero) {
+    await xero.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
+    return { platform: "xero" };
+  }
+
+  throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
 }
 
 // Platform-agnostic payment-to-invoice reconciliation. For QBO, entityRef is a

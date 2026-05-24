@@ -1643,3 +1643,441 @@ describe("GET /api/accounting/v1/reports — service layer behavior", () => {
     expect(res.body.error).toBe("Internal server error");
   });
 });
+
+// ============================================================================
+// POST /api/accounting/v1/transactions/:txnId/category
+// ============================================================================
+//
+// Mocking strategy (Option A per ADR-002 D-design discussion):
+// - updateTransactionCategory: mocked to verify the route calls it correctly
+// - withIdempotency: mocked to pass-through by default; tests that exercise
+//   replay/conflict configure it explicitly. Helper's own logic is covered
+//   by src/services/idempotency.test.ts.
+// - logActivity: mocked to verify audit log calls with the right shape
+
+import { withIdempotency, IdempotencyConflictError } from "../services/idempotency.js";
+import { logActivity } from "../services/activity-log.js";
+
+vi.mock("../services/accounting/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/index.js")>();
+  return {
+    ...actual,
+    getNewTransactions: vi.fn(),
+    getBills: vi.fn(),
+    getInvoices: vi.fn(),
+    getAccounts: vi.fn(),
+    getReports: vi.fn(),
+    updateTransactionCategory: vi.fn(),
+  };
+});
+
+vi.mock("../services/idempotency.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/idempotency.js")>();
+  return {
+    ...actual,
+    withIdempotency: vi.fn(),
+  };
+});
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: vi.fn(),
+}));
+
+import { updateTransactionCategory } from "../services/accounting/index.js";
+
+// Default mock setup: withIdempotency passes-through to the work callback.
+// Audit log returns a stable id. Individual tests can override.
+function setupWriteMocks(opts: {
+  updateResult?: { platform: "quickbooks" | "xero" };
+  updateError?: Error;
+  withIdempotencyOverride?: typeof withIdempotency;
+  auditLogId?: string;
+} = {}) {
+  if (opts.updateError) {
+    vi.mocked(updateTransactionCategory).mockRejectedValue(opts.updateError);
+  } else {
+    vi.mocked(updateTransactionCategory).mockResolvedValue(
+      opts.updateResult ?? { platform: "xero" },
+    );
+  }
+
+  vi.mocked(logActivity).mockResolvedValue({ id: opts.auditLogId ?? "audit-1" });
+
+  if (opts.withIdempotencyOverride) {
+    vi.mocked(withIdempotency).mockImplementation(opts.withIdempotencyOverride);
+  } else {
+    // Default: pass-through to the work callback
+    vi.mocked(withIdempotency).mockImplementation(async (_db, _options, work) => {
+      const result = await work();
+      return { ...result, replayed: false };
+    });
+  }
+}
+
+describe("POST /api/accounting/v1/transactions/:txnId/category", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 200 with updated category on valid request", async () => {
+    setupWriteMocks({ updateResult: { platform: "xero" } });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-123/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent", reason: "rent payment" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      id: "txn-123",
+      previousAccountRef: null,
+      newAccountRef: "6000-Rent",
+      platform: "xero",
+    });
+    expect(res.body.meta).toMatchObject({
+      platform: "xero",
+      auditLogId: "audit-1",
+    });
+    expect(res.body.meta.idempotencyReplay).toBeUndefined();
+    expect(typeof res.body.meta.performedAt).toBe("string");
+  });
+
+  it("calls updateTransactionCategory with the right arguments", async () => {
+    setupWriteMocks({ updateResult: { platform: "quickbooks" } });
+
+    const app = buildTestApp(localBoardActor);
+    await request(app)
+      .post("/accounting/v1/transactions/txn-abc/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "8500-Insurance" });
+
+    expect(updateTransactionCategory).toHaveBeenCalledWith(
+      expect.anything(),
+      "f60117de-1131-433c-934f-3fe88bfaa163",
+      "test-contact-id",
+      "txn-abc",
+      "8500-Insurance",
+    );
+  });
+
+  it("writes a success activity log entry on successful update", async () => {
+    setupWriteMocks({ updateResult: { platform: "xero" }, auditLogId: "audit-success" });
+
+    const app = buildTestApp(localBoardActor);
+    await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent", reason: "october rent" });
+
+    expect(logActivity).toHaveBeenCalledTimes(1);
+    expect(logActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        action: "accounting.transactions.update_category",
+        entityType: "transaction",
+        entityId: "txn-1",
+        status: "success",
+        details: expect.objectContaining({
+          platform: "xero",
+          newAccountRef: "6000-Rent",
+          previousAccountRef: null,
+          reason: "october rent",
+        }),
+      }),
+    );
+  });
+});
+
+describe("POST /api/accounting/v1/transactions/:txnId/category — input validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupWriteMocks();
+  });
+
+  it("returns 400 when accountRef is missing from body", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ reason: "no account ref" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("accountRef");
+    expect(updateTransactionCategory).not.toHaveBeenCalled();
+    expect(logActivity).not.toHaveBeenCalled(); // no audit log on validation failure per ADR-002 D5
+  });
+
+  it("returns 400 when accountRef is not a string", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: 12345 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when companyId is missing", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({ contactId: "test-contact-id" })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("companyId");
+  });
+
+  it("returns 400 when contactId exceeds 100 characters", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "x".repeat(101),
+      })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when Idempotency-Key exceeds 255 characters", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .set("Idempotency-Key", "x".repeat(256))
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts optional reason field omitted", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("POST /api/accounting/v1/transactions/:txnId/category — authentication and authorization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupWriteMocks();
+  });
+
+  it("returns 401 when actor type is none", async () => {
+    const app = buildTestApp({ type: "none", source: "none" });
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(401);
+    expect(updateTransactionCategory).not.toHaveBeenCalled();
+    expect(logActivity).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when agent tries to access another company", async () => {
+    const app = buildTestApp({
+      type: "agent",
+      agentId: "agent-123",
+      companyId: "different-company",
+      source: "agent_key",
+    });
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(403);
+    expect(updateTransactionCategory).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/accounting/v1/transactions/:txnId/category — idempotency", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes the Idempotency-Key to withIdempotency", async () => {
+    setupWriteMocks({ updateResult: { platform: "xero" } });
+
+    const app = buildTestApp(localBoardActor);
+    await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .set("Idempotency-Key", "idemp-key-xyz")
+      .send({ accountRef: "6000-Rent" });
+
+    expect(withIdempotency).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        key: "idemp-key-xyz",
+        requestBody: { accountRef: "6000-Rent", reason: null },
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it("passes key=null when Idempotency-Key header is absent", async () => {
+    setupWriteMocks({ updateResult: { platform: "xero" } });
+
+    const app = buildTestApp(localBoardActor);
+    await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(withIdempotency).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ key: null }),
+      expect.any(Function),
+    );
+  });
+
+  it("returns meta.idempotencyReplay=true on replay", async () => {
+    // Override withIdempotency to return replayed=true
+    setupWriteMocks({
+      withIdempotencyOverride: async () => ({
+        status: 200,
+        body: {
+          id: "txn-1",
+          previousAccountRef: null,
+          newAccountRef: "6000-Rent",
+          platform: "xero",
+          auditLogId: "audit-original",
+        },
+        replayed: true,
+      }),
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .set("Idempotency-Key", "key-replay")
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta.idempotencyReplay).toBe(true);
+    expect(res.body.meta.auditLogId).toBe("audit-original");
+  });
+
+  it("returns 409 on IdempotencyConflictError (key reused with different body)", async () => {
+    setupWriteMocks({
+      withIdempotencyOverride: async () => {
+        throw new IdempotencyConflictError();
+      },
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .set("Idempotency-Key", "key-conflict")
+      .send({ accountRef: "9999-Different" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({ code: "idempotency_conflict" });
+  });
+});
+
+describe("POST /api/accounting/v1/transactions/:txnId/category — service errors", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 404 when no accounting connection exists", async () => {
+    setupWriteMocks({
+      updateError: new Error("No accounting connection found for companyId=... contactId=..."),
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.details).toMatchObject({ code: "no_connection" });
+  });
+
+  it("returns 502 on upstream error and writes failure audit log", async () => {
+    setupWriteMocks({
+      updateError: new Error("Xero API returned 500 Internal Server Error"),
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .query({
+        companyId: "f60117de-1131-433c-934f-3fe88bfaa163",
+        contactId: "test-contact-id",
+      })
+      .send({ accountRef: "6000-Rent" });
+
+    expect(res.status).toBe(502);
+    expect(res.body.details).toMatchObject({ code: "upstream_error" });
+    // Verify audit log was called with status="failure" per ADR-002 D5
+    expect(logActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        status: "failure",
+        entityId: "txn-1",
+        action: "accounting.transactions.update_category",
+        details: expect.objectContaining({
+          errorMessage: expect.stringContaining("Xero API returned 500"),
+        }),
+      }),
+    );
+  });
+});
