@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { qboRequest, getQboRealmId } from "./qbo-client.js";
 import { xeroRequest } from "./xero-client.js";
 import { logger } from "../../middleware/logger.js";
+import { namesAreSimilar } from "./string-similarity.js";
 
 // ---------------------------------------------------------------------------
 // Shared types
@@ -890,21 +891,65 @@ export const qbo = {
   },
 
   // Find a Customer by email (preferred) or DisplayName, creating one if neither
-  // matches. Email is the more reliable identity field; name fallback handles
-  // QBO records imported without an email.
+  // matches. Refactored for Phase 4c safety architecture per ADR-003 Q7:
+  // returns { customerId, action } where action discriminates between
+  // auto-proceed cases and HITL-escalation cases.
+  //
+  // Actions (auto-proceed):
+  //   - 'found_by_email': exact email match. Highest confidence.
+  //   - 'found_by_name_exact': name match after normalization, no email
+  //     conflict (either no email submitted OR submitted email matches
+  //     the customer's email).
+  //   - 'created_new': no match found, new customer created.
+  //
+  // Actions (HITL-required):
+  //   - 'ambiguous_name_only': name match (via Levenshtein) but the
+  //     submitted email differs from the stored email. CALLER MUST NOT
+  //     proceed — must request approval.
+  //   - 'ambiguous_email_match_different_name': email match but the
+  //     submitted name differs substantially from the stored name.
+  //     CALLER MUST NOT proceed — must request approval.
+  //
+  // When action is HITL-required, customerId references the EXISTING
+  // potentially-ambiguous match. The caller decides what to do with that
+  // info when building the approval request (it's the candidate the
+  // human will be asked about).
   async findOrCreateCustomer(
     db: Db,
     companyId: string,
     contactId: string | null,
     name: string,
     email: string,
-  ): Promise<string> {
+  ): Promise<{
+    customerId: string;
+    action:
+      | "found_by_email"
+      | "found_by_name_exact"
+      | "created_new"
+      | "ambiguous_name_only"
+      | "ambiguous_email_match_different_name";
+    matchDetails?: {
+      submittedName: string;
+      submittedEmail: string;
+      storedName: string;
+      storedEmail: string | null;
+    };
+  }> {
     // QBQL uses single-quoted string literals — strip quotes from inputs
     const safeEmail = email.replace(/'/g, "");
     const safeName = name.replace(/'/g, "");
 
+    // Step 1: try email match
     if (safeEmail) {
-      const emailRes = await qboRequest<{ QueryResponse: { Customer?: Array<{ Id: string }> } }>(
+      const emailRes = await qboRequest<{
+        QueryResponse: {
+          Customer?: Array<{
+            Id: string;
+            DisplayName?: string;
+            PrimaryEmailAddr?: { Address?: string };
+          }>;
+        };
+      }>(
         db,
         companyId,
         contactId,
@@ -915,13 +960,49 @@ export const qbo = {
       );
       const found = emailRes?.QueryResponse?.Customer?.[0];
       if (found) {
-        logger.info({ companyId, contactId, customerId: found.Id, match: "email" }, "QBO Customer found");
-        return found.Id;
+        const storedName = found.DisplayName ?? "";
+        const storedEmail = found.PrimaryEmailAddr?.Address ?? null;
+
+        // If submitted name is similar to stored (or either is empty),
+        // auto-proceed as email match. Empty stored name = missing data,
+        // not a conflict to detect.
+        if (!safeName || !storedName || namesAreSimilar(safeName, storedName)) {
+          logger.info(
+            { companyId, contactId, customerId: found.Id, action: "found_by_email" },
+            "QBO Customer matched by email",
+          );
+          return { customerId: found.Id, action: "found_by_email" };
+        }
+
+        // Email matches but names differ significantly — HITL-required
+        logger.info(
+          { companyId, contactId, customerId: found.Id, action: "ambiguous_email_match_different_name" },
+          "QBO Customer email-matched with different name (ambiguous)",
+        );
+        return {
+          customerId: found.Id,
+          action: "ambiguous_email_match_different_name",
+          matchDetails: {
+            submittedName: name,
+            submittedEmail: email,
+            storedName,
+            storedEmail,
+          },
+        };
       }
     }
 
+    // Step 2: try name match (only reached if email didn't match or wasn't provided)
     if (safeName) {
-      const nameRes = await qboRequest<{ QueryResponse: { Customer?: Array<{ Id: string }> } }>(
+      const nameRes = await qboRequest<{
+        QueryResponse: {
+          Customer?: Array<{
+            Id: string;
+            DisplayName?: string;
+            PrimaryEmailAddr?: { Address?: string };
+          }>;
+        };
+      }>(
         db,
         companyId,
         contactId,
@@ -932,11 +1013,39 @@ export const qbo = {
       );
       const found = nameRes?.QueryResponse?.Customer?.[0];
       if (found) {
-        logger.info({ companyId, contactId, customerId: found.Id, match: "name" }, "QBO Customer found");
-        return found.Id;
+        const storedName = found.DisplayName ?? "";
+        const storedEmail = found.PrimaryEmailAddr?.Address ?? null;
+
+        // If no email submitted OR the stored customer has no email, auto-proceed
+        // as name match. The "name match without email conflict" case.
+        if (!safeEmail || !storedEmail) {
+          logger.info(
+            { companyId, contactId, customerId: found.Id, action: "found_by_name_exact" },
+            "QBO Customer matched by name (no email conflict)",
+          );
+          return { customerId: found.Id, action: "found_by_name_exact" };
+        }
+
+        // Both have emails and they don't match (because email-lookup already
+        // failed above) — HITL-required.
+        logger.info(
+          { companyId, contactId, customerId: found.Id, action: "ambiguous_name_only" },
+          "QBO Customer name-matched with conflicting email (ambiguous)",
+        );
+        return {
+          customerId: found.Id,
+          action: "ambiguous_name_only",
+          matchDetails: {
+            submittedName: name,
+            submittedEmail: email,
+            storedName,
+            storedEmail,
+          },
+        };
       }
     }
 
+    // Step 3: no match found — create new customer
     const createRes = await qboRequest<{ Customer: { Id: string } }>(
       db,
       companyId,
@@ -948,8 +1057,11 @@ export const qbo = {
         ...(email ? { PrimaryEmailAddr: { Address: email } } : {}),
       },
     );
-    logger.info({ companyId, contactId, customerId: createRes.Customer.Id, match: "created" }, "QBO Customer created");
-    return createRes.Customer.Id;
+    logger.info(
+      { companyId, contactId, customerId: createRes.Customer.Id, action: "created_new" },
+      "QBO Customer created (no match found)",
+    );
+    return { customerId: createRes.Customer.Id, action: "created_new" };
   },
 
   // Create an Invoice. Lines are agent-friendly { description, amount } pairs;
