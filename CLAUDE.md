@@ -1,96 +1,57 @@
-# CLAUDE.md
+# Claude — Session Startup Guide
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the FIRST thing Claude should read at the start of every session working on this codebase. It points at the authoritative documents and the in-flight work.
 
-## What This Is
+## Authoritative documents (read in this order)
 
-Paperclip is a control plane for AI-agent companies — it orchestrates teams of AI agents to perform work across issues, projects, and goals. Before making changes, read in order: `doc/GOAL.md`, `doc/PRODUCT.md`, `doc/SPEC-implementation.md`, `doc/DEVELOPING.md`, `doc/DATABASE.md`. The V1 build contract is `doc/SPEC-implementation.md`.
+1. **`docs/LedgerixPro-Claude-Project-Brief-v1.3.docx`** — condensed system overview. Read first for fast orientation.
+2. **`docs/LedgerixPro-Enterprise-Architecture-v3.3.docx`** — full architecture. Read for detail on any specific subsystem.
+3. **`docs/adr/`** — Architecture Decision Records. Settled decisions. Each ADR is locked and should not be reopened without explicit reason.
+4. **`docs/PHASE-4-PROGRESS.md`** — current phase tracker. Status of Phase 4 work.
 
-## Commands
+## In-flight work (CHECK BEFORE STARTING ANY WORK)
 
-```sh
-pnpm install       # install all workspace deps
-pnpm dev           # start API + UI in watch mode (localhost:3100)
-pnpm build         # build all workspace packages
-pnpm typecheck     # typecheck all workspace packages
-pnpm test          # run Vitest unit suite (no browser)
-pnpm test:e2e      # Playwright e2e (opt-in only)
-pnpm db:generate   # generate Drizzle migration (compiles db first)
-pnpm db:migrate    # apply pending migrations
-```
+**`docs/wip/`** — Work-in-progress documents for multi-session architectural work. If this directory contains any files (besides README.md), read them BEFORE starting new work. They capture:
+- Architecture decisions already locked (do not reopen)
+- Architecture decisions still pending (current focus)
+- Rejected options (do not re-propose)
+- Session-by-session progress log
 
-Dev check before claiming done:
-```sh
-pnpm -r typecheck && pnpm test:run && pnpm build
-```
+See `docs/wip/README.md` for the WIP doc convention.
 
-Run a single Vitest test file:
-```sh
-pnpm vitest run path/to/test.test.ts
-```
+## Critical operating principles
 
-Reset local dev DB (uses embedded Postgres when `DATABASE_URL` is unset):
-```sh
-rm -rf data/pglite && pnpm dev
-```
+These are non-negotiable, established across sessions:
 
-**Lockfile policy:** Do not commit `pnpm-lock.yaml` in PRs — CI owns it via the `refresh-lockfile` workflow.
+1. **Trust tenet (May 24, 2026):** No real clients onboarded — including Ledgerix Pro's own books — until the system is correct, trustworthy, and dialed in for security and safety of client funds. No partial-spec compliance on safety-critical write endpoints. Time is reference for planning, not a gate for go/no-go decisions.
 
-## Architecture
+2. **Verify before assuming.** Always check assumptions before acting. Grep for callers before claiming a function is unused. View existing imports before claiming code compiles. Read the authoritative document before quoting numbers from session memory. Skipping these checks has caused real errors.
 
-This is a **pnpm monorepo** (`pnpm-workspace.yaml`). All packages are ESM, TypeScript strict, targeting `ES2023` with `NodeNext` module resolution, compiled to `dist/`.
+3. **Session-end documentation discipline.** Every session ends with EA + Brief + all relevant trackers + WIP docs reflecting what was committed that session. No exceptions. "Documents of truth" must actually be true at session close, or future sessions start with wrong information.
 
-### Core packages
+4. **Locked decisions stay locked.** Once an architectural decision is committed (in an ADR, a WIP doc's "Decisions Made" section, or explicit acknowledgment in a conversation), it doesn't get reopened for refinement. Implementation details discovered during execution are handled during execution, not by reopening the decision.
 
-| Package | Purpose |
-|---|---|
-| `server/` | Express 5 REST API on port 3100. Auth (Better Auth), WebSocket realtime, plugin host, all orchestration services |
-| `ui/` | React 19 + Vite SPA. Served by the API server. Proxies `/api` to port 3100 in dev |
-| `packages/db/` | Drizzle ORM schema + numbered SQL migrations for PostgreSQL |
-| `packages/shared/` | Types, Zod validators, API path constants shared across all layers |
-| `packages/adapters/*/` | Agent runtime adapters (Claude, Codex, Cursor, etc.) — each exports `server`, `ui`, and `cli` sub-paths |
-| `packages/plugins/sdk/` | Stable public API for plugin authors |
-| `cli/` | `paperclipai` CLI for onboarding, worktrees, issue management |
+5. **WIP docs are the truth for active work.** If a WIP doc and another doc disagree about an in-flight piece of work, the WIP doc is correct. Other docs reflect the past or end state.
 
-### Key architectural patterns
+## Coding workflow
 
-**Company scoping** — every domain entity is scoped to a company. Routes and services must enforce company boundaries on all queries and mutations.
+- Codebase: `/Users/scotthansbury/Projects/ledgerix-pro-core` (local) and `github.com/LedgerixPro/ledgerix-pro-core` (private)
+- Scott uses Claude Code via terminal for all code changes
+- All commands should be ready-to-paste with full context
+- Railway env vars: NEVER wrap values in quotes (KEY=value, not KEY="value")
+- Migration workflow: edit schema TS → `pnpm generate` → drizzle-kit auto-creates SQL + snapshot
+- Test discipline: targeted vitest runs (`pnpm exec vitest run <file>`) for what changed; full suite has known flakiness in unrelated workspace-runtime tests due to parallel-run resource contention
 
-**Four-layer contract** — schema changes must be propagated across all four layers: `packages/db` (schema + migration) → `packages/shared` (types/validators) → `server` (routes/services) → `ui` (API clients/pages). Never update one layer without syncing the others.
+## File ownership
 
-**Auth** — Better Auth for board users (session cookies). Agents authenticate with bearer API keys stored hashed in `agent_api_keys`. Deployment modes: `local_trusted` (loopback, no auth) and `authenticated`.
+- **Scott edits directly:** the two Word docs in `docs/` (EA, Brief)
+- **Claude edits (via scripts):** all `.md` files in repo, all source code, all tests
+- **Never edit:** files under `/mnt/skills/` (read-only system skills)
 
-**Plugin system** — plugins run as separate worker processes managed by the server. The `plugin-sdk` package is the stable authoring API.
+## What to do at session start
 
-**Adapter registry** — the server has a mutable adapter registry (`server/src/adapters/registry.ts`). External adapters can be registered via `~/.paperclip/adapter-plugins.json`.
-
-**Control-plane invariants to preserve:**
-- Single-assignee task model
-- Atomic issue checkout semantics
-- Approval gates for governed actions
-- Budget hard-stop auto-pause
-- Activity logging for all mutating actions
-
-### API conventions
-
-- Base path: `/api`
-- New endpoints must: apply company access checks, enforce actor permissions (board vs agent), write activity log entries for mutations, return standard HTTP errors (`400/401/403/404/409/422/500`)
-
-## Database Change Workflow
-
-1. Edit `packages/db/src/schema/*.ts`
-2. Export new tables from `packages/db/src/schema/index.ts`
-3. `pnpm db:generate` (compiles `packages/db` first, then runs drizzle-kit)
-4. `pnpm -r typecheck` to validate
-
-Migration files are numbered (`0000_...sql` through `006x_...sql`). Migration numbering is validated automatically before builds.
-
-## Pull Request Requirements
-
-Every PR must use the template at `.github/PULL_REQUEST_TEMPLATE.md`. Required sections:
-- **Thinking Path** — 5–8 step reasoning trace from project context to the specific change
-- **What Changed** — bullet list of concrete changes
-- **Verification** — commands/steps to confirm it works
-- **Risks** — what could break
-- **Model Used** — AI model used (provider, model ID) or "None — human-authored"
-- **Checklist** — all items checked
+1. Read `docs/LedgerixPro-Claude-Project-Brief-v1.3.docx` for orientation
+2. Check `docs/wip/` for active multi-session work
+3. Check `docs/PHASE-4-PROGRESS.md` for current phase status
+4. If WIP docs exist, read them BEFORE proposing any architectural changes
+5. Verify locked decisions stay locked; verify rejected options stay rejected
