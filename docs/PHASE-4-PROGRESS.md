@@ -22,10 +22,12 @@
     question for future: drop from SupportedReportType or document the
     Xero limitation more prominently.
 
-### Write endpoints (3) — Phase 4b
-- [ ] `POST /api/accounting/v1/transactions/:txnId/category` — pending
-- [ ] `POST /api/accounting/v1/payments` — pending (Idempotency-Key REQUIRED)
-- [ ] `POST /api/accounting/v1/invoices` — pending (creates invoice in Ledgerix Pro's own QBO, not client books)
+### Write endpoints (3) — Phase 4b → deferred pending Phase 4c safety architecture
+- [DEFERRED] `POST /api/accounting/v1/transactions/:txnId/category` — initial attempt May 24 (commit a449c873) reverted same day (commit 91a554f4) for trust tenet violation (previousAccountRef hardcoded to null). Service-layer refactor of updateTransactionCategory (auto-detect platform) kept. To be re-implemented in Phase 4c.5 atop safety architecture.
+- [DEFERRED] `POST /api/accounting/v1/payments` — never attempted. Requires Phase 4c safety architecture (threshold caps, HITL approval queue) per design discussion May 24.
+- [DEFERRED] `POST /api/accounting/v1/invoices` — never attempted. Requires Phase 4c.1 pricing (shipped) + future charter storage + setup fee handling. Documented gaps in ADR-003 Amendment 1.
+
+**Reason for deferral:** Trust tenet recognized May 24: no real clients (beta or paying) onboarded until system is correct, trustworthy, and dialed in for security and safety of client funds. Tenet applies uniformly to client books AND Ledgerix Pro's own books (Ledgerix Pro is itself a client of its own system). Partial-spec write endpoints with documented gaps violate this. See commit 91a554f4 reasoning.
 
 ## Service Layer Functions
 - [x] `getNewTransactions` — exists (supports `GET /transactions`)
@@ -167,24 +169,62 @@ infrastructure — smaller scope than estimated.
 - idempotencyKey term already used in codebase but only in agent/heartbeat contexts, not HTTP — pattern established here is HTTP-specific
 - Drizzle migration workflow: update schema TS files → pnpm generate → drizzle-kit auto-creates SQL + snapshot
 
-### 2026-05-24 Sunday (planned 12-14 hr)
-**Goal:** Ship the 3 write endpoints (transaction category, payments, invoices)
+### 2026-05-24 Sunday (planned 12-14 hr) — ACTUAL: architectural pivot
 
-**Plan:**
-1. Build idempotency + audit log helper modules (with unit tests)
-2. Build POST /transactions/:txnId/category route
-3. Build POST /payments route
-4. Build POST /invoices route (creates invoice in Ledgerix Pro's own QBO)
-5. Service-level extension to reconcilePayment for paymentDate parameter
-6. Build createInvoice service function
+**Original plan:** Ship the 3 write endpoints.
 
-**Open architectural questions for Sunday:**
-- Idempotency replay: does it write a NEW activity_log entry, or reference the original?
-- Two-phase failure handling: precise rollback semantics when DB write succeeds but Xero/QBO write fails (or vice versa)?
-- Whether to remove CashFlow from SupportedReportType union or document the Xero limitation differently
+**Actual outcome:** Shipped 1 write endpoint, reverted it after recognizing a trust tenet violation, pivoted to designing and implementing Phase 4c safety architecture instead. Phase 4c.1 (pricing source of truth) shipped successfully. The architectural pivot was the right call but means Phase 4 endpoints are now blocked on Phase 4c.2-4c.5 work.
+
+**Commit log (in order):**
+
+1. **a449c873** — POST /transactions/:txnId/category route shipped with 17 tests. Service-layer refactor of updateTransactionCategory (auto-detect platform). Service function returns {platform}. Route hardcoded previousAccountRef: null in response shape.
+
+2. **91a554f4** — REVERTED the route + tests. Service-layer refactor kept. Reason: previousAccountRef: null in the response/audit-log shape violated the trust tenet (partial-spec compliance on a write endpoint that touches financial records). Test code preserved in docs/deferred/ for future re-implementation reference.
+
+3. **1fca9a11** — ADR-003 Phase 4c Safety Architecture (Accepted, with 10 design decisions). Five pieces: pricing, dedupe, thresholds, approval-system integration, read verification. Read verification deferred to Phase 5. Reuses existing approvalService — no new HITL queue needed.
+
+4. **104e82fb** — Phase 4c.1 pricing source of truth. New schemas: service_tier_pricing, client_pricing_overrides. New service function: getExpectedPriceCents(db, tier, isCharter, contactId?). 10 unit tests. Migration 0065_whole_post.sql.
+
+5. **6283ebfc** — ADR-003 amended with 3 architectural gaps surfaced during EA v3.3 / Brief v1.3 re-read:
+   - Gap 1: Charter status has no defined storage in the architecture (caller can't reliably populate isCharter)
+   - Gap 2: Setup fees ($249/$349/$1,200 per tier) not modeled by Phase 4c.1 schema
+   - Gap 3: Tier Qualifier matrix not codified as data (lives in agent prompts)
+   - Also corrected stale pricing values throughout ADR-003 ($499→$599, $799→$999, $899→$1,299) — original draft predated May 17 EA v3.2 repricing
+
+**Architectural decisions reached today:**
+
+- **Trust tenet established and documented**: No real clients (beta or paying) onboarded until system is correct, trustworthy, and dialed in for security and safety of client funds. Applies uniformly including to Ledgerix Pro's own books. No partial-spec write endpoints. Time is reference for planning, not a gate for go/no-go decisions.
+
+- **Phase 4 architecture pattern**: Every write endpoint sits atop a safety layer (Phase 4c). Endpoint flow becomes: validate → safety checks → if pass: upstream call + audit + idempotency; if fail: create approval (202 Accepted) + audit + idempotency.
+
+- **Approval system reuse**: Existing approvalService (created/approve/reject/comment/revision methods) extended with new dot-namespaced types (accounting.payment.threshold_exceeded, etc.) rather than building parallel HITL infrastructure.
+
+**Open architectural questions answered today:**
+
+- Idempotency replay: returns the 202 forever, regardless of approval status. Strict contract: same request → same response. Agent polls GET /api/approvals/:id for current status. (ADR-003 Q5)
+
+- Two-phase failure handling: upstream-first ordering per ADR-002 D2. Upstream call inside the work callback; audit log success AFTER upstream success; audit log failure BEFORE returning 502.
+
+- CashFlow: still returns 501. No decision change. Open for future.
+
+**End-of-day tally:**
+
+- Tests: 86 passing (62 accounting + 14 idempotency + 10 pricing)
+- Phase 4 endpoint progress: 5 of 8 production-ready (62.5% — no change since Saturday)
+- Phase 4c progress: 1 of 5 pieces shipped (4c.1)
+- Architectural debt acknowledged: Charter storage, setup fees, Tier Qualifier matrix — all deferred with options identified
 
 ### 2026-05-25 Monday (Memorial Day, planned 12-14 hr)
-- Continue write endpoints if not finished
-- Integration testing
-- Documentation updates (EA v3.4 reflecting Phase 4 completion)
-- ADR-002 if remaining design decisions warrant
+
+**Goal:** Continue Phase 4c safety architecture build.
+
+**Plan:**
+1. Phase 4c.2 — Threshold framework (new write_thresholds table + getApplicableThresholds service function + tests). Bootstrap thresholds: $10K payments (EA Section 6.3), $1K invoices.
+2. Phase 4c.3 — Customer dedupe refactor of findOrCreateCustomer to return {customerId, action} where action discriminates auto-proceed vs HITL escalation.
+3. Phase 4c.4 if time permits — Write-approval dispatcher (services/accounting/write-approvals.ts + extension to approvalService.approve()).
+
+**Not in scope Monday (deferred to later sessions):**
+- Phase 4c.5 (re-shipping write endpoints) — depends on 4c.2-4c.4 completion
+- Charter status storage decision (Gap 1 from ADR-003 Amendment 1)
+- Setup fee handling decision (Gap 2)
+- EA v3.4 doc update (deferred until Phase 4c is more complete)
