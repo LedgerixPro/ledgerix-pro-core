@@ -7,7 +7,11 @@ export const activityLog = pgTable(
   "activity_log",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    companyId: uuid("company_id").notNull().references(() => companies.id),
+    // Nullable to support system-scoped operations (e.g., admin endpoints
+    // for safety-layer canonical data management — Phase 4c.5 Decision B,
+    // 2026-05-24). Company-scoped operations continue to pass a valid
+    // company UUID; system-scoped operations pass NULL.
+    companyId: uuid("company_id").references(() => companies.id),
     actorType: text("actor_type").notNull().default("system"),
     actorId: text("actor_id").notNull(),
     action: text("action").notNull(),

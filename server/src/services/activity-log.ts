@@ -53,7 +53,11 @@ export function publishPluginDomainEvent(event: PluginEvent): void {
 export type ActivityStatus = "success" | "failure";
 
 export interface LogActivityInput {
-  companyId: string;
+  // Nullable per Phase 4c.5 Decision B (2026-05-24): system-scoped admin
+  // operations (e.g., POST /api/admin/pricing/seed) pass NULL since they
+  // don't belong to any specific company. Company-scoped operations
+  // continue to pass a valid company UUID.
+  companyId: string | null;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string;
   action: string;
@@ -91,24 +95,33 @@ export async function logActivity(db: Db, input: LogActivityInput): Promise<{ id
     status,
   }).returning({ id: activityLog.id });
 
-  publishLiveEvent({
-    companyId: input.companyId,
-    type: "activity.logged",
-    payload: {
-      actorType: input.actorType,
-      actorId: input.actorId,
-      action: input.action,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
-      details: redactedDetails,
-      status,
-    },
-  });
+  // System-scoped operations (companyId === null) don't broadcast live events.
+  // The DB row is preserved as the durable audit record. Per Phase 4c.5
+  // Decision B + Option 1 (locked 2026-05-24): admin operations don't have
+  // a target company audience for real-time updates. Activity_log query
+  // remains the source of truth for system-scoped operations.
+  if (input.companyId !== null) {
+    publishLiveEvent({
+      companyId: input.companyId,
+      type: "activity.logged",
+      payload: {
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        agentId: input.agentId ?? null,
+        runId: input.runId ?? null,
+        details: redactedDetails,
+        status,
+      },
+    });
+  }
 
-  const pluginEventType = eventTypeForActivityAction(input.action);
-  if (pluginEventType) {
+  // System-scoped operations don't emit plugin events for the same reason
+  // as live-events: no company-scoped audience. Per Phase 4c.5 Option 1.
+  const pluginEventType = input.companyId !== null ? eventTypeForActivityAction(input.action) : null;
+  if (pluginEventType && input.companyId !== null) {
     const event: PluginEvent = {
       eventId: randomUUID(),
       eventType: pluginEventType,

@@ -1,0 +1,1 @@
+ALTER TABLE "activity_log" ALTER COLUMN "company_id" DROP NOT NULL;
