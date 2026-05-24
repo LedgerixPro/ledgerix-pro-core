@@ -223,7 +223,7 @@ New service function `getExpectedPriceCents(db, tier, contactId?)`:
 
 **Rationale rejected (GHL custom fields only):** GHL is the source of truth for which TIER a client is on, but not the canonical PRICE per tier. Storing the price in GHL means propagating it across all contact records when prices change — error-prone. The tier is in GHL; the price for the tier is in our DB.
 
-**Bootstrap data:** Seed migration writes the four canonical pricing rows from EA Section 7.1 (Foundation Charter $199, Foundation Standard $299, Growth Charter $399, Growth Standard $499, Scale-Up Charter $799, Scale-Up Standard $899) into `service_tier_pricing`.
+**Bootstrap data:** Seed step (deferred to Phase 4c.1b runbook — see below) writes the six canonical pricing rows from EA Section 7 (Foundation Charter $199, Foundation Standard $299, Growth Engine Charter $399, Growth Engine Standard $599, Scale-Up Charter $999, Scale-Up Standard $1,299) into `service_tier_pricing`. **Note:** Earlier draft of this ADR referenced stale pricing values ($499, $799, $899) which predated the May 17, 2026 EA v3.2 repricing. Corrected per the Amendments section below.
 
 ### Q7. Customer dedupe logic
 
@@ -349,6 +349,58 @@ Suggested build order. Each piece is independently testable.
 - Approval expiration/SLA (e.g., approvals pending > 7 days auto-escalate or auto-reject) — Phase 5
 - Migration of legacy `hire_agent` to dot-namespaced naming — deferred refactor
 
+## Amendments
+
+### Amendment 1 (May 24, 2026): Architectural gaps surfaced during EA v3.3 / Brief v1.3 re-read
+
+After committing Phase 4c.1 (commit `104e82fb`), a full re-read of the authoritative EA v3.3 and Brief v1.3 documents surfaced architectural gaps in this ADR that need explicit acknowledgment. These don't invalidate the Phase 4c.1 work shipped today, but they must be addressed before Phase 4c.5 (the actual write endpoints) can ship.
+
+**Gap 1: Charter status has no defined storage in the documented architecture.**
+
+The `getExpectedPriceCents(db, tier, isCharter, contactId?)` service function (shipped Phase 4c.1, commit `104e82fb`) requires `isCharter` as a parameter. But EA v3.3 documents the Charter Pricing Window in Section 7.1 as a persistent client-level status — Charter benefit follows the client across tier upgrades AND downgrades for as long as service is continuous, and is permanently lost on cancellation. No GHL custom field, DB schema, or other storage is documented for this property.
+
+This is a tenet-relevant gap: the current architecture can't reliably determine `isCharter` for a caller. Three options need evaluation in a future focused session:
+
+- Option A: Add a new GHL custom field (`is_charter`) per contact. Tier assignment writes it on onboarding. Easy but introduces GHL as runtime dependency for invoicing.
+- Option B: Add a `client_charter_status` table to the local DB. Captures grant date, current status (active / cancelled-was-charter / never-charter), and history. Cleanest separation but requires a new schema + sync logic.
+- Option C: Compute `isCharter` from a system-wide charter cutoff timestamp + client created_at. Treats charter as derived state. Simplest but doesn't model the "cancelled-and-returned forfeits charter" rule cleanly.
+
+Decision deferred to Phase 4c.5 design discussion (when the actual invoice endpoint surfaces the need to populate `isCharter`).
+
+**Gap 2: Setup fees are not modeled by Phase 4c.1's pricing schema.**
+
+EA v3.3 Section 7 documents one-time setup fees ($249 Foundation / $349 Growth Engine / $1,200 Scale-Up). These are billed once at client onboarding, non-refundable except via the 30-day satisfaction guarantee. Phase 4c.1's `service_tier_pricing` schema only models monthly recurring pricing — there's no row type for one-time fees.
+
+Three real options to address in a future focused session:
+
+- Option A: Extend `service_tier_pricing` with a `pricing_type` column (`monthly_recurring` vs `setup_fee`). Same table, two row types per tier. Caller filters by type.
+- Option B: Add a parallel `setup_fee_pricing` table with the same structure but a different lookup function. Cleaner separation but more schemas to maintain.
+- Option C: Treat setup fees as a separate concern entirely — different invoice endpoint, different audit type, different approval rules. Maximum separation.
+
+Decision deferred to Phase 4c.5 (when the invoice endpoint surfaces this need).
+
+**Gap 3: Tier Qualifier matrix is not codified anywhere in the system.**
+
+EA v3.3 Section 7.1 documents a structured Tier Qualifier matrix (monthly transaction volume, bank accounts, employees, integrations, annual revenue, job costing, trust/multi-entity, industry flags) that determines tier assignment for a prospective client. The existing free-audit / Tier-Fit Audit endpoint touches this, but the qualifier evaluation logic is in agent prompts, not codified as data.
+
+This is NOT a Phase 4c blocker (tier assignment happens at onboarding, before invoicing). But it's an architectural debt that should be tracked. Future work item: codify the qualifier matrix as data (DB table or config) so that the audit endpoint can evaluate qualifiers programmatically, reality checks (audit_industry vs qualifiers) can be enforced, and reassessment when a client grows or shrinks doesn't depend on agent judgment alone.
+
+Not assigned to a Phase yet — to be addressed when the audit/onboarding pipeline gets focused attention.
+
+### Amendment 2 (May 24, 2026): Pricing values throughout this ADR corrected
+
+The initial draft of this ADR (committed `1fca9a11`) referenced stale pricing values for Growth Engine Standard ($499 — actual $599 per EA v3.2 May 17 update) and Scale-Up tiers ($799 / $899 — actual $999 / $1,299 per EA v3.2 May 17 update). These values predated the May 17, 2026 repricing in EA v3.2 and were carried forward in my session memory rather than verified against the authoritative document.
+
+Corrected as of this amendment. The Q6 Bootstrap data note now references the correct pricing. Any earlier commit messages or Phase 4c.1b runbook notes that referenced the stale values are forensic-only and not actionable (git history is immutable; the canonical values are in EA v3.3 and the Q6 section above).
+
+### Amendment 3 (May 24, 2026): EA v3.3 and Brief v1.3 documents not yet reflecting Phase 4b / 4c work
+
+EA v3.3 and Brief v1.3 (both updated May 17, 2026) predate ADR-002 (Phase 4b write endpoint design), Phase 4b infrastructure (idempotency keys, activity-log status extension, both shipped Saturday May 23), and ADR-003 itself (Phase 4c safety architecture, today). The authoritative documents need updating to reflect this work before they can guide future sessions reliably.
+
+Action item: Document update pass scheduled for after this ADR amendment commit. Both documents will be updated in Word directly (authoritative source) and re-committed as `.docx` files; Claude does not auto-generate markdown versions.
+
+---
+
 ## Status
 
-Proposed. Awaiting review before implementation begins.
+**Status:** Accepted (with Amendments 1, 2, 3 added May 24, 2026)
