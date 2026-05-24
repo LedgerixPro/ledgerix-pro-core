@@ -6,7 +6,12 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
+import {
+  executeApprovedAccountingWrite,
+  isAccountingApprovalType,
+} from "./accounting/write-approvals.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { logger } from "../middleware/logger.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -162,6 +167,39 @@ export function approvalService(db: Db) {
             sourceId: id,
             approvedAt: now,
           }).catch(() => {});
+        }
+      }
+
+      // Phase 4c.4: dispatch approved accounting writes to the safety-layer
+      // dispatcher. The dispatcher decides whether to execute immediately
+      // (Phase 4c.5+) or log the approval and defer execution (Phase 4c.4 stub).
+      // Failures in the dispatcher do NOT roll back the approval — the
+      // approval IS approved; the downstream write either succeeded, will
+      // be retried, or was logged for human follow-up. We catch and log.
+      if (applied && isAccountingApprovalType(updated.type)) {
+        try {
+          const result = await executeApprovedAccountingWrite(db, updated);
+          // Result info is available here for future enhancement (e.g.,
+          // writing it into the approval's decisionNote or a separate
+          // activity_log entry). For Phase 4c.4 we just log.
+          if (!result.executed) {
+            // Stub or unknown-type case — log at info level
+            // (logger call already happens inside the dispatcher)
+          }
+        } catch (err) {
+          // Dispatcher errored — don't roll back the approval, but log loudly.
+          // Phase 4c.5 needs to address retry semantics for write failures.
+          // For now, surface the error in logs so the human knows the
+          // downstream write didn't happen.
+          const msg = err instanceof Error ? err.message : String(err);
+          logger.error(
+            {
+              approvalId: id,
+              approvalType: updated.type,
+              error: msg,
+            },
+            "Accounting write dispatcher failed after approval — manual follow-up needed",
+          );
         }
       }
 
