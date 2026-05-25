@@ -398,10 +398,12 @@ Every write endpoint sits atop a safety layer that intercepts financial operatio
 - `getMostSpecificThreshold(db, endpoint, field, contactId)` — returns the threshold that applies
 - `isThresholdExceeded(value, threshold)` — comparator evaluation (gt, gte, lt, lte, eq)
 
-**Bootstrap data (DEFERRED to Phase 4c.5 admin endpoint runbook):**
+**Bootstrap data (seeded into Railway prod 2026-05-25 via `POST /api/admin/thresholds/seed`):**
 
 - Global: `accounting.payments` field `amount` gt 1,000,000 cents = $10K — per Section 7.3 HITL Gates
 - Global: `accounting.invoices` field `lineItems.sum` gt 100,000 cents = $1K — conservative anomaly default
+
+⚠ **Known defect (DISCOVERED 2026-05-25):** The `compareAndSeed` helper used by the admin seed endpoint has a null-identity SQL bug — `eq(col, NULL)` never matches in SQL, so re-running `/api/admin/thresholds/seed` creates duplicate active rows instead of skipping (because `ghl_contact_id` is null on global thresholds). Pricing seed is safe (no nullable identity fields). Do not re-run the thresholds seed until the helper is fixed; use direct SQL or a migration if thresholds need updating. Fix is the IMMEDIATE next work item in the Phase 4c.5 WIP doc (Defects Discovered, Defect 1).
 
 **Migration:** `0066_familiar_nighthawk.sql`
 
@@ -451,6 +453,23 @@ Re-ship `POST /transactions/:txnId/category`, `POST /payments`, `POST /invoices`
 - Live-events and plugin-events suppressed when companyId is null
 - Generic helper `services/admin/compare-and-seed.ts` for version-aware idempotent seeding
 - WIP doc shipped at `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md`
+
+**Part 2 shipped (commit `ff3875e8`, 2026-05-25):**
+
+- Admin endpoints mounted in production at `POST /api/admin/pricing/seed` and `POST /api/admin/thresholds/seed`
+- `compareAndSeed` generics refactored (Option A): `TRow` defaulted to `TSchema["$inferSelect"]` so identity/value/effective-to field names get compile-time protection against the actual schema (not just the candidate row shape)
+- Helper unit tests (7 tests) + endpoint integration tests (9 tests)
+- 161 targeted tests passing (145 baseline + 16 new); full monorepo typecheck clean
+
+**End-of-day bootstrap (2026-05-25):**
+
+- `POST /api/admin/pricing/seed` → HTTP 200, `inserted: 6, skipped: 0`. activity_log `e6b9d177-d313-4b6f-902b-c0ac9a5fbf6f`. Six canonical pricing rows live in `service_tier_pricing` matching Section 8 values.
+- `POST /api/admin/thresholds/seed` → HTTP 200, `inserted: 2, skipped: 0`. activity_log `99273b65-c078-45e2-8263-ebfaab0e7296`. Two canonical threshold rows live in `write_thresholds` matching Section 6.3.2 bootstrap values.
+- Both audit-logged under admin@ledgerixpro.com's user identity with `company_id = NULL` per Decision B.
+
+**Defect discovered during idempotency re-run (2026-05-25):**
+
+Re-running the seeds was intended to verify Decision 3's idempotency contract. Pricing held the contract (re-run returned `skipped: 6`). Thresholds did NOT (re-run returned `inserted: 2` instead of `skipped: 2`, creating duplicate active rows). Root cause: `compareAndSeed` uses `eq(col, value)` for all identity-match conditions, including when value is null; `eq(col, NULL)` never matches in SQL. Pricing is safe (no nullable identity fields); thresholds is affected (`ghl_contact_id` is null on global thresholds). Unit tests didn't catch this because the mock `db.where()` is a no-op pass-through that doesn't model SQL semantics. Duplicate rows cleaned up via hard DELETE; activity_log entries preserved per audit-retention principles. Fix (helper change to `isNull(col)` for null values + integration tests against real DB) is the IMMEDIATE next work item in the WIP doc. See `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md` Defects Discovered section for full root cause and fix sketch.
 
 **Architecture Decisions locked in Phase 4c.5** (in WIP doc):
 
