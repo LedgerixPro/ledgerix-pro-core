@@ -214,17 +214,91 @@ infrastructure — smaller scope than estimated.
 - Phase 4c progress: 1 of 5 pieces shipped (4c.1)
 - Architectural debt acknowledged: Charter storage, setup fees, Tier Qualifier matrix — all deferred with options identified
 
-### 2026-05-25 Monday (Memorial Day, planned 12-14 hr)
+### 2026-05-24 Sunday (continued — afternoon + evening session)
 
-**Goal:** Continue Phase 4c safety architecture build.
+After the morning's Phase 4c.1 work + ADR-003 amendments, the same Sunday continued through the afternoon and evening. The Monday plan above was OBSOLETED by Sunday completing most of it ahead of schedule.
 
-**Plan:**
-1. Phase 4c.2 — Threshold framework (new write_thresholds table + getApplicableThresholds service function + tests). Bootstrap thresholds: $10K payments (EA Section 6.3), $1K invoices.
-2. Phase 4c.3 — Customer dedupe refactor of findOrCreateCustomer to return {customerId, action} where action discriminates auto-proceed vs HITL escalation.
-3. Phase 4c.4 if time permits — Write-approval dispatcher (services/accounting/write-approvals.ts + extension to approvalService.approve()).
+**Commit log (in order, continuing from morning):**
 
-**Not in scope Monday (deferred to later sessions):**
-- Phase 4c.5 (re-shipping write endpoints) — depends on 4c.2-4c.4 completion
-- Charter status storage decision (Gap 1 from ADR-003 Amendment 1)
-- Setup fee handling decision (Gap 2)
-- EA v3.4 doc update (deferred until Phase 4c is more complete)
+6. **9bb4dc68** — PHASE-4-PROGRESS.md tracker update reflecting Sunday morning state.
+7. **7fce967b** — **Phase 4c.2 (Threshold framework) COMPLETE.** New schema write_thresholds. New service: getApplicableThresholds, getMostSpecificThreshold, isThresholdExceeded. 14 unit tests. Migration 0066_familiar_nighthawk.sql. Hierarchical thresholds (per-client > global). Per-client overrides can either tighten or loosen vs global. Bootstrap data DEFERRED to runbook (Phase 4c.2b).
+8. **43d6e144** — **Phase 4c.3 (Customer dedupe refactor) COMPLETE.** Refactored findOrCreateCustomer to return {customerId, action, matchDetails?}. Five action types: 3 auto-proceed (found_by_email, found_by_name_exact, created_new) + 2 HITL-required (ambiguous_name_only, ambiguous_email_match_different_name). New utility module: string-similarity.ts (normalizeName, levenshteinDistance, namesAreSimilar). 25 tests for string-similarity + 9 for findOrCreateCustomer. Real bug caught during testing: empty stored DisplayName was treated as ambiguous; fixed to treat empty as "no conflict."
+9. **e7cec441** — **Phase 4c.4 (Write-approval dispatcher) COMPLETE in stub mode.** New module: services/accounting/write-approvals.ts. 4 dot-namespaced approval type constants + 4 typed payload interfaces (per ADR-003 Q1+Q2). executeApprovedAccountingWrite dispatcher in stub mode (logs but doesn't yet wire to upstream writes — Phase 4c.5 will replace stubs with real calls). approvalService.approve() extended with dispatcher call for accounting.* types. 11 tests.
+10. **c9ab53f9** — **WIP doc convention established + CLAUDE.md session-startup guide created.** Repo root CLAUDE.md captures 5 critical operating principles: trust tenet, verify before assuming, session-end doc discipline, locked decisions stay locked, WIP docs are truth for active work. docs/wip/README.md defines the WIP doc convention (required sections, discipline rules, when to create/remove). This is multi-session continuity infrastructure for architectural work that spans days.
+11. **e618231b** — **Phase 4c.5 Part 1 shipped.** Migration 0067_last_gateway.sql makes activity_log.companyId nullable (architectural Decision B). LogActivityInput type accepts string | null. publishLiveEvent and PluginEvent emissions skipped when companyId is null (Option 1). New generic helper services/admin/compare-and-seed.ts implementing version-aware idempotency per Phase 4c.5 Decision 3. Phase 4c.5 WIP doc shipped with Decisions 1, 2 (revised), 3 locked.
+12. **06d2fffb** — Phase 4c.5 WIP doc Session Log updated for Block 1 end-of-block (Scott taking 3-hour break before Block 2).
+
+**Architecture decisions reached Sunday afternoon/evening (incremental to ADR-003):**
+
+- **WIP doc convention** for multi-session work. ALL future multi-session architectural work goes through docs/wip/ with required structure: Status / Decisions Made / Decisions Pending / Work Done / Next Steps / Blockers / NOT Doing / Session Log. Discipline: update at every session end; locked decisions stay locked; rejected options stay rejected; Session Log append-only.
+
+- **Phase 4c.5 Decision 1 (locked):** Admin HTTP endpoints (not one-time scripts) for safety-layer data management — pricing, thresholds, future per-client overrides. Driven by 7-year audit retention requirement. Scripts can't deliver durable audit trails.
+
+- **Phase 4c.5 Decision 2 (revised):** Admin endpoints use existing assertInstanceAdmin from authz.ts. Originally locked as "session-only first; CI/CD bearer path committed for future." REVISED in same session after reading the actual auth middleware code — board_key path captures userId. The existing assertInstanceAdmin natively supports session, board_key, and local_implicit paths — all identity-tracked. Real lesson: the original Decision 2 was locked without first grepping the auth code (violated memory #7 verify-before-assuming).
+
+- **Phase 4c.5 Decision 3 (locked):** Version-aware idempotency for admin seed endpoints (Option D-modified). Per candidate row: identical to active row → skip; different from active → supersede (effective_to=NOW(), insert new); no active row → insert. Returns {inserted, skipped, superseded, newRows}. Implemented as generic compareAndSeed helper.
+
+- **Phase 4c.5 Decision B (locked):** activity_log.companyId nullable for system-scoped admin operations. Considered alternatives (use Ledgerix Pro's companyId, sentinel UUID) rejected for semantic dishonesty.
+
+- **Phase 4c.5 Option 1 (locked):** Live-events and plugin-events suppressed when companyId is null. The current operations dashboard monitors agent health (not activity streams), so admin operations don't need real-time broadcast. Activity log query remains source of truth.
+
+**NOT Doing (explicitly rejected Sunday):**
+- One-time scripts for seeding (rejected: audit retention requires DB-backed activity log)
+- Every-category-update-needs-approval (rejected: doesn't scale to 50+ clients)
+- previousAccountRef: null placeholder (rejected: trust tenet)
+- Use Ledgerix Pro's companyId for admin operations (rejected: semantic dishonesty + future SaaS conflict)
+- Sentinel UUID for system-scoped broadcasts (rejected: inconsistency between DB row and broadcast)
+- System-wide event channel via publishLiveEvent (rejected for now: dashboard doesn't need this; revisit if future dashboard view does)
+
+**Sunday end-of-day tally:**
+
+- Total Sunday commits: 12 (1 reverted, 11 net forward progress)
+- Tests: 145 passing (62 accounting + 14 idempotency + 10 pricing + 14 thresholds + 25 string-similarity + 9 findOrCreateCustomer + 11 write-approvals)
+- Phase 4c progress: 4 of 5 pieces complete (4c.1, 4c.2, 4c.3, 4c.4). 4c.5 has WIP doc + Part 1 shipped (nullable companyId, compareAndSeed helper); Part 2+ pending.
+- Phase 4 endpoint progress: 5 of 8 production-ready — UNCHANGED (write endpoints still deferred behind safety layer)
+- Architecture decisions locked Sunday: 10 ADR-003 decisions + 3 ADR-003 amendments + 4 Phase 4c.5 decisions (1, 2-revised, 3, B) + Option 1 + WIP convention
+- WIP infrastructure: CLAUDE.md + docs/wip/README.md + Phase 4c.5 WIP doc active
+- User memories added/updated: #7 (verify before assuming), #8 (CI/CD bearer-token triggers)
+
+**State at Sunday end-of-day:**
+
+- Codebase HEAD: master @ 06d2fffb (will be 06d2fffb-or-later after end-of-day documentation pass)
+- All committed work is on Railway main branch
+- admin.ts file drafted in working tree but typecheck-failing (3 errors); INTENTIONALLY uncommitted; Phase 4c.5 Part 2 will fix these
+- WIP doc has explicit Block 2 todo list — next session can pick up cleanly
+
+### Next session (date TBD)
+
+**Goal:** Complete Phase 4c.5 Part 2 (admin endpoint implementation atop the foundation shipped Sunday).
+
+**Per Phase 4c.5 WIP doc IMMEDIATE section:**
+
+1. Fix admin.ts compile errors (uncommitted file at server/src/routes/admin.ts):
+   - Change `.ts` import extension to `.js` (ESM convention)
+   - Fix effectiveToField type errors at lines 75 and 144 — likely needs explicit type annotation or cast in the compareAndSeed call
+
+2. Mount admin router in app.ts (import + api.use call).
+
+3. Write tests:
+   - server/src/routes/admin.test.ts (auth + each idempotency branch)
+   - server/src/services/admin/compare-and-seed.test.ts (insert / skip / supersede / error paths)
+
+4. Bootstrap pricing + threshold data via admin endpoints (Phase 4c.1b + 4c.2b).
+
+5. Commit Part 2 with clean message.
+
+**Pending architecture questions (each deserves a focused session):**
+- Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint
+- Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint
+- Q3: get-transaction-by-id infrastructure scope — blocks Transaction Category endpoint
+
+**Future sessions (after Part 2 ships):**
+- Resolve Q1, Q2, Q3
+- Re-implement the three write endpoints atop the now-complete safety layer
+- Wire Phase 4c.4 dispatcher stubs to real upstream writes
+- Final session: move locked decisions from Phase 4c.5 WIP doc to ADR-004, summarize in this tracker, update EA + Brief, delete the WIP doc
+
+**Not in scope for next immediate session:**
+- The three write endpoints themselves (Q1/Q2/Q3 need answers first)
+- ADR-004 (created when all of Phase 4c.5 ships)
+- EA v3.4 doc update (deferred until Phase 4c is more complete OR explicitly requested)

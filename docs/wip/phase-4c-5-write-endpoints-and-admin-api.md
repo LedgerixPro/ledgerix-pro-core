@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-24 mid-Sunday (Block 1 of split session — break in progress)
+**Last updated:** 2026-05-24 end of Sunday (Block 2 deferred — see Session Log)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -306,6 +306,16 @@ This WIP doc must be read at the start of every Phase 4c.5 session before any wo
 - Phase 4c.5 has WIP doc + Decisions 1, 2 (revised), 3, B + helper module + nullable companyId migration
 - Block 2 (after break) picks up at "Fix admin.ts compile errors" per Next Steps section above
 
-### Session 1 Block 2 — 2026-05-24 (Sunday, after break — pending)
+### Session 1 Block 2 — 2026-05-24 (Sunday, after break — DID NOT OCCUR)
 
-(To be filled in at end of Block 2.)
+**Honest status:** Block 2 was planned for ~2 hours of post-break work covering admin.ts compile fixes, router mounting, test coverage, and end-of-day documentation. After the 3-hour break, Scott returned and decided to end the work day rather than proceed with code work. End-of-day documentation pass occurred instead (PHASE-4-PROGRESS.md update + this WIP doc closure + EA/Brief content drafting).
+
+**Why this matters for future sessions:** The planned Block 2 work (admin.ts fixes, router mount, tests) was NOT done. The admin.ts file remains uncommitted in the working tree with 3 typecheck errors. The Block 2 todo list at "Next Steps (in order) — IMMEDIATE — Block 2" is still the correct starting point for the next session.
+
+**State at session end (Sunday 2026-05-24 final):**
+- Codebase HEAD: master @ <post-doc-update commit>
+- 12 commits shipped today (11 net forward; 1 reverted)
+- 145 targeted tests passing
+- Phase 4c.5 Part 1 shipped; Part 2 ready to pick up exactly as documented in IMMEDIATE Next Steps
+- admin.ts file in working tree, intentionally uncommitted, 3 typecheck errors documented
+- WIP doc + tracker + EA + Brief all reflect Sunday's actual work
