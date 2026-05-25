@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-25 Part 2 shipped (Session 2 — see Session Log)
+**Last updated:** 2026-05-25 Session 2 end-of-day (Part 2 shipped + bootstrap + null-identity bug discovered)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -10,7 +10,8 @@
 - ADR-003 (Phase 4c safety architecture + 3 amendments)
 **Estimated remaining work:** Multi-session. Original estimate 20-30 hours; ~5-6 hours shipped across Sessions 1-2:
 - ~~Admin endpoint scaffolding (auth, routing, base pattern): 2-3 hours~~ — DONE Session 2 (commit `ff3875e8`)
-- Bootstrap data via admin endpoints (pricing, thresholds): 1-2 hours — endpoints ready, bootstrap action deferred until dev env isolated from prod (memory TODO Option B)
+- ~~Bootstrap data via admin endpoints (pricing, thresholds): 1-2 hours~~ — DONE Session 2 end-of-day (pricing seeded clean, thresholds seeded then re-run exposed a null-identity bug — see Defects Discovered)
+- **NEW:** Fix compareAndSeed null-identity bug + harden tests: 2-3 hours (blocks any admin endpoint that uses nullable identity fields — see Defects Discovered below)
 - Charter status storage decision + implementation: 3-5 hours
 - Setup fee handling decision + implementation: 3-5 hours
 - get-transaction-by-id infrastructure (QBO + Xero, per-type dispatch): 5-7 hours
@@ -171,6 +172,36 @@ Three options:
 
 (Q4 and Q5 resolved this session — see Decisions 2 and 3 above.)
 
+## Defects Discovered
+
+### Defect 1: compareAndSeed null-identity SQL bug (DISCOVERED 2026-05-25 Session 2 end-of-day)
+
+**Symptom:** Re-running `POST /api/admin/thresholds/seed` against an already-seeded DB returned `inserted: 2, skipped: 0` (wrong) instead of the expected `inserted: 0, skipped: 2`. Each re-run creates duplicate active rows in `write_thresholds`. The pricing endpoint behaves correctly because its identity tuple `[tier, isCharter]` has no nullable fields.
+
+**Root cause:** The helper builds its identity-match WHERE conditions with `eq(column, value)` for every identity field, including when `value` is `null`. In SQL, `column = NULL` is never true (not even `NULL = NULL`). For the thresholds seed, `ghlContactId` is `null` on canonical (global) thresholds, so the helper's lookup query never matches the existing row — it always falls into the "no active row exists" branch and re-inserts.
+
+**Repro evidence in prod (2026-05-25):**
+
+- 18:58:31 — Initial thresholds seed: `inserted: 2`. activity_log `99273b65-c078-45e2-8263-ebfaab0e7296`.
+- 19:00:28 — Re-run thresholds seed: `inserted: 2` (BUG — should have been `skipped: 2`). activity_log `8e55d843-b23a-49fe-b457-288fa1a2d30c`.
+- 19:00:30 — psql verification: 4 rows in `write_thresholds`, all with `effective_to = NULL`, 2 identical pairs.
+- 19:03 — Cleanup: hard DELETE on the 2 duplicate rows from 19:00:28/29 (IDs `85f5d1a4-...` and `c704985f-...`). Original 18:58 rows retained. Activity log entries preserved (audit retention is sacred — see ADR-003).
+
+**Why tests didn't catch this:** The mock `db.where()` in `compare-and-seed.test.ts` is a no-op pass-through — it returns the chain object without applying any SQL semantics. The mock returns whatever read result is pre-seeded for that test, regardless of what conditions were built. Net effect: the unit tests can't distinguish between "helper built the right WHERE clause" and "helper built a WHERE clause that returns nothing in real SQL." Both look identical to the mock.
+
+The skip path tests passed because the test pre-seeded the read with the "existing row" — the helper got that row back, compared values, and skipped correctly. But the helper was finding the row only because the mock handed it over, not because the WHERE clause would have matched in real SQL.
+
+**Fix sketch (DO NOT IMPLEMENT IN THIS SESSION — needs deliberate time):**
+
+1. Helper change: when building identity-match conditions, if the candidate value is `null`, use `isNull(column)` instead of `eq(column, value)`.
+2. Test change: either (a) replace the no-op `db.where()` mock with one that captures and replays conditions, then assert on them; or (b) write integration tests against a real DB (pglite or similar) that exercises the actual SQL semantics. Option (b) is stronger and matches how this defect surfaced in prod.
+
+**Lesson:** Unit tests with fluent-chain mocks can verify call shape but NOT SQL semantics. For helpers that build WHERE clauses with edge cases (nulls, undefined, type coercion), integration tests against a real DB are necessary. Memory #7 (verify before assuming) applied: assumed mock-pass = SQL-correct. It doesn't.
+
+**Blocks:** Any future admin endpoint that seeds data with nullable identity fields. Pricing endpoint (no nulls) is safe. Current `write_thresholds` data is correct (cleanup completed); future re-runs would re-introduce duplicates until the fix ships.
+
+**Workaround until fix:** Don't re-run `/api/admin/thresholds/seed`. If thresholds need updating, do so via direct SQL or a future migration until the helper is fixed.
+
 ## Work Done (cumulative)
 
 - `e618231b` (Sunday 2026-05-24, Block 1) — activity_log.companyId nullable + compareAndSeed helper + this WIP doc
@@ -188,6 +219,12 @@ Three options:
   - Endpoint integration tests (9 tests): 3 auth-guard convergence tests (all → 403 via assertInstanceAdmin → assertBoard), pricing happy path (envelope/helper-call/audit-log), thresholds happy path, failure-path audit logging
   - 161 targeted tests passing (145 baseline + 16 new); full monorepo typecheck clean
 
+- 2026-05-25 Session 2 end-of-day — Production bootstrap of canonical pricing + thresholds
+  - `POST /api/admin/pricing/seed` → HTTP 200, `inserted: 6, skipped: 0, superseded: 0, newRows: 0`. activity_log `e6b9d177-d313-4b6f-902b-c0ac9a5fbf6f`. Verified: 6 rows in `service_tier_pricing` match canonical values.
+  - `POST /api/admin/thresholds/seed` → HTTP 200, `inserted: 2`. activity_log `99273b65-c078-45e2-8263-ebfaab0e7296`. Verified: 2 rows in `write_thresholds` match canonical values.
+  - Idempotency re-run exposed null-identity bug on thresholds endpoint (see Defects Discovered). Cleanup: 2 duplicate rows DELETED from `write_thresholds`. Activity_log entries preserved.
+  - Bootstrap is functionally complete for both tables. Canonical data lives in prod DB under admin@ledgerixpro.com's user identity.
+
 ## Next Steps (in order)
 
 ### COMPLETED — Session 2 (Monday 2026-05-25, commit `ff3875e8`)
@@ -201,7 +238,9 @@ Three options:
 
 ### IMMEDIATE — Next deliberate action
 
-7. **Bootstrap canonical pricing + thresholds via the seed endpoints** (Phase 4c.1b + 4c.2b). DEFERRED from Session 2 because local dev environment is not yet isolated from prod credentials (memory TODO: Option B credentials separation). The endpoints are ready, tested, and audit-logged. Bootstrap is a deliberate operator action against the right environment — most likely Railway prod via the board API key path — not a side effect of local dev work.
+7. ✅ **Bootstrap canonical pricing + thresholds via the seed endpoints** — DONE Session 2 end-of-day. Both seeds executed against Railway prod, audit-logged, verified. See Work Done. Idempotency re-run exposed a defect → next item.
+
+8. **Fix compareAndSeed null-identity bug + harden tests** (see Defects Discovered, Defect 1). The helper uses `eq(col, value)` for all identity-match conditions, including when value is null — but `eq(col, NULL)` never matches in SQL. Pricing is safe (no nullable identity fields); thresholds is affected because `ghlContactId` is null on global thresholds. Mock-based unit tests passed because the mock `db.where()` is a no-op pass-through that doesn't model real SQL semantics. Fix: (a) helper change to use `isNull(col)` when value is null, (b) replace or supplement the unit-test mocks with integration tests against a real DB.
 
 ### FUTURE SESSIONS
 
@@ -329,3 +368,39 @@ This WIP doc must be read at the start of every Phase 4c.5 session before any wo
 **Working style notes captured to memory:**
 - Memory #10 added: One action per turn, ALWAYS labeled with exact destination (Terminal vs Claude Code prompt). For Claude Code prompts, the entire pasteable block wrapped between explicit markers inside one code fence so Scott can copy as a unit without parsing what's instruction vs commentary.
 - Memory #11 added: Decision framing — always present options as numbered A/B/C with pros/cons and explicit recommendation, even for small decisions like commit structure. Don't describe a choice neutrally; frame it as a decision with tradeoffs.
+
+### Session 2 end-of-day addendum — Production bootstrap + defect discovery
+
+**Goal:** Bootstrap canonical pricing + thresholds in prod via the seed endpoints we just shipped. Verify the full audit trail working end-to-end.
+
+**Pre-flight verification (memory #7 cashed in):**
+- HTTP probe against `/api/admin/pricing/seed` (POST, no auth) returned `403 {"error":"Board access required"}` — confirmed deploy of `ff3875e8` is live on Railway.
+- psql query against Railway prod confirmed the single board_api_keys row ("Railway Admin Key") is owned by admin@ledgerixpro.com, has instance_admin role, is unrevoked, unexpired.
+- psql query confirmed `service_tier_pricing` and `write_thresholds` both empty at start (clean bootstrap state).
+
+**Bootstrap execution:**
+- Pricing seed: HTTP 200, `inserted: 6, skipped: 0`. psql verified 6 rows match canonical values. activity_log entry verified with `actor_id = admin@ledgerixpro.com's user ID`, `company_id = NULL` (system-scoped per Decision B), `status = success`, full result in `details`.
+- Thresholds seed: HTTP 200, `inserted: 2, skipped: 0`. psql verified 2 rows match canonical EA Section 6.3 values. activity_log entry verified.
+
+**Idempotency re-run + defect discovery:**
+- Re-ran pricing seed: HTTP 200, `inserted: 0, skipped: 6, superseded: 0, newRows: 0`. Decision 3 contract held for pricing. ✅
+- Re-ran thresholds seed: HTTP 200, `inserted: 2, skipped: 0` (BUG — should have been `inserted: 0, skipped: 2`).
+- Root cause traced to `eq(col, null)` semantics in SQL (never matches NULL). See Defects Discovered, Defect 1.
+- Cleanup: 2 duplicate rows in `write_thresholds` hard-DELETED. activity_log entries preserved (audit retention is sacred per ADR-003).
+
+**Real lesson — mocks don't model SQL semantics:**
+- The unit tests in `compare-and-seed.test.ts` passed because the mock `db.where()` is a no-op pass-through. The mock returns whatever the test pre-seeded, regardless of what WHERE conditions were built.
+- A test can prove "helper called .where()" but not "helper built a WHERE that would match in real SQL."
+- For helpers that build SQL predicates with edge cases (nulls, type coercion, complex joins), integration tests against a real DB are necessary. This is a generalizable lesson, not specific to compareAndSeed.
+
+**Discoveries:**
+- Project attachment .docx files in `/mnt/project/` are stale relative to the .md source-of-truth in `docs/`. Scott noted EA v3.4 / Brief v1.4 are current; attached .docx files are pre-conversion artifacts.
+- The full audit-log story for Phase 4c.5 works end-to-end. From `actor_id` to `details`, every field captures intent correctly. The 7-year audit retention design pays off.
+
+**State at session end:**
+- Codebase HEAD: master @ `87773e76` (will be `+1` after this WIP doc + tracker update)
+- 161 targeted tests passing (no regression)
+- `service_tier_pricing`: 6 active rows, canonical, verified
+- `write_thresholds`: 2 active rows, canonical, verified (post-cleanup)
+- `activity_log`: 4 admin-operation entries (2 pricing seeds, 2 thresholds seeds — original + buggy re-run for each). Permanent audit trail.
+- Phase 4c.5 bootstrap complete; null-identity defect documented; fix is the next IMMEDIATE work item.

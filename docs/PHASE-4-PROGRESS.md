@@ -296,16 +296,38 @@ After the morning's Phase 4c.1 work + ADR-003 amendments, the same Sunday contin
 
 - Bootstrap of canonical pricing + thresholds via the seed endpoints. The endpoints are tested and ready; bootstrap is a deliberate operator action against the right environment (most likely Railway prod via the board API key path) — not a side effect of local dev work. Local dev env isn't yet isolated from prod credentials (memory TODO Option B). Avoided a sleepwalk into a side-effectful prod write disguised as local dev.
 
+**End-of-day update (~1 hour after the Part 2 commit):**
+
+Bootstrap proceeded with deliberate care: pre-flight HTTP probe confirmed deploy live (`403 {"error":"Board access required"}` from unauth'd POST proved the endpoint was mounted); psql verification of the board_api_keys row confirmed the bearer token resolves to admin@ledgerixpro.com with instance_admin role.
+
+**Bootstrap results:**
+- `POST /api/admin/pricing/seed` → HTTP 200, `inserted: 6`. psql verified 6 rows match canonical values. activity_log captures the operation under admin@ledgerixpro.com's user identity, `company_id = NULL` per Decision B.
+- `POST /api/admin/thresholds/seed` → HTTP 200, `inserted: 2`. psql verified 2 rows match EA Section 6.3 canonical values. activity_log captures the operation.
+
+**Idempotency re-run exposed a null-identity bug:**
+
+Re-running both seeds was supposed to demonstrate Decision 3's idempotency contract (`skipped: N`). Pricing held the contract perfectly. Thresholds did NOT — re-run returned `inserted: 2` (should have been `skipped: 2`), creating duplicate active rows in `write_thresholds`.
+
+Root cause: the compareAndSeed helper uses `eq(col, value)` to build identity-match WHERE conditions, including when value is null. `eq(col, NULL)` never matches in SQL (not even NULL=NULL). Pricing's identity tuple `[tier, isCharter]` has no nulls so it works correctly. Thresholds' identity tuple `[endpoint, field, ghlContactId]` is null on global thresholds, breaking the lookup.
+
+Unit tests didn't catch this because the mock `db.where()` is a no-op pass-through — the mock returns whatever the test pre-seeded regardless of what WHERE conditions were built. Tests verified call shape, not SQL semantics. Generalizable lesson: helpers that build SQL predicates with edge cases (nulls) need integration tests, not just mocked unit tests.
+
+Cleanup: 2 duplicate rows in `write_thresholds` hard-DELETED to restore correct state. activity_log entries preserved (audit retention is sacred). Both data tables now correct in prod.
+
+**Bug + fix documented in Phase 4c.5 WIP doc** under new "Defects Discovered" section. Fix (helper change + integration tests) is now the IMMEDIATE next work item in the WIP doc, ahead of write-endpoint re-implementation.
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
 
-**Path A — Bootstrap pricing + thresholds.** Single POST to each seed endpoint, deliberate operator action against Railway prod. Endpoints are ready, tested, audit-logged. Outcome: canonical data is live in prod DB; activity_log captures the seed operation under Scott's user identity.
+**Path A — Fix the compareAndSeed null-identity bug (IMMEDIATE PRIORITY).** Discovered Session 2 end-of-day during idempotency re-run verification. Pricing is safe; thresholds is affected. Helper needs `isNull(col)` when value is null instead of `eq(col, null)`. Tests need integration coverage (real DB), not just mocks. Estimated 2-3 hours. See WIP doc Defects Discovered for full root cause and fix sketch. Blocks any future admin endpoint with nullable identity fields.
 
 **Path B — Resolve the three pending architecture questions, each in its own focused session:**
 - Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint
 - Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint
 - Q3: get-transaction-by-id infrastructure scope — blocks Transaction Category endpoint
+
+Path A is recommended first — the bug is concrete, scoped, and lessons learned reinforce the test-discipline going forward. Path B can follow.
 
 **After both paths complete:**
 - Re-implement the three write endpoints atop the now-complete safety layer
