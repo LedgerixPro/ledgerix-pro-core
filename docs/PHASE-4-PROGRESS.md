@@ -267,38 +267,52 @@ After the morning's Phase 4c.1 work + ADR-003 amendments, the same Sunday contin
 - admin.ts file drafted in working tree but typecheck-failing (3 errors); INTENTIONALLY uncommitted; Phase 4c.5 Part 2 will fix these
 - WIP doc has explicit Block 2 todo list — next session can pick up cleanly
 
+### 2026-05-25 Monday — Phase 4c.5 Part 2 shipped
+
+**Goal:** Complete Phase 4c.5 Part 2 (admin endpoints atop Sunday's foundation).
+
+**Commit shipped:**
+
+13. **ff3875e8** — **Phase 4c.5 Part 2 COMPLETE.** Fixed 3 typecheck errors in admin.ts (the .ts→.js import + two effectiveToField type errors via Option A generics refactor: TRow defaulted to TSchema["$inferSelect"] so the helper's keyof TRow & string union becomes the real schema columns, not just the candidate row's identity+value fields). Mounted admin router in app.ts alongside other instance-admin routes. Added 7 helper unit tests + 9 endpoint integration tests. 161 targeted tests passing (145 baseline + 16 new). Full monorepo typecheck clean.
+
+**Architecture decisions reached:**
+
+- None new. Decision 2 (revised) auth pattern + Decision 3 idempotency pattern from Sunday's WIP doc were applied without re-litigation.
+
+**Implementation decision worth flagging:**
+
+- **compareAndSeed generics refactor (Option A over B and C):** Original two-generic form `<TSchema extends PgTable, TRow>` inferred TRow from candidateRows (identity+value fields only), so `"effectiveTo"` wasn't in the type union — that was the root cause of the lines-75/144 errors. Chose Option A (default TRow to TSchema["$inferSelect"]) over B (widen candidate rows at every call site) and C (loosen effectiveToField to plain string), because A is the closest match to the helper's design intent. Runtime guards check column existence on the table; the compile-time type should match that the keys are table columns, not candidate-row keys. Verified $inferSelect is the standard codebase pattern (access.ts, xero-client.ts, qbo-client.ts, write-approvals.ts, execution-workspaces.ts) before refactoring.
+
+**State at session end:**
+
+- Codebase HEAD: master @ ff3875e8 (pushed to GitHub master)
+- 161 targeted tests passing (145 baseline + 16 new across compare-and-seed.test.ts + admin.test.ts)
+- Full monorepo typecheck clean
+- Phase 4c.5 Part 2 complete; bootstrap deferred as the next deliberate action
+- Phase 4c progress: 4 of 5 pieces complete + 4c.5 Part 1 + Part 2 shipped; 4c.5 bootstrap + remaining Q's pending
+- Phase 4 endpoint progress: 5 of 8 production-ready (UNCHANGED — write endpoints still deferred behind safety layer + Q's)
+
+**What was deferred during the session:**
+
+- Bootstrap of canonical pricing + thresholds via the seed endpoints. The endpoints are tested and ready; bootstrap is a deliberate operator action against the right environment (most likely Railway prod via the board API key path) — not a side effect of local dev work. Local dev env isn't yet isolated from prod credentials (memory TODO Option B). Avoided a sleepwalk into a side-effectful prod write disguised as local dev.
+
 ### Next session (date TBD)
 
-**Goal:** Complete Phase 4c.5 Part 2 (admin endpoint implementation atop the foundation shipped Sunday).
+**Two paths forward, in any order:**
 
-**Per Phase 4c.5 WIP doc IMMEDIATE section:**
+**Path A — Bootstrap pricing + thresholds.** Single POST to each seed endpoint, deliberate operator action against Railway prod. Endpoints are ready, tested, audit-logged. Outcome: canonical data is live in prod DB; activity_log captures the seed operation under Scott's user identity.
 
-1. Fix admin.ts compile errors (uncommitted file at server/src/routes/admin.ts):
-   - Change `.ts` import extension to `.js` (ESM convention)
-   - Fix effectiveToField type errors at lines 75 and 144 — likely needs explicit type annotation or cast in the compareAndSeed call
-
-2. Mount admin router in app.ts (import + api.use call).
-
-3. Write tests:
-   - server/src/routes/admin.test.ts (auth + each idempotency branch)
-   - server/src/services/admin/compare-and-seed.test.ts (insert / skip / supersede / error paths)
-
-4. Bootstrap pricing + threshold data via admin endpoints (Phase 4c.1b + 4c.2b).
-
-5. Commit Part 2 with clean message.
-
-**Pending architecture questions (each deserves a focused session):**
+**Path B — Resolve the three pending architecture questions, each in its own focused session:**
 - Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint
 - Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint
 - Q3: get-transaction-by-id infrastructure scope — blocks Transaction Category endpoint
 
-**Future sessions (after Part 2 ships):**
-- Resolve Q1, Q2, Q3
+**After both paths complete:**
 - Re-implement the three write endpoints atop the now-complete safety layer
 - Wire Phase 4c.4 dispatcher stubs to real upstream writes
 - Final session: move locked decisions from Phase 4c.5 WIP doc to ADR-004, summarize in this tracker, update EA + Brief, delete the WIP doc
 
-**Not in scope for next immediate session:**
+**Not in scope for the immediate-next session:**
 - The three write endpoints themselves (Q1/Q2/Q3 need answers first)
 - ADR-004 (created when all of Phase 4c.5 ships)
 - EA v3.4 doc update (deferred until Phase 4c is more complete OR explicitly requested)
