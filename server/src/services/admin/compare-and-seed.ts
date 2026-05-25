@@ -38,7 +38,14 @@ export interface CompareAndSeedResult {
   newRows: number;
 }
 
-export interface CompareAndSeedOptions<TSchema extends PgTable, TRow> {
+// TRow is derived from the table's $inferSelect — the full row shape
+// including effectiveTo, effectiveFrom, id, etc. This gives identityFields,
+// valueFields, and effectiveToField compile-time protection against typos
+// against the actual schema (not just the candidate row shape).
+export interface CompareAndSeedOptions<
+  TSchema extends PgTable,
+  TRow = TSchema["$inferSelect"],
+> {
   // The Drizzle table schema (e.g., serviceTierPricing)
   table: TSchema;
   // Field names on the schema that determine row identity (e.g., ['tier', 'isCharter'])
@@ -47,15 +54,16 @@ export interface CompareAndSeedOptions<TSchema extends PgTable, TRow> {
   valueFields: ReadonlyArray<keyof TRow & string>;
   // Field name for the "effective_to" timestamp column (most schemas use 'effectiveTo')
   effectiveToField: keyof TRow & string;
-  // Candidate rows to seed
+  // Candidate rows to seed. Partial<TRow> allows callers to omit DB-managed
+  // columns like id, effectiveFrom (defaultNow), and effectiveTo (NULL on insert).
   candidateRows: ReadonlyArray<Partial<TRow>>;
   // Human-readable label for logging
   schemaLabel: string;
 }
 
-export async function compareAndSeed<TSchema extends PgTable, TRow>(
+export async function compareAndSeed<TSchema extends PgTable>(
   db: Db,
-  opts: CompareAndSeedOptions<TSchema, TRow>,
+  opts: CompareAndSeedOptions<TSchema>,
 ): Promise<CompareAndSeedResult> {
   const result: CompareAndSeedResult = {
     inserted: 0,
