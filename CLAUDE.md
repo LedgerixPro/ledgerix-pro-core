@@ -4,8 +4,8 @@ This file is the FIRST thing Claude should read at the start of every session wo
 
 ## Authoritative documents (read in this order)
 
-1. **`docs/LedgerixPro-Claude-Project-Brief-v1.3.docx`** — condensed system overview. Read first for fast orientation.
-2. **`docs/LedgerixPro-Enterprise-Architecture-v3.3.docx`** — full architecture. Read for detail on any specific subsystem.
+1. **`docs/LedgerixPro-Claude-Project-Brief.md`** — condensed system overview. Read first for fast orientation.
+2. **`docs/LedgerixPro-Enterprise-Architecture.md`** — full architecture. Read for detail on any specific subsystem.
 3. **`docs/adr/`** — Architecture Decision Records. Settled decisions. Each ADR is locked and should not be reopened without explicit reason.
 4. **`docs/PHASE-4-PROGRESS.md`** — current phase tracker. Status of Phase 4 work.
 
@@ -44,13 +44,13 @@ These are non-negotiable, established across sessions:
 
 ## File ownership
 
-- **Scott edits directly:** the two Word docs in `docs/` (EA, Brief)
-- **Claude edits (via scripts):** all `.md` files in repo, all source code, all tests
+- **Claude edits via str_replace / create_file:** all `.md` files in repo (including EA and Brief), all source code, all tests
+- **Scott reviews:** all changes before commit. Claude proposes, Scott approves.
 - **Never edit:** files under `/mnt/skills/` (read-only system skills)
 
 ## What to do at session start
 
-1. Read `docs/LedgerixPro-Claude-Project-Brief-v1.3.docx` for orientation
+1. Read `docs/LedgerixPro-Claude-Project-Brief.md` for orientation
 2. Check `docs/wip/` for active multi-session work
 3. Check `docs/PHASE-4-PROGRESS.md` for current phase status
 4. If WIP docs exist, read them BEFORE proposing any architectural changes
