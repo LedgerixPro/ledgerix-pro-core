@@ -75,7 +75,16 @@ export async function compareAndSeed<TSchema extends PgTable>(
   const now = new Date();
 
   for (const candidate of opts.candidateRows) {
-    // Build the WHERE conditions: each identity field matches AND effectiveTo IS NULL
+    // Build the WHERE conditions: each identity field matches AND effectiveTo IS NULL.
+    //
+    // SQL null-equality note: `column = NULL` is never true in SQL (not even
+    // `NULL = NULL` — that's IS NULL territory). For identity fields whose
+    // candidate value is null (e.g., write_thresholds.ghl_contact_id for
+    // global thresholds), we must use isNull(column) instead of eq(column, NULL),
+    // otherwise the lookup query never matches and the helper falls through to
+    // the "no active row exists" branch on every re-run, creating duplicates.
+    // This was the null-identity bug discovered in production on 2026-05-25
+    // — see WIP doc Defects Discovered, Defect 1.
     const conditions = opts.identityFields.map((fieldName) => {
       const value = (candidate as Record<string, unknown>)[fieldName];
       const column = (opts.table as unknown as Record<string, unknown>)[fieldName];
@@ -84,7 +93,9 @@ export async function compareAndSeed<TSchema extends PgTable>(
           `compareAndSeed: identity field '${fieldName}' not found on schema for ${opts.schemaLabel}`,
         );
       }
-      return eq(column as never, value as never);
+      return value === null
+        ? isNull(column as never)
+        : eq(column as never, value as never);
     });
 
     const effectiveToColumn = (opts.table as unknown as Record<string, unknown>)[opts.effectiveToField];
