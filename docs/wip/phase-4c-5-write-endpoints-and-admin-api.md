@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-25 Session 2 end-of-day (Part 2 shipped + bootstrap + null-identity bug discovered)
+**Last updated:** 2026-05-26 Session 3 (compareAndSeed null-identity bug FIXED + verified in prod)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -11,7 +11,7 @@
 **Estimated remaining work:** Multi-session. Original estimate 20-30 hours; ~5-6 hours shipped across Sessions 1-2:
 - ~~Admin endpoint scaffolding (auth, routing, base pattern): 2-3 hours~~ — DONE Session 2 (commit `ff3875e8`)
 - ~~Bootstrap data via admin endpoints (pricing, thresholds): 1-2 hours~~ — DONE Session 2 end-of-day (pricing seeded clean, thresholds seeded then re-run exposed a null-identity bug — see Defects Discovered)
-- **NEW:** Fix compareAndSeed null-identity bug + harden tests: 2-3 hours (blocks any admin endpoint that uses nullable identity fields — see Defects Discovered below)
+- ~~Fix compareAndSeed null-identity bug + harden tests: 2-3 hours~~ — DONE Session 3 (commit `1727746a`, verified in prod via re-run, audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`)
 - Charter status storage decision + implementation: 3-5 hours
 - Setup fee handling decision + implementation: 3-5 hours
 - get-transaction-by-id infrastructure (QBO + Xero, per-type dispatch): 5-7 hours
@@ -174,7 +174,7 @@ Three options:
 
 ## Defects Discovered
 
-### Defect 1: compareAndSeed null-identity SQL bug (DISCOVERED 2026-05-25 Session 2 end-of-day)
+### Defect 1: compareAndSeed null-identity SQL bug (RESOLVED 2026-05-26 Session 3, commit `1727746a`)
 
 **Symptom:** Re-running `POST /api/admin/thresholds/seed` against an already-seeded DB returned `inserted: 2, skipped: 0` (wrong) instead of the expected `inserted: 0, skipped: 2`. Each re-run creates duplicate active rows in `write_thresholds`. The pricing endpoint behaves correctly because its identity tuple `[tier, isCharter]` has no nullable fields.
 
@@ -202,6 +202,19 @@ The skip path tests passed because the test pre-seeded the read with the "existi
 
 **Workaround until fix:** Don't re-run `/api/admin/thresholds/seed`. If thresholds need updating, do so via direct SQL or a future migration until the helper is fixed.
 
+**Resolution (Session 3, 2026-05-26):**
+
+- **Commit:** `1727746a` — `fix(admin,phase-4c-5): compareAndSeed null-identity SQL bug + integration tests`
+- **Helper fix:** `compare-and-seed.ts` identityFields mapping now uses `isNull(column)` when the candidate value is null, instead of `eq(column, null)`. Non-null values still go through `eq` unchanged. `isNull` was already imported. 10-line explanatory comment block added above the .map() call documenting the SQL null-equality semantics and cross-referencing this Defects Discovered section.
+- **Integration tests added:** New file `server/src/services/admin/compare-and-seed.integration.test.ts` with 3 tests against real embedded Postgres (via existing `startEmbeddedPostgresTestDatabase` infrastructure). Two tests directly repro the null-identity bug; one is a no-regression smoke test for the pricing path. Tests were written TDD-style BEFORE the helper fix: tests 1 and 2 failed against the unfixed helper, all 3 passed after the fix.
+- **Prod verification:** Re-ran `POST /api/admin/thresholds/seed` against Railway prod on 2026-05-26 at 00:40 UTC. Result: HTTP 200, `inserted: 0, skipped: 2, superseded: 0, newRows: 0` — the exact Decision 3 idempotency contract. activity_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95` captures the post-fix re-run under admin@ledgerixpro.com's user identity. psql verified `write_thresholds` still has exactly 2 active rows (same `id`s as the 2026-05-25 initial seed), confirming no duplicates were created.
+- **Audit trail:** Three `admin.thresholds.seed` entries in activity_log now tell the full bug → fix → verification story:
+  - `99273b65-...` (2026-05-25 18:58) — initial seed, `inserted: 2` (correct)
+  - `8e55d843-...` (2026-05-25 19:00) — buggy re-run, `inserted: 2` (should have been `skipped: 2`)
+  - `e6d8b7f5-...` (2026-05-26 00:40) — post-fix re-run, `skipped: 2` (contract restored)
+- **Test baseline:** 164 targeted tests passing (Session 2 baseline of 161 + 3 new integration tests). Full monorepo typecheck clean.
+- **Lesson applied:** The integration test infrastructure (embedded-postgres via `startEmbeddedPostgresTestDatabase`) is now the established pattern for testing SQL-predicate helpers in this codebase. The Session 2 lesson ("mocks don't model SQL semantics") was codified as executable infrastructure, not just doc text.
+
 ## Work Done (cumulative)
 
 - `e618231b` (Sunday 2026-05-24, Block 1) — activity_log.companyId nullable + compareAndSeed helper + this WIP doc
@@ -225,6 +238,12 @@ The skip path tests passed because the test pre-seeded the read with the "existi
   - Idempotency re-run exposed null-identity bug on thresholds endpoint (see Defects Discovered). Cleanup: 2 duplicate rows DELETED from `write_thresholds`. Activity_log entries preserved.
   - Bootstrap is functionally complete for both tables. Canonical data lives in prod DB under admin@ledgerixpro.com's user identity.
 
+- `1727746a` (Tuesday 2026-05-26, Session 3) — fix(admin,phase-4c-5): compareAndSeed null-identity SQL bug + integration tests
+  - Helper fix in `compare-and-seed.ts`: identityFields map now uses `isNull(column)` when candidate value is null instead of `eq(column, null)` (which never matches in SQL)
+  - New integration test file `server/src/services/admin/compare-and-seed.integration.test.ts` — 3 tests against real embedded Postgres, written TDD-style (tests 1 and 2 verified to FAIL against unfixed helper before fix; all 3 PASS after)
+  - 164 targeted tests passing (161 baseline + 3 integration); full monorepo typecheck clean
+  - Verified end-to-end in Railway prod: `POST /api/admin/thresholds/seed` re-run returned `inserted: 0, skipped: 2`. activity_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`. psql confirmed no duplicate rows created.
+
 ## Next Steps (in order)
 
 ### COMPLETED — Session 2 (Monday 2026-05-25, commit `ff3875e8`)
@@ -240,7 +259,11 @@ The skip path tests passed because the test pre-seeded the read with the "existi
 
 7. ✅ **Bootstrap canonical pricing + thresholds via the seed endpoints** — DONE Session 2 end-of-day. Both seeds executed against Railway prod, audit-logged, verified. See Work Done. Idempotency re-run exposed a defect → next item.
 
-8. **Fix compareAndSeed null-identity bug + harden tests** (see Defects Discovered, Defect 1). The helper uses `eq(col, value)` for all identity-match conditions, including when value is null — but `eq(col, NULL)` never matches in SQL. Pricing is safe (no nullable identity fields); thresholds is affected because `ghlContactId` is null on global thresholds. Mock-based unit tests passed because the mock `db.where()` is a no-op pass-through that doesn't model real SQL semantics. Fix: (a) helper change to use `isNull(col)` when value is null, (b) replace or supplement the unit-test mocks with integration tests against a real DB.
+8. ✅ **Fix compareAndSeed null-identity bug + harden tests** — DONE Session 3 (commit `1727746a`, prod-verified via audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`). See Defects Discovered Defect 1 Resolution block for full story.
+
+9. **Resolve Q3 (get-transaction-by-id infrastructure scope)** — the most concretely scoped of the three pending architecture questions. ADR-003 already identified A vs B (Option C was rejected by Scott). Scoping work + decision lock estimated 3-5 hours; once locked, Transaction Category endpoint becomes unblocked. See Architecture Decisions Pending Q3 for full options.
+
+(Q1 and Q2 remain pending, each its own focused session — they're entangled with business model considerations that deserve unhurried thought.)
 
 ### FUTURE SESSIONS
 

@@ -316,18 +316,54 @@ Cleanup: 2 duplicate rows in `write_thresholds` hard-DELETED to restore correct 
 
 **Bug + fix documented in Phase 4c.5 WIP doc** under new "Defects Discovered" section. Fix (helper change + integration tests) is now the IMMEDIATE next work item in the WIP doc, ahead of write-endpoint re-implementation.
 
+### 2026-05-26 Tuesday — Phase 4c.5 Defect 1 fixed and verified in prod
+
+**Goal:** Fix the compareAndSeed null-identity bug (Path A) discovered Monday end-of-day.
+
+**Commit shipped:**
+
+14. **`1727746a`** — **fix(admin,phase-4c-5): compareAndSeed null-identity SQL bug + integration tests.** Helper now uses `isNull(column)` when candidate value is null instead of `eq(column, null)` (which never matches in SQL). New integration test file `server/src/services/admin/compare-and-seed.integration.test.ts` — 3 tests against real embedded Postgres via existing `startEmbeddedPostgresTestDatabase` infrastructure. Tests written TDD-style: 2 tests verified FAILING against unfixed helper before fix; all 3 PASS after.
+
+**TDD discipline applied:**
+
+The Session 2 lesson ("unit tests with fluent-chain mocks can verify call shape but NOT SQL semantics") drove the test-first approach. Integration tests against real Postgres were written FIRST, then run against the unfixed helper to confirm they catch the bug. Tests 1 and 2 failed as expected with the exact symptom from prod (`inserted: 1` instead of `skipped: 1`). Only THEN was the helper fix applied. After the fix, all 3 tests pass. This proves: (a) the tests actually catch the bug (vs being confirmation-bias-passing tests), and (b) the fix actually resolves it.
+
+**Production verification:**
+
+After commit + Railway auto-deploy completed (~3 min), re-ran `POST /api/admin/thresholds/seed` against Railway prod via the board API key. Result:
+
+- HTTP 200
+- Response body: `{"data":{"inserted":0,"skipped":2,"superseded":0,"newRows":0}}` — exact Decision 3 idempotency contract
+- activity_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95` captures the post-fix re-run under admin@ledgerixpro.com
+- psql verified `write_thresholds` still has exactly 2 active rows with the SAME `id`s as the 2026-05-25 18:58 initial seed — no duplicates created
+
+The original Monday 19:00 prod failure scenario is now passing. Original bug → fix → verification arc is permanently captured in 3 chronological activity_log rows: `99273b65` (correct initial), `8e55d843` (buggy re-run), `e6d8b7f5` (post-fix re-run with contract restored).
+
+**State at session end:**
+
+- Codebase HEAD: master @ `1727746a` (pushed to GitHub master, deployed to Railway prod)
+- Test baseline: 164 targeted tests passing (Session 2 baseline of 161 + 3 new integration tests)
+- Full monorepo typecheck: clean
+- Phase 4c progress: 4 of 5 pieces complete + 4c.5 Parts 1 & 2 shipped + bootstrap done + null-identity defect FIXED
+- Phase 4 endpoint progress: 5 of 8 production-ready (UNCHANGED — write endpoints still gated)
+
+**Integration test infrastructure established as a pattern:**
+
+The Session 2 lesson is now codified as executable infrastructure. Any future helper that builds SQL predicates with edge cases (nulls, type coercion, complex joins) should follow this pattern: integration tests against real Postgres via `startEmbeddedPostgresTestDatabase`, not just mocked unit tests. The infrastructure already existed in the codebase (used by costs-service.test.ts and others); Session 3 surfaced it as the right pattern for admin/safety-layer testing too.
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
 
-**Path A — Fix the compareAndSeed null-identity bug (IMMEDIATE PRIORITY).** Discovered Session 2 end-of-day during idempotency re-run verification. Pricing is safe; thresholds is affected. Helper needs `isNull(col)` when value is null instead of `eq(col, null)`. Tests need integration coverage (real DB), not just mocks. Estimated 2-3 hours. See WIP doc Defects Discovered for full root cause and fix sketch. Blocks any future admin endpoint with nullable identity fields.
+**Path A — Fix the compareAndSeed null-identity bug:** ✅ DONE Session 3 (commit `1727746a`, prod-verified via audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`). See 2026-05-26 Tuesday session entry above.
 
-**Path B — Resolve the three pending architecture questions, each in its own focused session:**
-- Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint
-- Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint
-- Q3: get-transaction-by-id infrastructure scope — blocks Transaction Category endpoint
+**Path B — Resolve pending architecture questions, each in its own focused session:**
 
-Path A is recommended first — the bug is concrete, scoped, and lessons learned reinforce the test-discipline going forward. Path B can follow.
+Recommended next: **Q3 first** — the most concretely scoped of the three (ADR-003 already identified Option A vs Option B; Option C was rejected). Scoping + decision lock estimated 3-5 hours; once locked, the Transaction Category endpoint becomes unblocked.
+
+- **Q3: get-transaction-by-id infrastructure scope** — blocks Transaction Category endpoint. **Recommended next session.**
+- Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint. Entangled with business-model considerations.
+- Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint. Entangled with business-model considerations.
 
 **After both paths complete:**
 - Re-implement the three write endpoints atop the now-complete safety layer
