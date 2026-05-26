@@ -347,11 +347,11 @@ Phase 4 builds the HTTP API endpoint layer atop the per-tenant accounting servic
 | Endpoint | Status | Notes |
 |---|---|---|
 | `GET /transactions` | Production-ready | List with pagination, filtering |
-| `GET /transactions/:txnId` | Partial (Q3 pending) | Needed by write endpoints for `previousAccountRef` capture |
+| `GET /transactions/:txnId` | Partial (Decision 4 locked, impl pending) | Needed by write endpoints for `previousAccountRef` capture. Decision 4 (Session 3) locks Option A — full coverage per-type for QBO + Xero. |
 | `GET /accounts` | Production-ready | Chart of Accounts retrieval |
 | `GET /invoices` | Production-ready | List + filtering |
 | `GET /reports/p-and-l` | Production-ready | P&L with Balance Sheet + Trial Balance extensions |
-| `POST /transactions/:txnId/category` | DEFERRED (Phase 4c.5) | Atop safety layer, blocked on Q3 resolution |
+| `POST /transactions/:txnId/category` | DEFERRED (Phase 4c.5) | Atop safety layer. Q3 resolved Session 3 as Decision 4; awaits get-transaction-by-id implementation. |
 | `POST /payments` | DEFERRED (Phase 4c.5) | Atop safety layer (thresholds) |
 | `POST /invoices` | DEFERRED (Phase 4c.5) | Atop safety layer (pricing + dedupe), blocked on Q1 + Q2 |
 
@@ -489,7 +489,7 @@ Helper changed to use `isNull(column)` when the candidate identity value is null
 
 - **Q1: Charter status storage** — blocks Invoice endpoint. `getExpectedPriceCents` requires `isCharter` parameter; no defined storage exists yet.
 - **Q2: Setup fee handling** — blocks Invoice endpoint. Setup fees ($249/$349/$1,200 per Section 7) not modeled by current pricing schema.
-- **Q3: get-transaction-by-id infrastructure scope** — blocks Transaction Category endpoint. Returning `previousAccountRef` requires fetching transaction by ID; no such function exists per QBO/Xero transaction type.
+- ~~**Q3: get-transaction-by-id infrastructure scope**~~ — RESOLVED Session 3 (2026-05-26) as Decision 4 (Option A — full coverage). Per-type fetch handlers for 7 QBO types + 4 Xero types behind a unified `getTransactionById` interface returning `previousAccountRef` to callers. Implementation pending (5-7 hours estimated). See `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md` Decision 4 for the locked interface contract and per-type checklist.
 
 **Explicitly rejected (NOT Doing):**
 

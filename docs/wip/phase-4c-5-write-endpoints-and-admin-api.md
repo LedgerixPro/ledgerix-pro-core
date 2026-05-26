@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-26 Session 3 (compareAndSeed null-identity bug FIXED + verified in prod)
+**Last updated:** 2026-05-26 Session 3 (Defect 1 fixed + Q3 locked as Decision 4 — Option A full coverage)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -14,7 +14,7 @@
 - ~~Fix compareAndSeed null-identity bug + harden tests: 2-3 hours~~ — DONE Session 3 (commit `1727746a`, verified in prod via re-run, audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`)
 - Charter status storage decision + implementation: 3-5 hours
 - Setup fee handling decision + implementation: 3-5 hours
-- get-transaction-by-id infrastructure (QBO + Xero, per-type dispatch): 5-7 hours
+- Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours — decision LOCKED Session 3, implementation pending
 - POST /transactions/:txnId/category re-implementation: 1-2 hours (once infra exists)
 - POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)
 - POST /invoices re-implementation: 3-4 hours (once charter + setup fees + dedupe wired)
@@ -131,6 +131,97 @@ Seed-style admin endpoints (e.g., `POST /api/admin/pricing/seed`) use version-aw
 - Each specific seed endpoint (pricing, thresholds, future) calls this helper with schema-specific identity tuple
 - Activity log entry per call: `actor_type=user, actor_id=<email>, action=admin.pricing.seed, details={inserted: N, skipped: N, superseded: N}`
 
+### Decision 4: get-transaction-by-id infrastructure — Option A (full coverage)
+
+**Decided:** Session 3 (2026-05-26). **Locked.**
+
+Resolves Q3 (get-transaction-by-id infrastructure scope) per the path identified in Architecture Decisions Pending. Per-type fetch handlers for QBO and Xero across all transaction types listed in the WIP doc Q3 section.
+
+**Reasoning:**
+
+- Forcing every category update to go through HITL (Option C, previously rejected) doesn't scale. Forcing only uncommon types to HITL (Option B) creates a two-tier reliability story that's hard to reason about as the platform scales to 50+ clients.
+- The current production code (`updateTransactionAccount` for QBO and Xero) already implements the pattern for ONE type per platform (Purchase / BankTransaction). Extending to all listed types means following the same pattern, not designing a new one. The marginal cost per type is bounded.
+- The unified `getTransactionById` interface (locked below) gives callers a clean contract: pass txnId, get back a discriminated union including the previousAccountRef. The complexity of multi-type dispatch is contained in the implementation, not pushed to callers.
+- The Phase 4c.4 dispatcher's `accounting.transaction.category_with_unknown_previous` approval type remains a fallback for truly unrecognized txnIds (e.g., types we haven't implemented yet, or platform-specific edge cases). Option A doesn't remove that safety net; it shrinks the "unknown" zone to near-zero in practice.
+
+**Scope — types to cover:**
+
+QBO (7 types):
+- Purchase ✅ (currently in code as `updateTransactionAccount`; extract pattern into a fetch handler returning the unified shape)
+- Bill
+- JournalEntry
+- Deposit
+- BillPayment
+- Payment
+- Invoice (note: sales-side; account is on income lines — semantically different from expense recategorization. Treat as a separate sub-case during implementation.)
+
+Xero (4 types):
+- BankTransactions ✅ (currently in code; extract pattern)
+- Invoices
+- Bills
+- ManualJournals
+
+**Unified interface contract (the lock):**
+
+```typescript
+export interface TransactionLookupResult {
+  txnId: string;
+  platform: "quickbooks" | "xero";
+  txnType: string; // e.g., "Purchase", "Bill", "BankTransaction", "Invoice"
+  previousAccountRef: string | null; // null only when the txn has no recognizable account on its first line
+  // Full platform-specific payload for callers that need more than previousAccountRef.
+  // Shape is the same minimal-with-catch-all pattern used in QboPurchaseFull / XeroBankTransactionFull.
+  raw: Record<string, unknown>;
+}
+
+export async function getTransactionById(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult>;
+```
+
+The function dispatches internally:
+1. Determine the platform from `accounting_connections` (existing pattern from `updateTransactionCategory`).
+2. Try each type-specific GET-by-id endpoint until one returns a 200. The error envelope from QBO/Xero distinguishes "wrong type" from "not found"; the dispatcher uses that to decide whether to try the next type or fail.
+3. On success, extract `previousAccountRef` from the platform-specific shape and return the unified result.
+4. On exhaustion of all types, throw `TransactionNotFoundError` — the caller (the write endpoint) routes this to `accounting.transaction.category_with_unknown_previous` approval per Phase 4c.4.
+
+**Implementation pattern (per-type checklist):**
+
+Each of the 11 types needs:
+
+1. A minimal interface in `services/accounting/index.ts` (or extracted module) following the `QboPurchaseFull` / `XeroBankTransactionFull` shape — only the fields the code touches, with `[key: string]: unknown` catch-all.
+2. A type-specific GET endpoint reference (verified against the official QBO or Xero API reference at implementation time — not now). The endpoint path is typically `/{TypeName}/{Id}` but worth verifying per type.
+3. A function (private to the accounting module) that fetches the type and returns the unified `TransactionLookupResult`, including extracting the previousAccountRef from the type-specific line shape.
+4. Registration with the central `getTransactionById` dispatcher.
+5. Optionally (if the type supports it) an `updateTransactionAccount` implementation. The existing two (QBO Purchase, Xero BankTransaction) get refactored to use the new fetch handlers internally so we don't duplicate the GET-by-id logic.
+
+**Out of scope for this decision (deferred to implementation):**
+
+- The precise interface shape for each of the 11 platform-specific types. Those are determined at implementation time with the QBO / Xero API reference docs open. Pre-locking them now would be premature — small details that won't matter until code is being written.
+- The 1099 / Transfer / CreditMemo and other rarer QBO types not listed in the Scope subsection above. These remain in the `accounting.transaction.category_with_unknown_previous` approval fallback. If real-world traffic surfaces a missing type, add it in a follow-up.
+- The full QBO Invoice recategorization semantics. Invoices are sales-side; "recategorizing" an Invoice line affects the income account it credits. Whether that's a legitimate agent operation or always-HITL is itself a design question. Capture as a sub-decision during implementation; default to HITL if uncertain.
+
+**Estimated implementation effort:** 5-7 hours per the original WIP doc estimate. Distribution roughly:
+- Refactor existing QBO Purchase + Xero BankTransaction to the new pattern: 1-2 hours
+- 6 new QBO types × ~30-45 min each (verify endpoint + minimal interface + handler + dispatcher registration): 3-4 hours
+- 3 new Xero types × ~30-45 min each: 1.5-2 hours
+- Integration tests against embedded Postgres + mocked QBO/Xero responses (mocks are fine here — we're not testing SQL, we're testing dispatcher logic + response shape parsing): 1 hour
+- Wire up `previousAccountRef` capture in the deferred `POST /transactions/:txnId/category` endpoint: bundled into the endpoint re-implementation session, not Q3.
+
+**Unblocks:** `POST /api/accounting/v1/transactions/:txnId/category` endpoint re-implementation (which was reverted in commit `91a554f4` for hardcoding `previousAccountRef: null`).
+
+**Blast radius if wrong:** Low. The interface is single-purpose (txn lookup, returns previousAccountRef + raw payload). If the dispatcher logic has bugs, they manifest as either (a) a TransactionNotFoundError → approval flow (safe) or (b) an unexpected raw shape → caller-side handling. Neither propagates beyond the one endpoint.
+
+**Verification approach when implemented:**
+
+- Unit tests for the dispatcher: mock the platform-specific fetch handlers, verify the right one is called based on stubbed accounting_connections lookups.
+- Integration tests via embedded Postgres for `accounting_connections` queries (same pattern established for compareAndSeed in Session 3).
+- Per-type fetch handler tests use mocked QBO/Xero responses (the platform APIs themselves don't need to be hit during tests).
+- Production verification once shipped: call `getTransactionById` against Enyrgy Inc's real Xero data for each implemented type, confirm `previousAccountRef` matches what's in the Xero UI.
+
 ## Architecture Decisions Pending
 
 ### Q1: Charter status storage mechanism (ADR-003 Amendment 1 Gap 1)
@@ -155,22 +246,11 @@ Three options from ADR-003 Amendment 1:
 
 **To be resolved in:** Phase 4c.5 session focused on invoice billing. Decision blocks Invoice endpoint re-implementation.
 
-### Q3: get-transaction-by-id infrastructure scope
+### ~~Q3: get-transaction-by-id infrastructure scope~~ — RESOLVED Session 3
 
-To return `previousAccountRef` in `POST /transactions/:txnId/category` per spec, the endpoint must fetch the transaction's current account before updating. No `getTransactionById(txnId)` function exists today.
+Resolved 2026-05-26 as Decision 4 (Option A — full coverage). See Architecture Decisions Made above.
 
-The challenge: QBO has Purchase, Deposit, Invoice, Bill, JournalEntry, Payment, Deposit, BillPayment — each a different API endpoint. Xero has BankTransactions, Invoices, Bills, ManualJournals. The endpoint doesn't know which type a given `txnId` refers to.
-
-Three options:
-- **Option A:** Build per-type get-transaction-by-id functions for QBO + Xero (full coverage). 5-7 hours of upstream API work.
-- **Option B:** Build only the most common types (Purchase, Deposit for QBO; BankTransactions for Xero). Less coverage; transaction category updates for less-common types create an approval rather than executing.
-- **Option C:** Defer get-transaction-by-id entirely. Every category update creates an approval (`accounting.transaction.category_with_unknown_previous`). Forces HITL on every change.
-
-**Rejected from earlier conversation:** Option C would not scale to a 50-client system with many monthly category changes. Rejected by Scott.
-
-**To be resolved in:** Phase 4c.5 session focused on transaction category endpoint. Decision blocks transaction-category endpoint re-implementation.
-
-(Q4 and Q5 resolved this session — see Decisions 2 and 3 above.)
+(Q4 and Q5 resolved Session 1 — see Decisions 2 and 3 above.)
 
 ## Defects Discovered
 
@@ -261,13 +341,15 @@ The skip path tests passed because the test pre-seeded the read with the "existi
 
 8. ✅ **Fix compareAndSeed null-identity bug + harden tests** — DONE Session 3 (commit `1727746a`, prod-verified via audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`). See Defects Discovered Defect 1 Resolution block for full story.
 
-9. **Resolve Q3 (get-transaction-by-id infrastructure scope)** — the most concretely scoped of the three pending architecture questions. ADR-003 already identified A vs B (Option C was rejected by Scott). Scoping work + decision lock estimated 3-5 hours; once locked, Transaction Category endpoint becomes unblocked. See Architecture Decisions Pending Q3 for full options.
+9. ✅ **Resolve Q3 (get-transaction-by-id infrastructure scope)** — DONE Session 3 as Decision 4 (Option A — full coverage). See Architecture Decisions Made for the locked interface contract, per-type checklist, and implementation pattern. Implementation pending (5-7 hours estimated).
+
+10. **Implement Decision 4 (get-transaction-by-id infrastructure)** — the next deliberate code work. 5-7 hours per the Decision 4 estimate. Refactor existing QBO Purchase + Xero BankTransaction handlers to the unified pattern, add 6 new QBO types + 3 new Xero types per the checklist, integration tests via embedded Postgres + mocked QBO/Xero responses. Once shipped, the `POST /transactions/:txnId/category` endpoint becomes re-implementable.
 
 (Q1 and Q2 remain pending, each its own focused session — they're entangled with business model considerations that deserve unhurried thought.)
 
 ### FUTURE SESSIONS
 
-8. **Session 3+:** Resolve Q1 (charter status), Q2 (setup fees), Q3 (get-transaction-by-id scope). Each is a significant architectural piece deserving its own focused session.
+8. **Future sessions:** Resolve Q1 (charter status) and Q2 (setup fees). Each is a significant architectural piece deserving its own focused session. (Q3 resolved Session 3 as Decision 4 — implementation tracked as IMMEDIATE item 10.)
 
 9. **Sessions 4-N:** Re-implement the three write endpoints atop the now-complete safety layer. Wire Phase 4c.4 dispatcher stubs to real upstream writes.
 
