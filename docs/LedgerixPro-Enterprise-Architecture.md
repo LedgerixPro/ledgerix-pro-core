@@ -347,11 +347,11 @@ Phase 4 builds the HTTP API endpoint layer atop the per-tenant accounting servic
 | Endpoint | Status | Notes |
 |---|---|---|
 | `GET /transactions` | Production-ready | List with pagination, filtering |
-| `GET /transactions/:txnId` | Partial (Decision 4 locked, impl pending) | Needed by write endpoints for `previousAccountRef` capture. Decision 4 (Session 3) locks Option A — full coverage per-type for QBO + Xero. |
+| `GET /transactions/:txnId` | Partial (Decision 4 Phase 1 shipped, Phase 2+ pending) | Needed by write endpoints for `previousAccountRef` capture. Decision 4 Phase 1 (Session 3, commit `bffa3b16`) ships the unified `getTransactionById` dispatcher with 3 of 11 types: QBO Purchase, QBO Bill, Xero BankTransaction. Phase 2+ adds remaining 5 QBO + 3 Xero types plus a structured HTTP error class for multi-type probing. |
 | `GET /accounts` | Production-ready | Chart of Accounts retrieval |
 | `GET /invoices` | Production-ready | List + filtering |
 | `GET /reports/p-and-l` | Production-ready | P&L with Balance Sheet + Trial Balance extensions |
-| `POST /transactions/:txnId/category` | DEFERRED (Phase 4c.5) | Atop safety layer. Q3 resolved Session 3 as Decision 4; awaits get-transaction-by-id implementation. |
+| `POST /transactions/:txnId/category` | DEFERRED (Phase 4c.5) | Atop safety layer. Q3 resolved Session 3 as Decision 4 (Phase 1 shipped, Phase 2+ pending). Endpoint re-implementation can begin once Decision 4 implementation completes (~4-5 hours remaining). |
 | `POST /payments` | DEFERRED (Phase 4c.5) | Atop safety layer (thresholds) |
 | `POST /invoices` | DEFERRED (Phase 4c.5) | Atop safety layer (pricing + dedupe), blocked on Q1 + Q2 |
 
@@ -489,7 +489,7 @@ Helper changed to use `isNull(column)` when the candidate identity value is null
 
 - **Q1: Charter status storage** — blocks Invoice endpoint. `getExpectedPriceCents` requires `isCharter` parameter; no defined storage exists yet.
 - **Q2: Setup fee handling** — blocks Invoice endpoint. Setup fees ($249/$349/$1,200 per Section 7) not modeled by current pricing schema.
-- ~~**Q3: get-transaction-by-id infrastructure scope**~~ — RESOLVED Session 3 (2026-05-26) as Decision 4 (Option A — full coverage). Per-type fetch handlers for 7 QBO types + 4 Xero types behind a unified `getTransactionById` interface returning `previousAccountRef` to callers. Implementation pending (5-7 hours estimated). See `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md` Decision 4 for the locked interface contract and per-type checklist.
+- ~~**Q3: get-transaction-by-id infrastructure scope**~~ — RESOLVED Session 3 (2026-05-26) as Decision 4 (Option A — full coverage). Per-type fetch handlers for 7 QBO types + 4 Xero types behind a unified `getTransactionById` interface returning `previousAccountRef` to callers. **Phase 1 SHIPPED Session 3 (commit `bffa3b16`)**: dispatcher + 3 types (QBO Purchase, QBO Bill, Xero BankTransaction); existing two `updateTransactionAccount` handlers refactored to use the dispatcher; 15 new tests (test baseline 164 → 179). **Phase 2+ pending** (~4-5 hours): structured HTTP error class + 5 remaining QBO types + 3 remaining Xero types. See `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md` Decision 4 for the full implementation status.
 
 **Explicitly rejected (NOT Doing):**
 

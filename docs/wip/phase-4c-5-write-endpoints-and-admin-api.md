@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-26 Session 3 (Defect 1 fixed + Q3 locked as Decision 4 — Option A full coverage)
+**Last updated:** 2026-05-26 Session 3 (Defect 1 fixed + Decision 4 locked + Decision 4 Phase 1 shipped — 3 of 11 types)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -14,7 +14,7 @@
 - ~~Fix compareAndSeed null-identity bug + harden tests: 2-3 hours~~ — DONE Session 3 (commit `1727746a`, verified in prod via re-run, audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`)
 - Charter status storage decision + implementation: 3-5 hours
 - Setup fee handling decision + implementation: 3-5 hours
-- Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours — decision LOCKED Session 3, implementation pending
+- Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours total — Phase 1 SHIPPED Session 3 (commit `bffa3b16`, 3 of 11 types: QBO Purchase, QBO Bill, Xero BankTransaction). Remaining: 5 QBO types + 3 Xero types + structured HTTP error class for multi-type probing.
 - POST /transactions/:txnId/category re-implementation: 1-2 hours (once infra exists)
 - POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)
 - POST /invoices re-implementation: 3-4 hours (once charter + setup fees + dedupe wired)
@@ -197,6 +197,31 @@ Each of the 11 types needs:
 3. A function (private to the accounting module) that fetches the type and returns the unified `TransactionLookupResult`, including extracting the previousAccountRef from the type-specific line shape.
 4. Registration with the central `getTransactionById` dispatcher.
 5. Optionally (if the type supports it) an `updateTransactionAccount` implementation. The existing two (QBO Purchase, Xero BankTransaction) get refactored to use the new fetch handlers internally so we don't duplicate the GET-by-id logic.
+
+**Phase 1 shipped (commit `bffa3b16`, Session 3 2026-05-26):**
+
+The dispatcher infrastructure is live. Initial coverage: 3 of 11 types.
+
+- New module `server/src/services/accounting/transaction-lookup.ts` (311 lines) exporting `TransactionLookupResult` interface, `TransactionNotFoundError` class, and `getTransactionById(db, companyId, contactId, txnId, hintedType?)` dispatcher per the locked interface contract above.
+- Type registry initialized with 3 fetch handlers:
+  - `fetchQboPurchase` — extracted from the existing `qbo.updateTransactionAccount` GET-by-id; uses `/purchase/{id}`.
+  - `fetchQboBill` — NEW. Uses `/bill/{id}`. First Decision 4 type beyond the existing two.
+  - `fetchXeroBankTransaction` — extracted from the existing `xero.updateTransactionAccount` GET-by-id; uses `/BankTransactions/{id}`.
+- Existing `qbo.updateTransactionAccount` and `xero.updateTransactionAccount` in `services/accounting/index.ts` refactored to use the dispatcher with `hintedType` set to skip multi-type probing. Behavior is preserved; the GET-by-id is now centralized in the dispatcher. Log lines now include `previousAccountRef` from the lookup — the value that the still-deferred `POST /transactions/:txnId/category` endpoint needs to return per spec is now captured in every update's log line.
+- 15 new tests in `server/src/services/accounting/transaction-lookup.test.ts`: 11 unit tests (mocked qboRequest/xeroRequest + mocked db) covering the hinted-type fast path, multi-type probing, edge cases for previousAccountRef extraction; 4 integration tests against real embedded Postgres covering platform lookup, null contactId handling, and the no-connection error path.
+- Test baseline: 179 targeted tests passing (Session 3 baseline of 164 + 15 new). Full monorepo typecheck clean.
+
+**Phase 1 captured a generalizable observation worth flagging:**
+
+The dispatcher's multi-type probing (no hint provided) is currently single-iteration-safe because all the callers in the existing codebase provide a hint. When the first "general" caller is added (e.g., the re-implemented `POST /transactions/:txnId/category` endpoint), error discrimination becomes necessary — `qboRequest`/`xeroRequest` currently throw generic `Error` on 404 with no structured status. A 404 ("wrong type") is indistinguishable from a transient 500 in the catch handler, which could cause the dispatcher to skip a type that should have been tried again. The fix: introduce a `class HttpResponseError extends Error` with `status: number` in the platform clients, then dispatcher catches `error instanceof HttpResponseError && error.status === 404` for continue-loop semantics, rethrows everything else. Scoped to Phase 2 alongside adding the second new type per platform.
+
+**Remaining Decision 4 implementation work (Phase 2+):**
+
+- Structured HTTP error class for qboRequest/xeroRequest (~30 min)
+- QBO types still to add (5): JournalEntry, Deposit, BillPayment, Payment, Invoice (~30-45 min each)
+- Xero types still to add (3): Invoices, Bills, ManualJournals (~30-45 min each)
+- Tests for each new type added incrementally (the test file already established the patterns)
+- Total Phase 2+ effort: ~4-5 hours
 
 **Out of scope for this decision (deferred to implementation):**
 

@@ -380,16 +380,46 @@ After Defect 1 was fixed and verified, scoping work resumed on Q3 (get-transacti
 - Test baseline: 164 targeted tests passing (unchanged since Defect 1 fix)
 - IMMEDIATE next work: Implement Decision 4 (next deliberate code session)
 
+**Decision 4 Phase 1 shipped (later in Session 3):**
+
+After locking Decision 4 in docs, Session 3 continued with implementation work. Phase 1 of N — establishing the dispatcher infrastructure and proving the pattern works on existing code — shipped as commit `bffa3b16`.
+
+**Commit shipped:**
+
+15. **`bffa3b16`** — **feat(accounting,phase-4c-5): Decision 4 Phase 1 — getTransactionById dispatcher + 3 type handlers.** New `transaction-lookup.ts` module with the unified `TransactionLookupResult` interface, `TransactionNotFoundError` class, and `getTransactionById` dispatcher. Initial coverage: 3 of 11 types (QBO Purchase ✅ extracted, QBO Bill ✅ NEW, Xero BankTransaction ✅ extracted). Existing `qbo.updateTransactionAccount` and `xero.updateTransactionAccount` refactored to use the dispatcher with `hintedType` set. Log lines now include `previousAccountRef`. New test file `transaction-lookup.test.ts` with 15 tests (11 unit + 4 integration). Test baseline: 164 → 179 targeted tests passing. Typecheck clean.
+
+**TDD-adjacent discipline applied:**
+
+Phase 1 is code-first rather than strictly test-first (the dispatcher pattern was new and worth experiencing before testing). But the unit + integration test suite was written immediately after the implementation, while the design was fresh, and verified to pass against the implementation before commit. The 15 tests cover the hinted-type fast path (4), multi-type probing including the TransactionNotFoundError exhaustion path (4), previousAccountRef extraction edge cases (3), and real-DB integration including the null-contactId path (4). The null-contactId integration test is particularly valuable: it proactively covers the same class of bug as Phase 4c.5 Defect 1 (SQL null-equality), preventing recurrence in this new code path.
+
+**Generalizable observation surfaced during Phase 1:**
+
+The dispatcher's multi-type probing currently has a single-iteration safety property: all existing callers (the two refactored `updateTransactionAccount` handlers) pass a `hintedType`, so the multi-type loop never actually iterates. When the first "general" (no-hint) caller is added — most likely the re-implemented `POST /transactions/:txnId/category` endpoint — error discrimination becomes necessary. Currently `qboRequest`/`xeroRequest` throw generic `Error` on 404 with no structured status, making a "wrong type" 404 indistinguishable from a transient 500 in the catch handler. The fix is captured in the WIP doc as Phase 2 scope: introduce `class HttpResponseError extends Error` with `status: number` in the platform clients, then have the dispatcher catch `error instanceof HttpResponseError && error.status === 404` for continue-loop semantics, rethrowing everything else. This is the kind of issue that's much cheaper to surface during scoping than to debug later — Phase 1 design exposed it cleanly.
+
+**State at session end (truly final):**
+
+- Codebase HEAD: master @ `bffa3b16` (plus this docs commit pending)
+- Test baseline: 179 targeted tests passing (164 + 15 from transaction-lookup)
+- Full monorepo typecheck: clean
+- Phase 4c.5 status:
+  - Defect 1: FIXED + prod-verified ✅
+  - Decision 4 (Q3 resolution): LOCKED + Phase 1 SHIPPED ✅ (3 of 11 types)
+  - Decision 4 Phase 2+: pending (5 QBO types + 3 Xero types + HTTP error class, ~4-5 hours)
+  - Q1 (charter status): still pending
+  - Q2 (setup fees): still pending
+- IMMEDIATE next work: Decision 4 Phase 2 (add structured HTTP error class + 1-2 more types per platform) OR Q1/Q2 architectural decisions
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
 
 **Path A — Fix the compareAndSeed null-identity bug:** ✅ DONE Session 3 (commit `1727746a`, prod-verified via audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`). See 2026-05-26 Tuesday session entry above.
 
-**Path B — Resolve pending architecture questions and implement Decision 4:**
+**Path B — Decision 4 implementation continues; Q1 + Q2 still pending:**
 
-- ✅ **Q3 (get-transaction-by-id infrastructure scope)** — LOCKED Session 3 as Decision 4 (Option A — full coverage). Implementation pending (5-7 hours estimated).
-- **Implement Decision 4** — next deliberate code work. Refactor existing QBO Purchase + Xero BankTransaction handlers to the unified pattern, add 6 new QBO types + 3 new Xero types per the checklist, integration tests. Once shipped, `POST /transactions/:txnId/category` becomes re-implementable.
+- ✅ **Q3 (get-transaction-by-id infrastructure scope)** — LOCKED Session 3 as Decision 4 (Option A — full coverage).
+- ✅ **Decision 4 Phase 1** — SHIPPED Session 3 (commit `bffa3b16`). Dispatcher live; 3 of 11 types covered (QBO Purchase, QBO Bill, Xero BankTransaction); existing two handlers refactored; 15 new tests.
+- **Decision 4 Phase 2+** — remaining ~4-5 hours of implementation work. Adds: structured `HttpResponseError` class to qboRequest/xeroRequest (so multi-type probing can distinguish 404 from 500 — generalizable observation surfaced during Phase 1), 5 QBO types (JournalEntry, Deposit, BillPayment, Payment, Invoice), 3 Xero types (Invoices, Bills, ManualJournals), incremental tests for each. Once shipped, `POST /transactions/:txnId/category` becomes re-implementable.
 - Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint. Entangled with business-model considerations.
 - Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint. Entangled with business-model considerations.
 
