@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { qboRequest, getQboRealmId } from "./qbo-client.js";
+import { getTransactionById } from "./transaction-lookup.js";
 import { xeroRequest } from "./xero-client.js";
 import { logger } from "../../middleware/logger.js";
 import { namesAreSimilar } from "./string-similarity.js";
@@ -838,17 +839,19 @@ export const qbo = {
     transactionId: string,
     accountId: string,
   ): Promise<void> {
-    const current = await qboRequest<{ Purchase: QboPurchaseFull }>(
+    // Phase 4c.5 Decision 4 (Session 3 refactor): the type-specific
+    // GET-by-id lookup is now handled by the unified getTransactionById
+    // dispatcher. We pass hintedType "Purchase" because this function
+    // only operates on QBO Purchase transactions; the dispatcher's
+    // multi-type probe loop is unnecessary here.
+    const lookup = await getTransactionById(
       db,
       companyId,
       contactId,
-      "GET",
-      `/purchase/${transactionId}`,
+      transactionId,
+      "Purchase",
     );
-    const purchase = current.Purchase;
-    if (!purchase) {
-      throw new Error(`QBO Purchase ${transactionId} not found`);
-    }
+    const purchase = lookup.raw as unknown as QboPurchaseFull;
     const firstLine = purchase.Line?.[0];
     if (!firstLine) {
       throw new Error(`QBO Purchase ${transactionId} has no line items to categorize`);
@@ -859,7 +862,7 @@ export const qbo = {
     };
     await qboRequest(db, companyId, contactId, "POST", "/purchase?operation=update", purchase);
     logger.info(
-      { companyId, contactId, transactionId, accountId },
+      { companyId, contactId, transactionId, accountId, previousAccountRef: lookup.previousAccountRef },
       "QBO Purchase line account updated",
     );
   },
@@ -1392,17 +1395,17 @@ export const xero = {
     transactionId: string,
     accountCode: string,
   ): Promise<void> {
-    const current = await xeroRequest<{ BankTransactions?: XeroBankTransactionFull[] }>(
+    // Phase 4c.5 Decision 4 (Session 3 refactor): see the QBO equivalent
+    // above for context. Hinted type "BankTransaction" because this
+    // function only operates on Xero BankTransaction records.
+    const lookup = await getTransactionById(
       db,
       companyId,
       contactId,
-      "GET",
-      `/BankTransactions/${transactionId}`,
+      transactionId,
+      "BankTransaction",
     );
-    const txn = current.BankTransactions?.[0];
-    if (!txn) {
-      throw new Error(`Xero BankTransaction ${transactionId} not found`);
-    }
+    const txn = lookup.raw as unknown as XeroBankTransactionFull;
     const firstLine = txn.LineItems?.[0];
     if (!firstLine) {
       throw new Error(`Xero BankTransaction ${transactionId} has no line items to categorize`);
@@ -1410,7 +1413,7 @@ export const xero = {
     firstLine.AccountCode = accountCode;
     await xeroRequest(db, companyId, contactId, "POST", "/BankTransactions", { BankTransactions: [txn] });
     logger.info(
-      { companyId, contactId, transactionId, accountCode },
+      { companyId, contactId, transactionId, accountCode, previousAccountRef: lookup.previousAccountRef },
       "Xero BankTransaction line account updated",
     );
   },
