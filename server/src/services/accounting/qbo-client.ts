@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { encrypt, decrypt } from "./encrypt.js";
 import { logger } from "../../middleware/logger.js";
 import { assertExternalWriteAllowed } from "../external-write-guard.js";
+import { HttpResponseError } from "./http-error.js";
 
 const TOKEN_ENDPOINT = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 
@@ -141,7 +142,13 @@ export async function qboRequest<T = unknown>(
 
   if (!response.ok) {
     const errBody = await response.text();
-    throw new Error(`QBO request failed: ${response.status} ${method} ${path} — ${errBody}`);
+    throw new HttpResponseError(
+      `QBO request failed: ${response.status} ${method} ${path} — ${errBody}`,
+      response.status,
+      method,
+      path,
+      errBody,
+    );
   }
 
   return response.json() as Promise<T>;

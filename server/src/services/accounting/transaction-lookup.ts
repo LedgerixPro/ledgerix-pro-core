@@ -16,6 +16,7 @@ import { accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { qboRequest } from "./qbo-client.js";
 import { xeroRequest } from "./xero-client.js";
+import { HttpResponseError } from "./http-error.js";
 import { logger } from "../../middleware/logger.js";
 
 // Same SQL null-equality pattern used in qbo-client.ts and xero-client.ts:
@@ -234,14 +235,15 @@ const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
  * accounting.transaction.category_with_unknown_previous approval flow per
  * Phase 4c.4 dispatcher.
  *
- * NOTE on multi-type probing: today (Session 3), only one type per platform
- * is registered, so the probing loop is single-iteration. When a second type
- * per platform is added (e.g., QBO Bill alongside Purchase), error
- * discrimination becomes necessary — currently qboRequest/xeroRequest throw
- * generic Error on 404 with no structured status, so a "wrong type" 404 is
- * indistinguishable from a transient 500 in the catch handler. That work is
- * deferred to "implement second type per platform" per Decision 4 (today's
- * scope is the dispatcher signature and first-type registration).
+ * Multi-type probing semantics (Phase 2 update, 2026-05-27): only 404
+ * responses (HttpResponseError.isNotFound) cause the loop to continue to
+ * the next registered type. Any other error — auth failure, 5xx, network
+ * error, malformed response — is rethrown immediately. This is the strict
+ * discriminator gap closed by Phase 2: previously the catch was
+ * unconditional, which masked genuine upstream failures as "type didn't
+ * match". qboRequest and xeroRequest now throw HttpResponseError with a
+ * structured .status property; the dispatcher uses .isNotFound for the
+ * continue/rethrow decision.
  */
 export async function getTransactionById(
   db: Db,
@@ -290,20 +292,34 @@ export async function getTransactionById(
     return await handler(db, companyId, contactId, txnId);
   }
 
-  // Multi-type probing (single-iteration today; see NOTE above on error
-  // discrimination work deferred to "second type per platform").
+  // Multi-type probing: try each registered type; only treat a 404
+  // (HttpResponseError.isNotFound) as "wrong type, try next". Any other
+  // error (auth failure, 5xx, network error, malformed response, etc.)
+  // is genuine and must propagate up — silently swallowing it could cause
+  // the dispatcher to throw TransactionNotFoundError when the real cause
+  // is something the caller needs to know about.
+  //
+  // Decision 4 Phase 2 tightening (commit pending Session 4 2026-05-27):
+  // previously this catch was unconditional, which was safe-but-loose
+  // because all callers passed hintedType (skipping the loop). Now that
+  // QBO Bill is registered alongside Purchase, the loop actually iterates
+  // and the error discrimination matters.
   const attemptedTypes: string[] = [];
   for (const [typeName, handler] of registry) {
     attemptedTypes.push(typeName);
     try {
       return await handler(db, companyId, contactId, txnId);
     } catch (error) {
-      logger.debug(
-        { companyId, contactId, txnId, typeName, error },
-        "transaction lookup type probe failed; continuing",
-      );
-      // Continue to next type. See NOTE in function-level JSDoc about why
-      // this catch is currently too broad — error discrimination is deferred.
+      if (error instanceof HttpResponseError && error.isNotFound) {
+        logger.debug(
+          { companyId, contactId, txnId, typeName, status: error.status },
+          "transaction lookup: 404 on type probe, trying next type",
+        );
+        continue;
+      }
+      // Any non-404 error is rethrown — it's not "wrong type, try next",
+      // it's a genuine upstream failure the caller needs to see.
+      throw error;
     }
   }
 

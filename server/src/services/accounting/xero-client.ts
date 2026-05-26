@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { encrypt, decrypt } from "./encrypt.js";
 import { logger } from "../../middleware/logger.js";
 import { assertExternalWriteAllowed } from "../external-write-guard.js";
+import { HttpResponseError } from "./http-error.js";
 
 const TOKEN_ENDPOINT = "https://identity.xero.com/connect/token";
 const BASE_URL = "https://api.xero.com/api.xro/2.0";
@@ -140,7 +141,13 @@ export async function xeroRequest<T = unknown>(
 
   if (!response.ok) {
     const errBody = await response.text();
-    throw new Error(`Xero request failed: ${response.status} ${method} ${path} — ${errBody}`);
+    throw new HttpResponseError(
+      `Xero request failed: ${response.status} ${method} ${path} — ${errBody}`,
+      response.status,
+      method,
+      path,
+      errBody,
+    );
   }
 
   return response.json() as Promise<T>;

@@ -32,6 +32,7 @@ import {
   getTransactionById,
   TransactionNotFoundError,
 } from "./transaction-lookup.js";
+import { HttpResponseError } from "./http-error.js";
 
 // ===========================================================================
 // UNIT TESTS — mocked db, mocked platform clients
@@ -56,7 +57,7 @@ function mockDbWithPlatform(platform: "quickbooks" | "xero" | null) {
 
 describe("getTransactionById — hinted-type fast path", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("dispatches directly to fetchQboPurchase when hintedType='Purchase'", async () => {
@@ -163,7 +164,7 @@ describe("getTransactionById — hinted-type fast path", () => {
 
 describe("getTransactionById — multi-type probing", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("succeeds on the first registered type when it returns 200", async () => {
@@ -184,9 +185,18 @@ describe("getTransactionById — multi-type probing", () => {
 
   it("falls through to the second type when the first throws", async () => {
     const db = mockDbWithPlatform("quickbooks");
-    // First call (Purchase) throws (simulating a 404 from QBO)
+    // First call (Purchase) throws a 404 HttpResponseError (Phase 2 strict
+    // semantics: only HttpResponseError.isNotFound continues to next type).
     vi.mocked(qboRequest)
-      .mockRejectedValueOnce(new Error("QBO request failed: 404 GET /purchase/txn-B"))
+      .mockRejectedValueOnce(
+        new HttpResponseError(
+          "QBO request failed: 404 GET /purchase/txn-B",
+          404,
+          "GET",
+          "/purchase/txn-B",
+          "Object Not Found",
+        ),
+      )
       .mockResolvedValueOnce({
         Bill: {
           Id: "txn-B",
@@ -204,25 +214,35 @@ describe("getTransactionById — multi-type probing", () => {
 
   it("throws TransactionNotFoundError when all types are exhausted", async () => {
     const db = mockDbWithPlatform("quickbooks");
-    // All registered types throw
+    // All registered types throw 404 (Phase 2 strict: only 404 continues
+    // the probe loop; non-404 rethrows immediately). Both Purchase and Bill
+    // return 404 → loop exhausts → TransactionNotFoundError.
+    const make404 = (path: string) =>
+      new HttpResponseError(
+        `QBO request failed: 404 GET ${path}`,
+        404,
+        "GET",
+        path,
+        "Object Not Found",
+      );
     vi.mocked(qboRequest)
-      .mockRejectedValueOnce(new Error("QBO 404"))
-      .mockRejectedValueOnce(new Error("QBO 404"));
+      .mockRejectedValueOnce(make404("/purchase/txn-missing"))
+      .mockRejectedValueOnce(make404("/bill/txn-missing"));
 
-    await expect(
-      getTransactionById(db, COMPANY_ID, CONTACT_ID, "txn-missing"),
-    ).rejects.toBeInstanceOf(TransactionNotFoundError);
-
-    // Verify the error captures which types were tried
+    // Capture the error from a single invocation; assert type AND properties
+    // on the same caught value (avoids calling the function twice, which
+    // would consume the queued mocks twice).
+    let caught: unknown;
     try {
       await getTransactionById(db, COMPANY_ID, CONTACT_ID, "txn-missing");
     } catch (err) {
-      expect(err).toBeInstanceOf(TransactionNotFoundError);
-      const tnf = err as TransactionNotFoundError;
-      expect(tnf.platform).toBe("quickbooks");
-      expect(tnf.attemptedTypes).toContain("Purchase");
-      expect(tnf.attemptedTypes).toContain("Bill");
+      caught = err;
     }
+    expect(caught).toBeInstanceOf(TransactionNotFoundError);
+    const tnf = caught as TransactionNotFoundError;
+    expect(tnf.platform).toBe("quickbooks");
+    expect(tnf.attemptedTypes).toContain("Purchase");
+    expect(tnf.attemptedTypes).toContain("Bill");
   });
 
   it("for Xero, attempts BankTransaction when no hint provided", async () => {
@@ -238,11 +258,85 @@ describe("getTransactionById — multi-type probing", () => {
     expect(result.txnType).toBe("BankTransaction");
     expect(result.previousAccountRef).toBe("400");
   });
+
+  it("continues to next type ONLY when error is HttpResponseError with status 404", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    // First Purchase attempt throws a 404 (wrong type) — should continue
+    // Then Bill attempt succeeds
+    vi.mocked(qboRequest)
+      .mockRejectedValueOnce(
+        new HttpResponseError(
+          "QBO request failed: 404 GET /purchase/txn-X — Object Not Found",
+          404,
+          "GET",
+          "/purchase/txn-X",
+          "Object Not Found",
+        ),
+      )
+      .mockResolvedValueOnce({
+        Bill: {
+          Id: "txn-X",
+          SyncToken: "0",
+          Line: [{ AccountBasedExpenseLineDetail: { AccountRef: { value: "acc-X" } } }],
+        },
+      });
+
+    const result = await getTransactionById(db, COMPANY_ID, CONTACT_ID, "txn-X");
+
+    expect(result.txnType).toBe("Bill");
+    expect(result.previousAccountRef).toBe("acc-X");
+    expect(qboRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("RETHROWS non-404 HttpResponseError instead of continuing to next type (REGRESSION: Phase 2 strict discriminator)", async () => {
+    // A 500 from the Purchase endpoint should NOT cause the dispatcher
+    // to silently move on to Bill — the 500 is a genuine upstream failure
+    // the caller needs to see. Phase 1 had this loose; Phase 2 tightens it.
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockRejectedValueOnce(
+      new HttpResponseError(
+        "QBO request failed: 500 GET /purchase/txn-Y — Internal Server Error",
+        500,
+        "GET",
+        "/purchase/txn-Y",
+        "Internal Server Error",
+      ),
+    );
+
+    // Single invocation, capture the error, assert type AND status on the
+    // same caught value. Must be HttpResponseError (NOT TransactionNotFoundError)
+    // — proving the 500 was rethrown immediately, not silently treated as
+    // "wrong type, try next".
+    let caught: unknown;
+    try {
+      await getTransactionById(db, COMPANY_ID, CONTACT_ID, "txn-Y");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(HttpResponseError);
+    expect((caught as HttpResponseError).status).toBe(500);
+    // Dispatcher should have stopped after Purchase (one call), not attempted Bill.
+    expect(qboRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("RETHROWS non-HttpResponseError errors (network failure, malformed response, etc.)", async () => {
+    // An error that isn't even an HttpResponseError — e.g., a network-level
+    // failure or a thrown Error from upstream JSON parsing — must also
+    // propagate up, not be swallowed as "wrong type".
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockRejectedValueOnce(
+      new Error("network: ECONNREFUSED"),
+    );
+
+    await expect(
+      getTransactionById(db, COMPANY_ID, CONTACT_ID, "txn-Z"),
+    ).rejects.toThrow(/ECONNREFUSED/);
+  });
 });
 
 describe("getTransactionById — previousAccountRef extraction edge cases", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("returns null previousAccountRef when QBO Purchase has no Line array", async () => {
