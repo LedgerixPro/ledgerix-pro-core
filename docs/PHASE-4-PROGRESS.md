@@ -409,6 +409,38 @@ The dispatcher's multi-type probing currently has a single-iteration safety prop
   - Q2 (setup fees): still pending
 - IMMEDIATE next work: Decision 4 Phase 2 (add structured HTTP error class + 1-2 more types per platform) OR Q1/Q2 architectural decisions
 
+### Session 4 — 2026-05-27 (Wednesday)
+
+**Goal:** Decision 4 Phase 2 — the structured HTTP error class identified during Phase 1 as the prerequisite for safe multi-type probing.
+
+**Architecture decisions reached:**
+- None new. Decision 4 (Option A — full coverage) lock from Session 3 governed this session's work without re-litigation. Phase 2 is implementation of the locked decision, scoped per the WIP doc's Phase 1 generalizable observation.
+
+**Commit shipped:**
+
+16. **`635e4998`** — **feat(accounting,phase-4c-5): Decision 4 Phase 2 foundation — HttpResponseError + strict dispatcher discriminator.** New `server/src/services/accounting/http-error.ts` module (32 lines) exporting `HttpResponseError extends Error` with `status: number`, `method: string`, `path: string`, optional `responseBody: string`, plus an `isNotFound` getter. `qboRequest` (`qbo-client.ts`) and `xeroRequest` (`xero-client.ts`) refactored to throw `HttpResponseError` instead of generic `Error` on non-OK responses; error message strings byte-identical to preserve debugging output. `getTransactionById` dispatcher's multi-type probing catch block tightened from unconditional continue to strict discriminator: `instanceof HttpResponseError && error.isNotFound` continues; everything else rethrows. 3 new tests lock the strict semantics. Test baseline: 179 → 182 targeted tests passing. Full monorepo typecheck clean.
+
+**Phase 2 foundation completes the work the Phase 1 generalizable observation predicted:**
+
+Session 3's Phase 1 commit message explicitly flagged the HTTP error discriminator gap — the multi-type probing loop was "single-iteration-safe today" because all existing callers pass `hintedType`, but the moment a general (no-hint) caller is added — or the moment a second QBO type is registered causing the loop to iterate — the catch needs to distinguish 404 (try next type) from 500 (genuine upstream failure, propagate). Phase 2 closes that gap before adding any new types. The reasoning was: get the foundation right first, then add types on top of a robust dispatcher.
+
+**Mock lifecycle lesson worth flagging (generalizable beyond this work):**
+
+The strict-catch change initially broke 7 transaction-lookup tests. Root cause was NOT the strict semantics themselves — it was `vi.clearAllMocks()` in three `beforeEach` blocks. `clearAllMocks()` clears call history but does NOT drain queued `.mockResolvedValueOnce`/`.mockRejectedValueOnce` implementations. Under the prior loose-catch dispatcher, every queued mock got consumed per test (the loop iterated through all types), so the queues were empty by the next test. Under Phase 2 strict semantics, fewer mocks are consumed per test (strict rethrow short-circuits the loop on the first non-404), so leftover queued mocks leaked forward and corrupted subsequent tests. Fix: `vi.resetAllMocks()` instead — drains the queues correctly. This is a generalizable Vitest pattern, not specific to transaction-lookup. Saved to working memory for future test work across the codebase.
+
+**State at session end:**
+
+- Codebase HEAD: master @ `635e4998` (plus this docs commit pending)
+- Test baseline: 182 targeted tests passing (179 + 3 from Phase 2 strict-discriminator tests)
+- Full monorepo typecheck: clean
+- Phase 4c.5 status:
+  - Defect 1: FIXED + prod-verified ✅
+  - Decision 4 (Q3 resolution): LOCKED + Phase 1 SHIPPED + Phase 2 foundation SHIPPED ✅
+  - Decision 4 Phase 2 type expansion: pending (5 QBO + 3 Xero types, ~3-4 hours)
+  - Q1 (charter status): still pending
+  - Q2 (setup fees): still pending
+- IMMEDIATE next work: Decision 4 Phase 2 type expansion (proceed with confidence; dispatcher is now safe for general callers) OR Q1/Q2 architectural decisions
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
@@ -419,7 +451,8 @@ The dispatcher's multi-type probing currently has a single-iteration safety prop
 
 - ✅ **Q3 (get-transaction-by-id infrastructure scope)** — LOCKED Session 3 as Decision 4 (Option A — full coverage).
 - ✅ **Decision 4 Phase 1** — SHIPPED Session 3 (commit `bffa3b16`). Dispatcher live; 3 of 11 types covered (QBO Purchase, QBO Bill, Xero BankTransaction); existing two handlers refactored; 15 new tests.
-- **Decision 4 Phase 2+** — remaining ~4-5 hours of implementation work. Adds: structured `HttpResponseError` class to qboRequest/xeroRequest (so multi-type probing can distinguish 404 from 500 — generalizable observation surfaced during Phase 1), 5 QBO types (JournalEntry, Deposit, BillPayment, Payment, Invoice), 3 Xero types (Invoices, Bills, ManualJournals), incremental tests for each. Once shipped, `POST /transactions/:txnId/category` becomes re-implementable.
+- ✅ **Decision 4 Phase 2 foundation** — SHIPPED Session 4 (commit `635e4998`). Structured `HttpResponseError` class added to qboRequest/xeroRequest; dispatcher's multi-type probing catch tightened to strict discriminator (only 404 continues to next type; everything else rethrows); 3 new tests lock the strict semantics. Test baseline 179 → 182.
+- **Decision 4 Phase 2 type expansion** — remaining ~3-4 hours. Adds 5 QBO types (JournalEntry, Deposit, BillPayment, Payment, Invoice) and 3 Xero types (Invoices, Bills, ManualJournals) with incremental tests for each. Dispatcher is now safe for general callers; type expansion can proceed without dispatcher rework. Once Phase 2 type expansion completes, `POST /transactions/:txnId/category` becomes re-implementable.
 - Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint. Entangled with business-model considerations.
 - Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint. Entangled with business-model considerations.
 

@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-26 Session 3 (Defect 1 fixed + Decision 4 locked + Decision 4 Phase 1 shipped — 3 of 11 types)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 Phase 2 foundation shipped — HttpResponseError class + strict dispatcher discriminator)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -14,7 +14,7 @@
 - ~~Fix compareAndSeed null-identity bug + harden tests: 2-3 hours~~ — DONE Session 3 (commit `1727746a`, verified in prod via re-run, audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`)
 - Charter status storage decision + implementation: 3-5 hours
 - Setup fee handling decision + implementation: 3-5 hours
-- Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours total — Phase 1 SHIPPED Session 3 (commit `bffa3b16`, 3 of 11 types: QBO Purchase, QBO Bill, Xero BankTransaction). Remaining: 5 QBO types + 3 Xero types + structured HTTP error class for multi-type probing.
+- Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours total — Phase 1 SHIPPED Session 3 (commit `bffa3b16`, 3 of 11 types); Phase 2 foundation SHIPPED Session 4 (commit `635e4998`, HttpResponseError + strict dispatcher discriminator). Remaining type expansion: 5 QBO types + 3 Xero types (~3-4 hours).
 - POST /transactions/:txnId/category re-implementation: 1-2 hours (once infra exists)
 - POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)
 - POST /invoices re-implementation: 3-4 hours (once charter + setup fees + dedupe wired)
@@ -214,6 +214,20 @@ The dispatcher infrastructure is live. Initial coverage: 3 of 11 types.
 **Phase 1 captured a generalizable observation worth flagging:**
 
 The dispatcher's multi-type probing (no hint provided) is currently single-iteration-safe because all the callers in the existing codebase provide a hint. When the first "general" caller is added (e.g., the re-implemented `POST /transactions/:txnId/category` endpoint), error discrimination becomes necessary — `qboRequest`/`xeroRequest` currently throw generic `Error` on 404 with no structured status. A 404 ("wrong type") is indistinguishable from a transient 500 in the catch handler, which could cause the dispatcher to skip a type that should have been tried again. The fix: introduce a `class HttpResponseError extends Error` with `status: number` in the platform clients, then dispatcher catches `error instanceof HttpResponseError && error.status === 404` for continue-loop semantics, rethrows everything else. Scoped to Phase 2 alongside adding the second new type per platform.
+
+**Phase 2 foundation shipped (commit `635e4998`, Session 4 2026-05-27):**
+
+The observation above was acted on as the first Phase 2 piece — before adding any new types.
+
+- New module `server/src/services/accounting/http-error.ts` (32 lines) exporting `HttpResponseError extends Error` with `status: number`, `method: string`, `path: string`, optional `responseBody: string`, plus an `isNotFound` getter for the 404 case.
+- `qboRequest` (`qbo-client.ts`) and `xeroRequest` (`xero-client.ts`) now throw `HttpResponseError` instead of generic `Error` on non-OK responses. Error message strings are byte-identical to the previous version (preserves debugging output and any log parsing); structured fields are purely additive. Verified backward-compatible: zero existing callers inspect error structure beyond `.message`.
+- The `getTransactionById` dispatcher's multi-type probing catch block tightened from unconditional continue to strict discriminator: `if (error instanceof HttpResponseError && error.isNotFound) { continue }` else rethrow. Function-level JSDoc updated to document the Phase 2 strict semantics.
+- 3 new tests in `transaction-lookup.test.ts` lock the strict discriminator: (1) 404 HttpResponseError continues to next type; (2) non-404 HttpResponseError (e.g., 500) rethrows immediately, NOT silently treated as "wrong type"; (3) non-HttpResponseError errors (network failures, malformed responses) also rethrow.
+- Test baseline: 182 targeted tests passing (179 + 3 new). Full monorepo typecheck clean.
+
+**Mock lifecycle discovery (worth flagging for future test work):**
+
+The strict-catch change initially broke 7 tests. Root cause was NOT the strict semantics themselves — it was `vi.clearAllMocks()` in three `beforeEach` blocks. `clearAllMocks()` clears call history but does NOT drain queued `.mockResolvedValueOnce`/`.mockRejectedValueOnce` implementations. Under the prior loose-catch dispatcher, every queued mock got consumed per test (the loop iterated through all types), so the queues happened to be empty by the next test. Under Phase 2 strict semantics, fewer mocks are consumed per test (strict rethrow short-circuits the loop on the first non-404), so leftover queued mocks leaked forward and corrupted subsequent tests. Fix: `vi.resetAllMocks()` instead of `vi.clearAllMocks()` — drains the queues correctly. Generalizable lesson: when test files use `.mockXxxValueOnce` chains, prefer `resetAllMocks()` over `clearAllMocks()` in `beforeEach`.
 
 **Remaining Decision 4 implementation work (Phase 2+):**
 
