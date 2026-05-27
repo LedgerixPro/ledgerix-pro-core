@@ -294,3 +294,148 @@ describe("updateTransactionCategory — QBO Purchase handler", () => {
     expect(qboRequest).not.toHaveBeenCalled();
   });
 });
+
+describe("updateTransactionCategory — QBO Bill handler", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("dispatches to QBO Bill handler when lookup returns Bill type", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-bill-1",
+      platform: "quickbooks",
+      txnType: "Bill",
+      previousAccountRef: "60100",
+      raw: {
+        Id: "txn-bill-1",
+        SyncToken: "0",
+        Line: [
+          {
+            DetailType: "AccountBasedExpenseLineDetail",
+            AccountBasedExpenseLineDetail: {
+              AccountRef: { value: "60100" },
+            },
+            Amount: 200.0,
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    const result = await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-bill-1",
+      "60200",
+    );
+
+    expect(result).toEqual({
+      platform: "quickbooks",
+      txnType: "Bill",
+      txnId: "txn-bill-1",
+      previousAccountRef: "60100",
+      newAccountRef: "60200",
+    });
+
+    // Verify the BILL endpoint was called (not /purchase) — this is the
+    // critical assertion that distinguishes Bill from Purchase
+    expect(qboRequest).toHaveBeenCalledTimes(1);
+    expect(qboRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/bill?operation=update",
+      expect.objectContaining({
+        Id: "txn-bill-1",
+        Line: expect.arrayContaining([
+          expect.objectContaining({
+            AccountBasedExpenseLineDetail: expect.objectContaining({
+              AccountRef: { value: "60200" },
+            }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("preserves non-AccountRef fields (BillableStatus, TaxCodeRef) during mutation", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-bill-2",
+      platform: "quickbooks",
+      txnType: "Bill",
+      previousAccountRef: "60100",
+      raw: {
+        Id: "txn-bill-2",
+        SyncToken: "0",
+        Line: [
+          {
+            DetailType: "AccountBasedExpenseLineDetail",
+            AccountBasedExpenseLineDetail: {
+              AccountRef: { value: "60100" },
+              BillableStatus: "Billable",
+              TaxCodeRef: { value: "NON" },
+              CustomerRef: { value: "customer-5" },
+            },
+            Amount: 200.0,
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-bill-2",
+      "60200",
+    );
+
+    expect(qboRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/bill?operation=update",
+      expect.objectContaining({
+        Line: expect.arrayContaining([
+          expect.objectContaining({
+            AccountBasedExpenseLineDetail: expect.objectContaining({
+              AccountRef: { value: "60200" },
+              BillableStatus: "Billable",
+              TaxCodeRef: { value: "NON" },
+              CustomerRef: { value: "customer-5" },
+            }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("throws if QBO Bill has no line items", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-bill-3",
+      platform: "quickbooks",
+      txnType: "Bill",
+      previousAccountRef: null,
+      raw: {
+        Id: "txn-bill-3",
+        SyncToken: "0",
+        Line: [],
+      } as any,
+    });
+
+    await expect(
+      updateTransactionCategory(
+        MOCK_DB,
+        COMPANY_ID,
+        CONTACT_ID,
+        "txn-bill-3",
+        "60200",
+      ),
+    ).rejects.toThrow("QBO Bill txn-bill-3 has no line items to categorize");
+    expect(qboRequest).not.toHaveBeenCalled();
+  });
+});

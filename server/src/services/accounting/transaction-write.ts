@@ -95,7 +95,12 @@ export type WriteHandler = (
 // AccountBasedExpenseLineDetail.AccountRef. Defined locally rather than
 // imported from transaction-lookup.ts because that module keeps its full
 // type definitions internal.
-interface QboPurchaseLineForWrite {
+// Shared line shape for QBO entities that use AccountBasedExpenseLineDetail:
+// Purchase, Bill. Both have the same Line[].AccountBasedExpenseLineDetail
+// structure, so they share both the type and the per-line mutation logic.
+// Only the write endpoint differs (/purchase?operation=update vs
+// /bill?operation=update).
+interface QboAccountBasedExpenseLine {
   AccountBasedExpenseLineDetail?: {
     AccountRef?: { value?: string };
     [key: string]: unknown;
@@ -103,10 +108,10 @@ interface QboPurchaseLineForWrite {
   [key: string]: unknown;
 }
 
-interface QboPurchaseRawForWrite {
+interface QboAccountBasedExpenseTxnForWrite {
   Id: string;
   SyncToken: string;
-  Line?: QboPurchaseLineForWrite[];
+  Line?: QboAccountBasedExpenseLine[];
   [key: string]: unknown;
 }
 
@@ -131,7 +136,7 @@ const updateQboPurchaseAccount: WriteHandler = async (
   lookup,
   newAccountRef,
 ) => {
-  const purchase = lookup.raw as unknown as QboPurchaseRawForWrite;
+  const purchase = lookup.raw as unknown as QboAccountBasedExpenseTxnForWrite;
   const firstLine = purchase.Line?.[0];
   if (!firstLine) {
     throw new Error(
@@ -152,10 +157,52 @@ const updateQboPurchaseAccount: WriteHandler = async (
   );
 };
 
+/**
+ * QBO Bill write handler. Structurally identical to Purchase — both use
+ * Line[].AccountBasedExpenseLineDetail.AccountRef. The only difference is
+ * the write endpoint (/bill?operation=update instead of /purchase).
+ *
+ * Verified against QBO API: Bill response includes Line array of
+ * AccountBasedExpenseLineDetail entries with AccountRef.value pointing to
+ * the expense account. Full-transaction POST required for updates per
+ * Intuit's recommendation (sparse updates inconsistent across entity types).
+ *
+ * Multi-line caveat: same as Purchase — first line's AccountRef is updated;
+ * subsequent lines retain their existing values. Consistent with the
+ * read-side previousAccountRef capture pattern.
+ */
+const updateQboBillAccount: WriteHandler = async (
+  db,
+  companyId,
+  contactId,
+  lookup,
+  newAccountRef,
+) => {
+  const bill = lookup.raw as unknown as QboAccountBasedExpenseTxnForWrite;
+  const firstLine = bill.Line?.[0];
+  if (!firstLine) {
+    throw new Error(
+      `QBO Bill ${lookup.txnId} has no line items to categorize`,
+    );
+  }
+  firstLine.AccountBasedExpenseLineDetail = {
+    ...(firstLine.AccountBasedExpenseLineDetail ?? {}),
+    AccountRef: { value: newAccountRef },
+  };
+  await qboRequest(
+    db,
+    companyId,
+    contactId,
+    "POST",
+    "/bill?operation=update",
+    bill,
+  );
+};
+
 const QBO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([
   ["Purchase", updateQboPurchaseAccount],
+  ["Bill", updateQboBillAccount],
   // Decision 5 IN-scope handlers still to add:
-  // ["Bill", updateQboBillAccount],
   // ["Deposit", updateQboDepositAccount],
 ]);
 
