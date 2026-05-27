@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 FEATURE-COMPLETE + Decision 5 FEATURE-COMPLETE + POST /transactions/:txnId/category endpoint SHIPPED end-to-end)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED — Charter status storage + Setup fee handling)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -485,27 +485,112 @@ All 6 in-scope Decision 5 transaction types are now writable through the unified
 
 ## Architecture Decisions Pending
 
-### Q1: Charter status storage mechanism (ADR-003 Amendment 1 Gap 1)
+### ~~Q1: Charter status storage mechanism (ADR-003 Amendment 1 Gap 1)~~ — LOCKED 2026-05-27 Session 4 as Option B
 
-The `getExpectedPriceCents(db, tier, isCharter, contactId?)` service function shipped Phase 4c.1 requires the caller to know `isCharter`. EA Section 7.1 documents Charter Pricing Window as a persistent client-level status — Charter benefit follows the client across tier upgrades AND downgrades for as long as service is continuous, lost permanently on cancellation.
+**Decision: Option B — Local DB table `client_charter_status`.**
 
-Three options from ADR-003 Amendment 1:
-- **Option A:** Add GHL custom field `is_charter`. Tier assignment writes it at onboarding. Easy but introduces GHL as runtime dependency for invoicing.
-- **Option B:** Add `client_charter_status` table to local DB. Captures grant date, current status (active / cancelled-was-charter / never-charter), and history. Cleanest separation; requires new schema + sync logic.
-- **Option C:** Compute `isCharter` from system-wide charter cutoff timestamp + client created_at. Treats charter as derived state. Simplest; doesn't model the "cancelled-and-returned forfeits charter" rule cleanly.
+**Rationale (Trust Tenet #14 invoked):** Billing is the primary client-funds touchpoint. Q1's choice directly determines whether a client gets billed the right amount. Three considerations drove the lock:
 
-**To be resolved in:** Phase 4c.5 session focused on charter status. Decision blocks Invoice endpoint re-implementation.
+1. **Source of truth in our own DB.** When a billing question arises ("why was I charged $599 instead of $399?"), the answer is auditable in our own data. Options A (GHL) and C (computed) both push the answer to external/derived state.
 
-### Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2)
+2. **Structurally enforces the cancellation rule.** EA Section 7.1 documents that Charter is "lost permanently on cancellation" and "not transferable, sellable, or recoverable." Option B's status enum (`active` | `cancelled_was_charter` | `never_charter`) makes "you cancelled, you forfeited Charter" a database fact. Option A requires us to *remember not to* re-flip the GHL field; Option C is fundamentally incapable of modeling it (would compute a cancelled-and-returned client as Charter from `created_at`).
 
-EA Section 7 documents one-time setup fees ($249 Foundation / $349 Growth Engine / $1,200 Scale-Up). Phase 4c.1's `service_tier_pricing` schema only models monthly recurring. Setup fees are non-refundable except via the 30-day satisfaction guarantee — they have different billing semantics than recurring.
+3. **No new runtime dependency for billing.** Option A puts GHL on the critical path for every invoice. If GHL is down, we can't bill. This conflicts with the existing Option B credential-isolation TODO and reproduces the kind of coupling that caused the May 11-17 hallucinated email incident.
 
-Three options from ADR-003 Amendment 1:
-- **Option A:** Extend `service_tier_pricing` with a `pricing_type` column (`monthly_recurring` | `setup_fee`). Same table, two row types per tier. Caller filters by type.
-- **Option B:** Parallel `setup_fee_pricing` table with same structure but different lookup function. Cleaner separation; more schemas to maintain.
-- **Option C:** Treat setup fees as a separate concern entirely — different invoice endpoint, different audit type, different approval rules. Maximum separation.
+Options A and C rejected:
+- **Option A (GHL custom field):** Runtime dependency on GHL for invoicing; no captured history; "cancelled-and-returned" rule must be enforced procedurally rather than structurally; conflicts with credential-isolation roadmap.
+- **Option C (compute from created_at + cutoff):** Cannot model "cancelled-and-returned forfeits Charter" — a returning client's `created_at` is still before the cutoff, so the computed flag would incorrectly grant Charter. Either timestamp or count variant requires picking a dimension the business rule doesn't actually express.
 
-**To be resolved in:** Phase 4c.5 session focused on invoice billing. Decision blocks Invoice endpoint re-implementation.
+**Implementation shape (locked contract):**
+
+New table `client_charter_status`:
+
+| Column           | Type      | Notes                                                                |
+|------------------|-----------|----------------------------------------------------------------------|
+| id               | uuid PK   |                                                                      |
+| companyId        | text FK   | → companies.id                                                       |
+| contactId        | text      | GHL contact ID                                                       |
+| grantedAt        | timestamp | When charter was first granted (or null if `status === never_charter`) |
+| status           | enum      | `active` / `cancelled_was_charter` / `never_charter`                 |
+| statusChangedAt  | timestamp | Last status transition                                               |
+| cancelledAt      | timestamp | Set when status moves to `cancelled_was_charter` (else null)         |
+| reason           | text      | Free-text reason for status (optional)                               |
+| createdAt        | timestamp |                                                                      |
+| updatedAt        | timestamp |                                                                      |
+
+Unique constraint on `(companyId, contactId)` — one row per client per company.
+
+Service functions in `server/src/services/accounting/charter.ts`:
+
+- `getCharterStatus(db, companyId, contactId): Promise<"active" | "cancelled_was_charter" | "never_charter">` — returns the current status. Throws if no row exists for the client (or returns `"never_charter"` as a default; lock this in implementation when designing the function — likely default-to-never_charter so callers don't need to seed every client).
+- `isCharterForInvoicing(db, companyId, contactId): Promise<boolean>` — helper returning `true` only when `status === "active"`. This is the function the Invoice endpoint will call to populate `isCharter` for `getExpectedPriceCents`.
+
+State-transition rules (locked):
+
+- New client onboarding: write row with `status = "active"` if among first 10 paying clients; `status = "never_charter"` otherwise. `grantedAt = now` for active; `null` for never.
+- Cancellation: transition `active → cancelled_was_charter`. Set `cancelledAt = now`, `statusChangedAt = now`. Once in `cancelled_was_charter`, NO transition back to `active` is permitted — locked structurally (service-layer enforcement; future returning-client onboarding writes a new row with `status = never_charter`).
+- `never_charter → active` is NOT permitted (Charter window closes at client 10; can't grant retroactively).
+
+**Estimated effort:** ~2-3 hours total. Migration + service + tests + admin seed extension (for dev/test fixtures) + WIP doc closeout.
+
+**Decision 5 reference (Tenet #16):** This decision is now LOCKED. Implementation may extend (add optional columns, helper functions) but must not change the locked schema/enum/state-transition contract without an explicit REVISED note.
+
+### ~~Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2)~~ — LOCKED 2026-05-27 Session 4 as Option B
+
+**Decision: Option B — Parallel `setup_fee_pricing` table.**
+
+**Rationale:** Setup fees and monthly recurring pricing have structurally different business semantics. Setup fees don't vary by Charter status (EA Section 7: "All clients (including Charter) pay a one-time setup fee at onboarding"); recurring pricing does. Five considerations drove the lock:
+
+1. **Schema semantics match business semantics.** Setup fees don't have `isCharter` semantics — putting them in `service_tier_pricing` (which has `isCharter` as a key dimension) makes that column meaningless on setup_fee rows. Option B's separate table reflects the truth.
+
+2. **Aligns with Q1's lock.** Q1 went toward separate, structurally-correct modeling (its own `client_charter_status` table) rather than overloading existing schema. Q2 Option B follows the same principle — separate business concerns get separate tables.
+
+3. **Future-proofs without over-engineering.** If setup fees later grow refund logic, partial fees, or proration, Option B can extend without disturbing recurring pricing. Option A would require either schema-wide changes or implicit-rule discriminators.
+
+4. **The cost is small.** One extra table + one extra service function + one extra seed step. The existing patterns (`getExpectedPriceCents`, admin seed endpoint, tests) are already in place — `getSetupFeeCents` is a near-clone with simpler signature.
+
+5. **Maintains codebase symmetry.** `service_tier_pricing` is for monthly recurring; `setup_fee_pricing` is for one-time setup; `client_pricing_overrides` is for per-client overrides; `client_charter_status` (Q1) is for charter lifecycle. Each table has one clear responsibility.
+
+Options A and C rejected:
+- **Option A (extend service_tier_pricing with pricing_type):** Forces `isCharter` to be a meaningless column on setup_fee rows; schema doesn't reflect business; row meaning becomes dependent on an implicit discriminator; future divergence is awkward.
+- **Option C (separate endpoint):** Premature separation; setup fees ARE invoices structurally; two endpoints when one parameterized endpoint may suffice; more API surface = more attack surface, docs, tests.
+
+**Implementation shape (locked contract):**
+
+New table `setup_fee_pricing`:
+
+| Column         | Type      | Notes                                                            |
+|----------------|-----------|------------------------------------------------------------------|
+| id             | uuid PK   |                                                                  |
+| tier           | text      | "foundation" / "growth_engine" / "scale_up" (matching service_tier_pricing convention) |
+| amountCents    | integer   | $249 / $349 / $1,200 = 24900 / 34900 / 120000                    |
+| effectiveFrom  | timestamp | Effective-dated, paralleling service_tier_pricing                |
+| effectiveTo    | timestamp | null = currently active                                          |
+| createdAt      | timestamp |                                                                  |
+| updatedAt      | timestamp |                                                                  |
+
+Notes:
+- NO `isCharter` column (setup fees don't vary by Charter)
+- NO `contactId` column (no per-client setup fee overrides for now; locked — if future business need surfaces, add via REVISED note)
+- Effective-dating supports future fee changes without rewriting history
+
+Service function in `server/src/services/accounting/pricing.ts` (parallel to existing `getExpectedPriceCents`):
+
+- `getSetupFeeCents(db, tier): Promise<{ amountCents: number; priceRecordId: string }>` — looks up the currently-active setup fee row for the tier. Throws `SetupFeeNotFoundError` if no active row exists for the tier.
+
+**Seed values (locked from EA Section 7):**
+
+| Tier            | Amount Cents | Display |
+|-----------------|--------------|---------|
+| foundation      | 24900        | $249    |
+| growth_engine   | 34900        | $349    |
+| scale_up        | 120000       | $1,200  |
+
+Admin seed endpoint `POST /api/admin/pricing/seed` extended to write these 3 rows alongside the existing 6 `service_tier_pricing` rows. Same `inserted: N, skipped: M` response shape; idempotent.
+
+**Estimated effort:** ~2-3 hours total. Migration + service function + tests + admin seed extension + WIP doc closeout.
+
+**Decision 5 reference (Tenet #16):** This decision is now LOCKED. Implementation may extend (add optional columns, helper functions) but must not change the locked schema/seed-values/lookup-semantics contract without an explicit REVISED note.
 
 ### ~~Q3: get-transaction-by-id infrastructure scope~~ — RESOLVED Session 3
 
