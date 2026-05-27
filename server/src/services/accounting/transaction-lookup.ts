@@ -127,6 +127,33 @@ interface QboDepositFull {
   [key: string]: unknown;
 }
 
+interface QboBillPaymentLine {
+  // BillPayment lines contain LinkedTxn references (to bills being paid),
+  // not direct AccountRefs. We model the structure but don't extract from it.
+  Amount?: number;
+  LinkedTxn?: Array<{ TxnId?: string; TxnType?: string }>;
+  [key: string]: unknown;
+}
+
+interface QboBillPaymentFull {
+  Id: string;
+  SyncToken: string;
+  PayType?: "Check" | "CreditCard" | string;
+  VendorRef?: { value?: string };
+  TotalAmt?: number;
+  CheckPayment?: {
+    BankAccountRef?: { value?: string };
+    PrintStatus?: string;
+    [key: string]: unknown;
+  };
+  CreditCardPayment?: {
+    CCAccountRef?: { value?: string };
+    [key: string]: unknown;
+  };
+  Line?: QboBillPaymentLine[];
+  [key: string]: unknown;
+}
+
 interface XeroBankTransactionLineItem {
   LineItemID?: string;
   AccountCode?: string;
@@ -279,6 +306,52 @@ async function fetchQboDeposit(
   };
 }
 
+async function fetchQboBillPayment(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult> {
+  const response = await qboRequest<{ BillPayment: QboBillPaymentFull }>(
+    db,
+    companyId,
+    contactId,
+    "GET",
+    `/billpayment/${txnId}`,
+  );
+  const billPayment = response.BillPayment;
+  if (!billPayment) {
+    throw new Error(`QBO BillPayment ${txnId} response missing BillPayment field`);
+  }
+  // BillPayment is structurally DIFFERENT from Purchase / Bill / JournalEntry /
+  // Deposit. Lines contain only LinkedTxn references (to the bills being paid),
+  // NOT account refs. The relevant account ref lives at the TOP LEVEL,
+  // discriminated by PayType:
+  //   - PayType "Check"      → CheckPayment.BankAccountRef.value
+  //   - PayType "CreditCard" → CreditCardPayment.CCAccountRef.value
+  //   - Anything else        → null (defensive)
+  //
+  // We capture the payment-source account as previousAccountRef. Reasoning:
+  // re-categorization workflows on a BillPayment act on the source side — a
+  // user correcting a bill payment is fixing which account paid the bill,
+  // not the bill itself (the bills being paid are referenced via LinkedTxn
+  // and are themselves separate transactions that would be edited via their
+  // own /bill/{id} endpoint).
+  let previousAccountRef: string | null = null;
+  if (billPayment.PayType === "Check") {
+    previousAccountRef = billPayment.CheckPayment?.BankAccountRef?.value ?? null;
+  } else if (billPayment.PayType === "CreditCard") {
+    previousAccountRef = billPayment.CreditCardPayment?.CCAccountRef?.value ?? null;
+  }
+  return {
+    txnId,
+    platform: "quickbooks",
+    txnType: "BillPayment",
+    previousAccountRef,
+    raw: billPayment,
+  };
+}
+
 async function fetchXeroBankTransaction(
   db: Db,
   companyId: string,
@@ -324,7 +397,8 @@ const QBO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
   ["Bill", fetchQboBill],
   ["JournalEntry", fetchQboJournalEntry],
   ["Deposit", fetchQboDeposit],
-  // Future: BillPayment, Payment, Invoice
+  ["BillPayment", fetchQboBillPayment],
+  // Future: Payment, Invoice
 ]);
 
 const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([

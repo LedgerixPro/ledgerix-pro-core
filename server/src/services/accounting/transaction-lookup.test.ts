@@ -213,6 +213,125 @@ describe("getTransactionById — hinted-type fast path", () => {
     );
   });
 
+  it("dispatches directly to fetchQboBillPayment when hintedType='BillPayment' and PayType='Check' (captures BankAccountRef)", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      BillPayment: {
+        Id: "txn-BP-1",
+        SyncToken: "0",
+        PayType: "Check",
+        VendorRef: { value: "21" },
+        TotalAmt: 100.0,
+        CheckPayment: {
+          BankAccountRef: { value: "10100" }, // checking account — captured
+          PrintStatus: "NotSet",
+        },
+        Line: [
+          {
+            Amount: 100.0,
+            LinkedTxn: [{ TxnId: "313", TxnType: "Bill" }],
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-BP-1",
+      "BillPayment",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-BP-1",
+      platform: "quickbooks",
+      txnType: "BillPayment",
+      previousAccountRef: "10100", // CheckPayment.BankAccountRef
+      raw: expect.objectContaining({ Id: "txn-BP-1" }),
+    });
+    expect(qboRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/billpayment/txn-BP-1",
+    );
+  });
+
+  it("dispatches directly to fetchQboBillPayment when hintedType='BillPayment' and PayType='CreditCard' (captures CCAccountRef)", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      BillPayment: {
+        Id: "txn-BP-2",
+        SyncToken: "0",
+        PayType: "CreditCard",
+        VendorRef: { value: "21" },
+        TotalAmt: 250.0,
+        CreditCardPayment: {
+          CCAccountRef: { value: "21500" }, // credit card account — captured
+        },
+        Line: [
+          {
+            Amount: 250.0,
+            LinkedTxn: [{ TxnId: "314", TxnType: "Bill" }],
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-BP-2",
+      "BillPayment",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-BP-2",
+      platform: "quickbooks",
+      txnType: "BillPayment",
+      previousAccountRef: "21500", // CreditCardPayment.CCAccountRef
+      raw: expect.objectContaining({ Id: "txn-BP-2" }),
+    });
+  });
+
+  it("returns null previousAccountRef for BillPayment with unknown PayType (defensive)", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      BillPayment: {
+        Id: "txn-BP-3",
+        SyncToken: "0",
+        PayType: "SomeFuturePayType", // not Check or CreditCard
+        VendorRef: { value: "21" },
+        TotalAmt: 100.0,
+        Line: [
+          {
+            Amount: 100.0,
+            LinkedTxn: [{ TxnId: "315", TxnType: "Bill" }],
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-BP-3",
+      "BillPayment",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-BP-3",
+      platform: "quickbooks",
+      txnType: "BillPayment",
+      previousAccountRef: null, // unknown PayType → defensive null
+      raw: expect.objectContaining({ Id: "txn-BP-3" }),
+    });
+  });
+
   it("dispatches directly to fetchXeroBankTransaction when hintedType='BankTransaction'", async () => {
     const db = mockDbWithPlatform("xero");
     vi.mocked(xeroRequest).mockResolvedValueOnce({
@@ -323,7 +442,8 @@ describe("getTransactionById — multi-type probing", () => {
       .mockRejectedValueOnce(make404("/purchase/txn-missing"))
       .mockRejectedValueOnce(make404("/bill/txn-missing"))
       .mockRejectedValueOnce(make404("/journalentry/txn-missing"))
-      .mockRejectedValueOnce(make404("/deposit/txn-missing"));
+      .mockRejectedValueOnce(make404("/deposit/txn-missing"))
+      .mockRejectedValueOnce(make404("/billpayment/txn-missing"));
 
     // Capture the error from a single invocation; assert type AND properties
     // on the same caught value (avoids calling the function twice, which
@@ -341,6 +461,7 @@ describe("getTransactionById — multi-type probing", () => {
     expect(tnf.attemptedTypes).toContain("Bill");
     expect(tnf.attemptedTypes).toContain("JournalEntry");
     expect(tnf.attemptedTypes).toContain("Deposit");
+    expect(tnf.attemptedTypes).toContain("BillPayment");
   });
 
   it("for Xero, attempts BankTransaction when no hint provided", async () => {
