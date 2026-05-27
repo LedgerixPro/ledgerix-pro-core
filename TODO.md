@@ -1,6 +1,8 @@
 # Ledgerix Pro — Master Task List
 
-Priority-ordered build list. Updated: 2026-05-01.
+Priority-ordered build list. Updated: 2026-05-27.
+
+**Taxonomy:** This file uses two top-level concepts. **HORIZONs** are time-sequenced readiness buckets (1 = pre-launch, 2 = post-first-client, 3/3.5 = bookkeeping + hardening, 4 = client portal + revenue). **PHASEs** are cross-cutting architectural workstreams that may span multiple horizons (e.g., PHASE 4 = Accounting API, which powers HORIZON 3 bookkeeping agents AND HORIZON 4 H4-5 Ledgerix Pro billing). When a phase ships fully, its sub-items collapse into the Completed ✅ archive at the bottom; the phase header stays as a historical reference. Active multi-session work also lives in `docs/wip/<feature>.md` files; TODO.md is the roadmap-level rollup.
 
 ---
 
@@ -11,9 +13,8 @@ Priority-ordered build list. Updated: 2026-05-01.
   Diagnostic calculator live at /diagnostic. Calculates Stun Value for Trades/Agency/Small Business.
   Writes diagnostic_amount + service_tier to GHL contact on submission.
 
-- [ ] **2. Wire the SDR agent**
-  `sdr-ready` contacts are queuing with no agent acting on them.
-  Needs: GHL workflow trigger (tag added = sdr-ready), dispatcher route, AGENTS.md, claude_local config, outbound GHL messaging.
+- [x] **2. Wire the SDR agent** — Completed: 2026-05-02
+  Laura (SDR agent) operational. Sends from laura@ledgerixpro.com. GHL workflow + dispatcher route + AGENTS.md + claude_local config all wired. Reply-detection workflow live (contact.replied → Laura classifies sentiment, sends personalized reply with diagnostic + booking links). See Completed section for related entries (Laura persona, Reply detection, Diagnostic URL fixes).
 
 - [x] **3. QBO/Xero OAuth integration** — Completed: 2026-05-01
   QBO OAuth live, tokens encrypted in accounting_connections, sandbox read verified (89 accounts, company info).
@@ -30,33 +31,27 @@ Priority-ordered build list. Updated: 2026-05-01.
 
 ---
 
-## HORIZON 2 — Complete ✅ (2026-05-03)
+## HORIZON 2: Post-First-Client Workflows
 *Complete after first client, before scale.*
 
-- [ ] **7. Wire the Opportunity Won workflow**
-  GHL trigger: Opportunity Stage → Won.
-  Actions: create client workspace in Paperclip, initiate QBO/Xero connection, assign CS agent, send welcome materials.
+- [x] **7. Wire the Opportunity Won workflow** — Completed: 2026-05-02
+  CSM agent wired, GHL workflow published, client pipeline created (EOq8U8BCqRMX9kM5g2qS), welcome email from scott@ledgerixpro.com via Outlook sync. Triggers on Opportunity Stage → Won; creates client workspace and assigns CSM agent.
 
-- [ ] **8. Wire the Opportunity Lost workflow**
-  GHL trigger: Opportunity Stage → Lost.
-  Actions: trigger win-back nurture, update ICP Status, log loss reason, feed pipeline analytics.
+- [x] **8. Wire the Opportunity Lost workflow** — Completed: 2026-05-03
+  CSM agent handles lost prospects: tags updated, gracious lost email from scott@ledgerixpro.com, 6-month nurture sequence tagged, SMS notification. GHL workflow published. Also covers Client Churn workflow (separate trigger but same handling pattern).
 
-- [ ] **10. Build the CS / Client Success agent**
-  Post-close agent. Monitors client health, collects NPS (writes `contact.nps_score`), detects churn risk.
-  Triggers on: NPS survey submission, missed invoice, engagement drop.
+- [x] **10. Build the CS / Client Success agent** — Completed: 2026-05-03
+  CSM agent operational; handles Opportunity Won/Lost, Client Churn workflows. Client Health Monitor agent (separate) handles event-driven health alerts: invoice.overdue, accounting.stale, nps.low → routes to CRO, moves contacts to At Risk stage, SMS notification. CSM + Client Health Monitor together cover the original CS scope. Weekly heartbeat deferred until 5 active clients.
 
-- [ ] **11. Build the Billing / AR agent**
-  Monitors invoice status in QBO/Xero.
-  Invoice paid → update GHL contact, log to Paperclip.
-  Invoice overdue → trigger follow-up sequence.
+- [x] **11. Build the Billing / AR agent** — Completed: 2026-05-03
+  AR Specialist agent operational: 3-touch invoice collection sequence (7/14/30 days), bill.due internal visibility, escalates to CRO at 30 days, SMS + at-risk tagging. Plus Billing & Invoicing agent (H4-5): monthly 1st-of-month QBO invoice creation with charter pricing tag. AR Specialist covers overdue follow-up; Billing & Invoicing handles invoice creation.
 
-- [ ] **12. Build the Invoice Paid GHL webhook workflow**
-  New GHL workflow: trigger = Invoice Paid → webhook to Paperclip with `event: invoice.paid`.
-  Dispatcher route to Billing agent. Requires QBO/Xero integration (#3 above).
+- [x] **12. Build the Invoice Paid GHL webhook workflow** — Completed: 2026-05-03
+  QBO (CloudEvents format, ahead of May 15 deadline) and Xero (ITR handshake verified) both live. Auto-dispatches invoice.paid → AR Specialist. Growth pattern implemented (auto-register on OAuth).
 
 ---
 
-## HORIZON 3 — Bookkeeping Engine
+## HORIZON 3: Bookkeeping Engine
 
 - [x] **29. Sentinel agent** — daily transaction puller, cron 0 6 * * * America/Phoenix, routine registered. Completed: 2026-05-08
 - [x] **30. Ledger Specialist agent** — categorizes transactions, reads KB rules, HITL ≥$1,000, enqueues Reconciliation. Completed: 2026-05-08
@@ -65,22 +60,19 @@ Priority-ordered build list. Updated: 2026-05-01.
 - [x] **33. Knowledge Base Manager agent** — builds client-specific categorization rules, additive KB-as-issue design. Completed: 2026-05-08
 - [x] **34. QBO/Xero write-back API methods** — updateTransactionCategory, reconcilePayment, applyPaymentToInvoice for both platforms. Completed: 2026-05-08
 
-- [ ] **35. Wire KB consumption into Ledger Specialist** — DONE (completed inline during bookkeeping engine build 2026-05-08)
-- [ ] **36. knowledge_base_rules DB table** — replace KB-as-issue design with a dedicated table at scale (50+ clients). Defer to Scale Pattern work.
+- [x] **35. Wire KB consumption into Ledger Specialist** — Completed: 2026-05-08 (inline during bookkeeping engine build with items 29–34).
+- [ ] **36. ~~knowledge_base_rules DB table~~** — SUPERSEDED by H4-13 (KB rules DB table). Original scope preserved for traceability: replace KB-as-issue design with a dedicated table at scale (50+ clients). Active tracking now under H4-13.
 - [x] **37. Agent observability dashboard** — internal dashboard live at api.ledgerixpro.com/dashboard. Secret-gated, 30s auto-refresh, agent health grid, HITL queue, active clients. Backend + frontend complete. Completed: 2026-05-08
 - [x] **38. Weekly client email digest** — Senior Bookkeeper sends branded HTML Monday 8am digest to all active clients. Metrics from runMetrics (transactions, categorized, reconciled, reviewed). Skips clients with no activity. Routine registered. Completed: 2026-05-08
 - [x] **39. Structured execution state** — run_metrics jsonb column added to issues table (migration 0061), runMetrics field in createIssueSchema/updateIssueSchema, all four bookkeeping agents updated to PATCH runMetrics at end of each run. Dashboard reads real counts tomorrow after 6am Sentinel run. Completed: 2026-05-08
 
-## HORIZON 3: Scale & Hardening
+## HORIZON 3.5: Scale & Hardening
 *Post-launch, post-first-10-clients.*
 
 - [ ] **16. Move to production infrastructure**
   Railway, Fly.io, or similar. Stable URL, TLS, uptime monitoring, auto-restart.
 
-- [ ] **17. Upgrade GHL to OAuth Marketplace App**
-  Required if client data lives in their own GHL sub-accounts.
-  Full OAuth flow, per-location token storage, automatic refresh.
-  See architecture notes: Pattern X → Pattern Y upgrade path.
+- [ ] **17. ~~Upgrade GHL to OAuth Marketplace App~~** — SUPERSEDED by H4-14 (multi-tenant architecture). Original scope preserved for traceability: required if client data lives in their own GHL sub-accounts. Full OAuth flow, per-location token storage, automatic refresh. Pattern X → Pattern Y upgrade path. Active tracking now under H4-14.
 
 - [ ] **18. Reusable idempotency middleware**
   Currently dedup is per-route (contact.created). Every new event type needs same treatment.
@@ -110,7 +102,7 @@ Priority-ordered build list. Updated: 2026-05-01.
 
 - [x] **25. Audit all agent budget guardrails** — all 14 active agents (10 claude_local + 4 C-Suite) now have monthly spend caps. Beta total cap: $270/mo. Scale table documented. Revisit at each 25-client milestone. Completed: 2026-05-08
 
-- [ ] **26. ~~Build agent audit trail / observability~~** — superseded by item 37 (Agent observability dashboard). Original scope: dashboard or log query showing all GHL actions by agents in last 24 hours, issue completion rates, agent error rates, spend per agent.
+- [x] **26. ~~Build agent audit trail / observability~~** — SUPERSEDED by item 37 (Agent observability dashboard, completed 2026-05-08). Original scope preserved for traceability: dashboard or log query showing all GHL actions by agents in last 24 hours, issue completion rates, agent error rates, spend per agent.
 
 - [ ] **27. Outbound prospecting (optional, Phase 3)**
   Cold email / LinkedIn outreach for SDR agent.
@@ -121,13 +113,53 @@ Priority-ordered build list. Updated: 2026-05-01.
 
 ---
 
-## HORIZON 4
+## PHASE 4: Accounting API
 
-- [x] **H4-1. Client portal** — api.ledgerixpro.com/portal/{contactId} — client-facing light-theme portal showing this month's metrics (transactions, categorized, reconciled, flagged), book status (current/attention_needed/unknown), and 4-week history. No auth for beta (contactId as token). Built into Dockerfile. Completed: 2026-05-09
+*Cross-cutting architectural workstream. Builds the production-safe accounting API surface (read + write endpoints) that powers both the bookkeeping agents (HORIZON 3) and Ledgerix Pro's own billing (HORIZON 4 / H4-5). Phased to land safely: read endpoints first, then write endpoints atop a safety layer. See `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md` for active work and `docs/LedgerixPro-Enterprise-Architecture.md` Section 6 for architectural context.*
+
+### Phase 4a: Read endpoints
+
+- [x] **P4a-1. Read endpoints (QBO + Xero)** — Completed: 2026-05-12 (approx). 7 GET endpoints production-ready: `/transactions` (list with pagination), `/accounts` (Chart of Accounts), `/invoices` (list + filtering), `/reports/p-and-l` (P&L + Balance Sheet + Trial Balance extensions), plus internal helpers. Powers the bookkeeping agents' Sentinel run.
+
+### Phase 4b: Write endpoint specification + foundation
+
+- [x] **P4b-1. Write endpoint specification** — Completed: 2026-05-15 (approx). Detailed spec for POST /transactions/:txnId/category, POST /payments, POST /invoices written. Identified gaps that became Phase 4c safety architecture work.
+- [x] **P4b-2. Initial write endpoint implementation** — Completed: 2026-05-15 (approx). First-pass write endpoints shipped but flagged for safety hardening before any real client traffic (the "May 11-17 hallucinated email incident" prompted the Phase 4c safety pause).
+
+### Phase 4c: Safety architecture
+
+- [x] **P4c-1. Write approvals service** — Completed: 2026-05-17. New `services/accounting/write-approvals.ts` providing HITL gating for safety-critical writes. Approval flow: agent proposes → human approves → write executes. Audit logged.
+- [x] **P4c-2. Pricing engine** — Completed: 2026-05-17. `services/accounting/pricing.ts` + `pricing` DB table with `getExpectedPriceCents(tier, isCharter)` lookup. Seeded with 6 rows covering the tier × charter-state matrix (Foundation / Growth Engine / Scale-Up × Charter / Standard). Powers invoice price validation. Production seed bootstrap completed via Defect 1 fix path; see WIP doc for activity_log entries.
+- [x] **P4c-3. Dedupe service** — Completed: 2026-05-17. Idempotency-key-based dedupe for write endpoints. Prevents duplicate invoices/payments on retry.
+- [x] **P4c-4. ADR-003 written** — Completed: 2026-05-17. Architecture Decision Record locking the safety pattern: write endpoints sit atop write-approvals + pricing + dedupe + thresholds. Amendment 1 identifies Q1 (charter status storage) + Q2 (setup fee handling) as remaining gaps blocking the Invoice endpoint.
+- [x] **P4c-5. PAPERCLIP_ALLOW_EXTERNAL_WRITES kill switch** — Completed: 2026-05-17. Env-var-gated immediate defense against external writes. Routine engine disabled in local_trusted environment as additional safety layer. See `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md` for full incident response context.
+
+### Phase 4c.5: Admin API + Decision 4
+
+- [x] **P4c.5-1. Admin pricing/thresholds seed endpoints** — Completed: 2026-05-25. `POST /api/admin/pricing/seed` + `POST /api/admin/thresholds/seed` with bearer-token auth (Lock 1B pattern). Session-only auth currently; CI/CD bearer-token path documented for future deployment automation.
+- [x] **P4c.5-2. Defect 1: compareAndSeed null-identity bug** — Completed: 2026-05-26. SQL null-equality bug in `compareAndSeed` helper. Fixed via `value === null ? isNull(col) : eq(col, value)` pattern. Integration tests added against embedded Postgres. Prod-verified via re-run (`audit_log e6d8b7f5-a851-4af9-a5f5-164acc940f95`). Commit `1727746a`.
+- [x] **P4c.5-3. Q3 / Decision 4: get-transaction-by-id infrastructure scope LOCKED** — Completed: 2026-05-26. Option A (full coverage) locked: per-type fetch handlers for 7 QBO types + 4 Xero types behind a unified `getTransactionById` interface returning `previousAccountRef`. See WIP doc Decision 4 for the locked interface contract.
+- [x] **P4c.5-4. Decision 4 Phase 1** — Completed: 2026-05-26. Dispatcher + 3 of 11 types shipped: QBO Purchase, QBO Bill, Xero BankTransaction. Existing two `updateTransactionAccount` handlers refactored to use the dispatcher. 15 new tests. Commit `bffa3b16`.
+- [x] **P4c.5-5. Decision 4 Phase 2 foundation** — Completed: 2026-05-27. Structured `HttpResponseError` class added to qboRequest/xeroRequest; dispatcher's multi-type probing catch tightened to strict discriminator (only 404 continues to next type; everything else rethrows). 3 new tests lock strict semantics. Commit `635e4998`. Test baseline 179 → 182.
+- [ ] **P4c.5-6. Decision 4 Phase 2 type expansion** — Remaining ~3-4 hours. Add 5 QBO types (JournalEntry, Deposit, BillPayment, Payment, Invoice) and 3 Xero types (Invoices, Bills, ManualJournals) to the dispatcher's type registry with incremental tests.
+- [ ] **P4c.5-7. Q1: Charter status storage** — Architectural decision pending. `getExpectedPriceCents` requires `isCharter` parameter; no defined storage exists yet. ADR-003 Amendment 1 Gap 1. Blocks Invoice endpoint re-implementation. Entangled with business-model considerations.
+- [ ] **P4c.5-8. Q2: Setup fee handling** — Architectural decision pending. Setup fees ($249/$349/$1,200 per pricing spec Section 7) not modeled by current pricing schema. ADR-003 Amendment 1 Gap 2. Blocks Invoice endpoint re-implementation.
+- [ ] **P4c.5-9. POST /transactions/:txnId/category re-implementation** — 1-2 hours. Atop the safety layer; awaits Decision 4 Phase 2 type expansion completion.
+- [ ] **P4c.5-10. POST /payments re-implementation** — 2-3 hours. Atop safety layer (thresholds); awaits service signature fixes.
+- [ ] **P4c.5-11. POST /invoices re-implementation** — 3-4 hours. Atop safety layer (pricing + dedupe); blocked on Q1 + Q2.
+
+### Phase 4 success criteria (lock from ADR-003)
+
+- All write endpoints atop the safety layer (approvals + pricing + dedupe + thresholds) before any real client traffic.
+- `getTransactionById` covers all 11 transaction types across QBO + Xero so write endpoints can capture `previousAccountRef` for audit trails.
+- Q1 + Q2 resolved before Invoice endpoint ships.
+- Test coverage discipline: integration tests against embedded Postgres for any SQL-level work (lesson from Defect 1).
 
 ---
 
-## HORIZON 4 — Scale & Revenue Expansion
+## HORIZON 4: Client Portal & Revenue Expansion
+
+- [x] **H4-1. Client portal** — api.ledgerixpro.com/portal/{contactId} — client-facing light-theme portal showing this month's metrics (transactions, categorized, reconciled, flagged), book status (current/attention_needed/unknown), and 4-week history. No auth for beta (contactId as token). Built into Dockerfile. Completed: 2026-05-09
 
 - [x] **H4-2. AP Specialist agent** — daily 6:30am scan (7-day warnings to client, overdue 1-29d → CFO + Health Monitor, overdue 30d+ → CFO + Health Monitor + Senior Bookkeeper + Scott). Weekly Monday 8:30am HTML AP summary to clients. getBills added for QBO + Xero. Correct escalation chain through CFO and Senior Bookkeeper. Completed: 2026-05-08
 - [x] **H4-3. Tax Liaison agent** — daily 7am scan (7-day alerts + CPA handoff issue), weekly Monday 9am 30-day planning emails with YTD P&L summary. Federal + Arizona state deadlines. Completed: 2026-05-09
@@ -188,5 +220,6 @@ Priority-ordered build list. Updated: 2026-05-01.
 
 ---
 
-*Last updated: 2026-05-11*
+*Last updated: 2026-05-27 (Phase 4 section added; status corrections; structural cleanup of duplicate HORIZON labels)*
 *Project root: /Users/scotthansbury/Projects/ledgerix-pro-core*
+*Maintained alongside `docs/wip/`, `docs/PHASE-4-PROGRESS.md`, `docs/LedgerixPro-Enterprise-Architecture.md`, and `docs/LedgerixPro-Claude-Project-Brief.md`*
