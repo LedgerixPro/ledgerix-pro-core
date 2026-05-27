@@ -428,18 +428,59 @@ Session 3's Phase 1 commit message explicitly flagged the HTTP error discriminat
 
 The strict-catch change initially broke 7 transaction-lookup tests. Root cause was NOT the strict semantics themselves — it was `vi.clearAllMocks()` in three `beforeEach` blocks. `clearAllMocks()` clears call history but does NOT drain queued `.mockResolvedValueOnce`/`.mockRejectedValueOnce` implementations. Under the prior loose-catch dispatcher, every queued mock got consumed per test (the loop iterated through all types), so the queues were empty by the next test. Under Phase 2 strict semantics, fewer mocks are consumed per test (strict rethrow short-circuits the loop on the first non-404), so leftover queued mocks leaked forward and corrupted subsequent tests. Fix: `vi.resetAllMocks()` instead — drains the queues correctly. This is a generalizable Vitest pattern, not specific to transaction-lookup. Saved to working memory for future test work across the codebase.
 
-**State at session end:**
+**Decision 4 Phase 2 type expansion — full arc shipped Session 4:**
 
-- Codebase HEAD: master @ `635e4998` (plus this docs commit pending)
-- Test baseline: 182 targeted tests passing (179 + 3 from Phase 2 strict-discriminator tests)
+After the Phase 2 foundation landed, the session continued through the full type-expansion work. Path Y (one type per commit) was the chosen discipline because each remaining QBO type had structurally different account-ref locations that warranted per-commit verification against QBO API docs. Six type-expansion commits + one REVISED note commit + one feature-complete commit.
+
+**Commits shipped (continuation):**
+
+17. **`8830f206`** — **feat(accounting,phase-4c-5): Decision 4 Phase 2 type expansion — QBO JournalEntry.** First non-Purchase-shaped QBO type. Field path: `Line[0].JournalEntryLineDetail.AccountRef.value`. Verified against QBO API. JournalEntries are multi-line (Debit/Credit pairs) — captures first-line approximation with JSDoc-documented caveat. 1 new test. Surfaced memory #21 (the type-exhaustion test is coupled to QBO_TYPE_REGISTRY cardinality). Test baseline 182 → 183.
+
+18. **`7027c79a`** — **feat(accounting,phase-4c-5): Decision 4 Phase 2 type expansion — QBO Deposit.** Two-account-ref nuance: top-level DepositToAccountRef (destination bank account) AND per-line DepositLineDetail.AccountRef (source). Per-line source captured (re-categorization workflows act on source side). 1 new test. Test baseline 183 → 184.
+
+19. **`2195544a`** — **feat(accounting,phase-4c-5): Decision 4 Phase 2 type expansion — QBO BillPayment.** Structurally different from prior types: PayType-discriminated top-level account refs (CheckPayment.BankAccountRef OR CreditCardPayment.CCAccountRef). Lines contain only LinkedTxn references — no per-line account info. 3 new tests covering Check / CreditCard / unknown PayType (defensive null). Test baseline 184 → 187.
+
+20. **`769a39ca`** — **feat(accounting,phase-4c-5): Decision 4 Phase 2 type expansion — QBO Payment.** Customer-side counterpart to BillPayment but without PayType discriminator. Two top-level refs (DepositToAccountRef = destination, ARAccountRef = AR account). Destination captured with AR fallback (different from Deposit's source-side capture; asymmetry documented in JSDoc because Deposit/Payment have opposite money flows). 3 new tests covering DepositTo present / DepositTo missing → AR fallback / both missing → null. Test baseline 187 → 190.
+
+21. **`bf96d2d3`** — **feat(accounting,phase-4c-5): Decision 4 Phase 2 type expansion — QBO Invoice (QBO half COMPLETE).** Most structurally unique QBO type: Lines mix multiple DetailType variants (SalesItemLineDetail, SubTotalLineDetail, DescriptionOnlyLineDetail). Handler uses `.find()` to locate first SalesItemLineDetail, then extracts SalesItemLineDetail.ItemAccountRef.value (NOT ItemRef — ItemRef points to an Item, ItemAccountRef resolves to the income account on GET responses). 3 new tests covering happy path + SubTotal/Description filtering + pathological no-sales-line fallback. **QBO type registry now 7 of 7 complete.** Test baseline 190 → 193.
+
+22. **`fb13f98c`** — **docs(wip): Decision 4 REVISED — Xero Invoice and Bill share an endpoint (Tenet #16 explicit revision).** Mid-implementation discovery: Xero treats ACCREC (sales Invoice) and ACCPAY (purchase Bill) as the same resource type, served by the same `/Invoices/{InvoiceID}` endpoint with a Type field discriminator. Original Decision 4 spec anticipated 4 separate Xero handlers; this revision documents that 3 handlers will cover 4 type keys (Invoice + Bill share a handler). Per Tenet #16 (Locked Decisions Stay Locked), the doc revision shipped BEFORE the code that diverges from the original spec — the contract was updated first. Pure docs, no code, no test changes.
+
+23. **`4e9d70be`** — **feat(accounting,phase-4c-5): Decision 4 Phase 2 type expansion COMPLETE — Xero Invoice/Bill/ManualJournal.** Final implementation commit closing Decision 4. Two handlers shipped: `fetchXeroInvoiceOrBill` (shared, registered under both "Invoice" and "Bill" keys, returns txnType based on response Type field) and `fetchXeroManualJournal` (separate, at `/ManualJournals/{id}`, JournalLines first-line approximation). 5 new tests covering ACCREC → "Invoice", ACCPAY → "Bill" with hint "Bill" (verifies shared-endpoint behavior), defensive default when Type missing, ManualJournal happy path, ManualJournal empty-lines null fallback. **All 11 Decision 4 types now covered.** Test baseline 193 → 198.
+
+**Decision 4 feature-complete summary:**
+
+By end-of-session: dispatcher covers all 11 planned transaction types via 10 handler functions (7 QBO + 3 Xero — the shared-handler pattern saved one Xero handler vs the original 11-handler plan).
+
+| Platform | Type Keys | Handler Functions |
+|----------|-----------|-------------------|
+| QBO      | 7         | 7                 |
+| Xero     | 4         | 3 (Invoice + Bill share `fetchXeroInvoiceOrBill`) |
+| **Total** | **11**   | **10**            |
+
+Test baseline trajectory: 161 (Session 3 start) → 164 (Defect 1 integration tests) → 179 (Phase 1) → 182 (Phase 2 foundation) → 198 (Phase 2 type expansion COMPLETE). +37 tests across Decision 4. Every new code path locked by at least one dedicated test; handlers with multiple branches (BillPayment, Payment, QBO Invoice, Xero Invoice/Bill) shipped 3+ tests apiece.
+
+**Path Y discipline retrospective:** One commit per QBO type, then the 3 Xero types batched into one commit because they share an API endpoint pattern. Path Y proved out — verification against API docs before each commit caught one significant revision (the Xero shared-endpoint discovery). If Path Y hadn't been the discipline, the Xero revision would likely have been discovered during a batched commit and either silently absorbed (Tenet #16 violation) or surfaced as a noisy mid-commit course correction. Documenting the revision as its own commit before the divergent code was the right ordering.
+
+**Memory captures across the day:**
+
+- **#21 (Decision 4 Phase 2 type expansion gotcha):** the type-exhaustion test is coupled to QBO_TYPE_REGISTRY cardinality. Every new type added requires growing the mock queue AND the attemptedTypes assertions. Locked via NOTE comment in the test file + memory. Came in handy 6 times across the type-expansion commits.
+
+**State at session end (final after Decision 4 complete):**
+
+- Codebase HEAD: master @ `4e9d70be` (plus this docs commit pending)
+- Test baseline: 198 targeted tests passing (+37 across Decision 4 implementation arc)
 - Full monorepo typecheck: clean
 - Phase 4c.5 status:
   - Defect 1: FIXED + prod-verified ✅
-  - Decision 4 (Q3 resolution): LOCKED + Phase 1 SHIPPED + Phase 2 foundation SHIPPED ✅
-  - Decision 4 Phase 2 type expansion: pending (5 QBO + 3 Xero types, ~3-4 hours)
+  - Decision 4 (Q3 resolution): **FEATURE-COMPLETE** ✅ (LOCKED + Phase 1 SHIPPED + Phase 2 foundation SHIPPED + Phase 2 type expansion SHIPPED for all 11 types)
   - Q1 (charter status): still pending
   - Q2 (setup fees): still pending
-- IMMEDIATE next work: Decision 4 Phase 2 type expansion (proceed with confidence; dispatcher is now safe for general callers) OR Q1/Q2 architectural decisions
+- Phase 4c.5 NEXT-NATURAL-STEP work (no longer gated by Decision 4):
+  - POST /transactions/:txnId/category re-implementation (~1-2 hours, now unblocked)
+  - POST /payments re-implementation (~2-3 hours, awaits service signature fixes)
+  - POST /invoices re-implementation (~3-4 hours, blocked on Q1 + Q2)
+- IMMEDIATE next work options: POST /transactions/:txnId/category re-implementation (the most-natural next step now that Decision 4 is complete) OR Q1/Q2 architectural decisions
 
 ### Next session (date TBD)
 
@@ -450,9 +491,11 @@ The strict-catch change initially broke 7 transaction-lookup tests. Root cause w
 **Path B — Decision 4 implementation continues; Q1 + Q2 still pending:**
 
 - ✅ **Q3 (get-transaction-by-id infrastructure scope)** — LOCKED Session 3 as Decision 4 (Option A — full coverage).
-- ✅ **Decision 4 Phase 1** — SHIPPED Session 3 (commit `bffa3b16`). Dispatcher live; 3 of 11 types covered (QBO Purchase, QBO Bill, Xero BankTransaction); existing two handlers refactored; 15 new tests.
-- ✅ **Decision 4 Phase 2 foundation** — SHIPPED Session 4 (commit `635e4998`). Structured `HttpResponseError` class added to qboRequest/xeroRequest; dispatcher's multi-type probing catch tightened to strict discriminator (only 404 continues to next type; everything else rethrows); 3 new tests lock the strict semantics. Test baseline 179 → 182.
-- **Decision 4 Phase 2 type expansion** — remaining ~3-4 hours. Adds 5 QBO types (JournalEntry, Deposit, BillPayment, Payment, Invoice) and 3 Xero types (Invoices, Bills, ManualJournals) with incremental tests for each. Dispatcher is now safe for general callers; type expansion can proceed without dispatcher rework. Once Phase 2 type expansion completes, `POST /transactions/:txnId/category` becomes re-implementable.
+- ✅ **Decision 4 Phase 1** — SHIPPED Session 3 (commit `bffa3b16`). Dispatcher live; 3 of 11 types covered.
+- ✅ **Decision 4 Phase 2 foundation** — SHIPPED Session 4 (commit `635e4998`). HttpResponseError + strict dispatcher discriminator.
+- ✅ **Decision 4 Phase 2 type expansion** — SHIPPED Session 4 across 6 commits (`8830f206` JournalEntry, `7027c79a` Deposit, `2195544a` BillPayment, `769a39ca` Payment, `bf96d2d3` Invoice, `4e9d70be` Xero Invoice/Bill/ManualJournal). All 11 planned types now covered. Test baseline 161 → 198.
+- ✅ **Decision 4 REVISED note** — SHIPPED Session 4 (commit `fb13f98c`). Documents the Xero shared-endpoint discovery per Tenet #16; revision landed BEFORE the divergent code commit.
+- **POST /transactions/:txnId/category re-implementation** — now unblocked (~1-2 hours). The next-natural-step deliverable.
 - Q1: Charter status storage (ADR-003 Amendment 1 Gap 1) — blocks Invoice endpoint. Entangled with business-model considerations.
 - Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2) — blocks Invoice endpoint. Entangled with business-model considerations.
 

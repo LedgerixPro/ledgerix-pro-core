@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 Phase 2 — QBO half complete + Xero shared-endpoint revision documented)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 FEATURE-COMPLETE — all 11 types covered across QBO + Xero)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -14,7 +14,7 @@
 - ~~Fix compareAndSeed null-identity bug + harden tests: 2-3 hours~~ — DONE Session 3 (commit `1727746a`, verified in prod via re-run, audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`)
 - Charter status storage decision + implementation: 3-5 hours
 - Setup fee handling decision + implementation: 3-5 hours
-- Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours total — Phase 1 SHIPPED Session 3 (commit `bffa3b16`, 3 of 11 types); Phase 2 foundation SHIPPED Session 4 (commit `635e4998`, HttpResponseError + strict dispatcher discriminator). Remaining type expansion: 5 QBO types + 3 Xero types (~3-4 hours).
+- ~~Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours total~~ — **COMPLETE Session 4 (2026-05-27)**. Phase 1 shipped commit `bffa3b16` (dispatcher + 3 types). Phase 2 foundation shipped commit `635e4998` (HttpResponseError + strict dispatcher). Phase 2 type expansion shipped across 6 commits: `8830f206` (JournalEntry), `7027c79a` (Deposit), `2195544a` (BillPayment), `769a39ca` (Payment), `bf96d2d3` (Invoice — QBO half complete), `4e9d70be` (Xero Invoice/Bill/ManualJournal — feature-complete). Dispatcher now covers all 11 planned types: 7 QBO handlers + 3 Xero handlers (Xero Invoice/Bill share a handler per the REVISED note below). Test baseline 161 → 198 (+37).
 - POST /transactions/:txnId/category re-implementation: 1-2 hours (once infra exists)
 - POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)
 - POST /invoices re-implementation: 3-4 hours (once charter + setup fees + dedupe wired)
@@ -225,6 +225,43 @@ The observation above was acted on as the first Phase 2 piece — before adding 
 - 3 new tests in `transaction-lookup.test.ts` lock the strict discriminator: (1) 404 HttpResponseError continues to next type; (2) non-404 HttpResponseError (e.g., 500) rethrows immediately, NOT silently treated as "wrong type"; (3) non-HttpResponseError errors (network failures, malformed responses) also rethrow.
 - Test baseline: 182 targeted tests passing (179 + 3 new). Full monorepo typecheck clean.
 
+**Decision 4 COMPLETE (2026-05-27 end-of-Session-4):**
+
+All 11 planned transaction types are now covered by the `getTransactionById` dispatcher. The implementation arc spans two sessions and roughly two-thirds of a calendar day:
+
+- **Session 3 (2026-05-26):** Decision locked → Phase 1 shipped (commit `bffa3b16` — dispatcher + 3 types: QBO Purchase, QBO Bill, Xero BankTransaction; 15 new tests; baseline 164 → 179).
+- **Session 4 (2026-05-27):** Phase 2 foundation shipped (commit `635e4998` — HttpResponseError class + strict dispatcher discriminator; 3 new tests; baseline 179 → 182) → Phase 2 type expansion shipped across 6 incremental commits:
+  - `8830f206` QBO JournalEntry (1 test; baseline 182 → 183)
+  - `7027c79a` QBO Deposit (1 test; baseline 183 → 184)
+  - `2195544a` QBO BillPayment (3 tests covering Check/CreditCard/unknown PayType branches; baseline 184 → 187)
+  - `769a39ca` QBO Payment (3 tests covering DepositToAccountRef/ARAccountRef fallback chain; baseline 187 → 190)
+  - `bf96d2d3` QBO Invoice (3 tests covering SubTotal filtering + ItemAccountRef extraction; baseline 190 → 193) — **QBO half complete**
+  - `4e9d70be` Xero Invoice + Bill + ManualJournal (5 tests covering ACCREC/ACCPAY discrimination + ManualJournal happy path + empty-lines fallback; baseline 193 → 198) — **FULL COMPLETE**
+
+The pattern that worked across all 6 type-expansion commits: (a) verify the QBO/Xero API field path against current docs before writing code; (b) implement one type per commit with documented design choices in JSDoc on the handler; (c) lock each code path with a dedicated test; (d) update the type-exhaustion test in parallel per memory #21 (registry-cardinality coupling). Path Y (one commit per type) was the right discipline — each commit isolated one structural pattern, and verification against API docs caught one significant revision (the Xero shared-endpoint discovery, captured in the REVISED note below).
+
+**Final coverage:**
+
+| Platform | Type            | Handler                       | Endpoint                  | Notes |
+|----------|-----------------|-------------------------------|---------------------------|-------|
+| QBO      | Purchase        | fetchQboPurchase              | /purchase/{id}            | Phase 1 |
+| QBO      | Bill            | fetchQboBill                  | /bill/{id}                | Phase 1 |
+| QBO      | JournalEntry    | fetchQboJournalEntry          | /journalentry/{id}        | First-line approximation |
+| QBO      | Deposit         | fetchQboDeposit               | /deposit/{id}             | Per-line source captured (not destination) |
+| QBO      | BillPayment     | fetchQboBillPayment           | /billpayment/{id}         | PayType-discriminated; defensive null |
+| QBO      | Payment         | fetchQboPayment               | /payment/{id}             | DepositToAccountRef → ARAccountRef fallback |
+| QBO      | Invoice         | fetchQboInvoice               | /invoice/{id}             | SubTotal/Description line filtering; ItemAccountRef |
+| Xero     | BankTransaction | fetchXeroBankTransaction      | /BankTransactions/{id}    | Phase 1 |
+| Xero     | Invoice         | fetchXeroInvoiceOrBill        | /Invoices/{id}            | Shared handler with Bill; Type=ACCREC |
+| Xero     | Bill            | fetchXeroInvoiceOrBill        | /Invoices/{id}            | Shared handler with Invoice; Type=ACCPAY |
+| Xero     | ManualJournal   | fetchXeroManualJournal        | /ManualJournals/{id}      | First-line approximation |
+
+**Net implementation:** 11 type keys in registries (7 QBO + 4 Xero) covered by 10 handler functions (7 QBO + 3 Xero — the shared-handler pattern saved one Xero handler). See the REVISED note below for why Xero needed fewer handlers than type keys.
+
+**Test discipline observation worth keeping:** Every handler ships with at least one dedicated test, and handlers with multiple code paths ship with one test per path (BillPayment got 3, Payment got 3, QBO Invoice got 3, Xero Invoice/Bill/ManualJournal contributed 5 between them). The total +37 tests across Decision 4 is high signal — each one locks a specific extraction pattern or fallback branch.
+
+**Decision 4 unblocks:** `POST /transactions/:txnId/category` re-implementation, which was the gating dependency captured in ADR-003's Phase 4c.5 deferred-endpoint list. The next-natural-step work item is now that endpoint plus the remaining Q1/Q2 architectural decisions (charter status storage; setup fee handling).
+
 **REVISED (2026-05-27 mid-Session 4): Xero Invoice and Bill are served by the same endpoint:**
 
 Decision 4's original locked scope listed "4 Xero types: BankTransaction, Invoices, Bills, ManualJournals" — anticipating 4 separate fetch handlers in `XERO_TYPE_REGISTRY`. Verification against the Xero Accounting API during Phase 2 type expansion surfaced a structural fact not captured in the original lock:
@@ -247,13 +284,20 @@ The strict-catch change initially broke 7 tests. Root cause was NOT the strict s
 
 **Remaining Decision 4 implementation work (Phase 2+):**
 
-- ~~Structured HTTP error class for qboRequest/xeroRequest (~30 min)~~ — DONE Session 4 (commit `635e4998`)
+All items SHIPPED Session 4. Decision 4 is feature-complete.
+
+- ~~Structured HTTP error class for qboRequest/xeroRequest~~ — DONE Session 4 (commit `635e4998`)
 - ~~QBO types still to add (5): JournalEntry, Deposit, BillPayment, Payment, Invoice~~ — DONE Session 4 across 5 commits (`8830f206`, `7027c79a`, `2195544a`, `769a39ca`, `bf96d2d3`)
-- **Xero types still to add (per revised plan above):**
-  - `fetchXeroInvoiceOrBill` shared handler, registered under both `"Invoice"` and `"Bill"` keys (~45 min — slightly more complex than QBO due to Type discriminator logic; ~3 tests covering ACCREC path, ACCPAY path, missing-Type fallback)
-  - `fetchXeroManualJournal` separate handler at `/ManualJournals/{id}` (~30 min — straightforward, similar to BankTransaction shape with JournalLines instead of LineItems)
-- Tests for each Xero type added per memory #21 (registry-cardinality coupling — every new type added to XERO_TYPE_REGISTRY requires growing the Xero-side exhaustion test's mock queue and assertions)
-- Remaining effort estimate: ~1.5-2 hours (down from ~3-4 hours estimated after Phase 2 foundation shipped — reflecting that QBO work is done and Xero shared-endpoint pattern reduces the per-type work)
+- ~~Xero types still to add: shared Invoice/Bill handler + separate ManualJournal handler~~ — DONE Session 4 (commit `4e9d70be` — 5 new tests covering ACCREC/ACCPAY discrimination, defensive default, ManualJournal happy path, empty-lines null fallback)
+- ~~Tests for each type per memory #21 (registry-cardinality coupling)~~ — DONE inline with each type-expansion commit. The Xero side does not have a dedicated exhaustion test (one would be a future test-architecture improvement, but not in scope for Decision 4 feature completion).
+
+**Next-natural-step Phase 4c.5 work** (no longer gated by Decision 4):
+
+- `POST /transactions/:txnId/category` re-implementation (~1-2 hours) — atop the safety layer; uses the dispatcher's general (no-hint) probe path which now covers all 11 types correctly per Phase 2 strict-discriminator semantics
+- Q1: Charter status storage decision + implementation (~3-5 hours, blocks Invoice endpoint)
+- Q2: Setup fee handling decision + implementation (~3-5 hours, blocks Invoice endpoint)
+- `POST /payments` re-implementation (~2-3 hours, awaits service signature fixes)
+- `POST /invoices` re-implementation (~3-4 hours, blocked on Q1 + Q2)
 
 **Out of scope for this decision (deferred to implementation):**
 
