@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED — Charter status storage + Setup fee handling)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED AND IMPLEMENTED — Charter status storage + Setup fee handling)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -485,7 +485,7 @@ All 6 in-scope Decision 5 transaction types are now writable through the unified
 
 ## Architecture Decisions Pending
 
-### ~~Q1: Charter status storage mechanism (ADR-003 Amendment 1 Gap 1)~~ — LOCKED 2026-05-27 Session 4 as Option B
+### ~~Q1: Charter status storage mechanism (ADR-003 Amendment 1 Gap 1)~~ — LOCKED + IMPLEMENTED 2026-05-27 Session 4 (Option B)
 
 **Decision: Option B — Local DB table `client_charter_status`.**
 
@@ -531,11 +531,18 @@ State-transition rules (locked):
 - Cancellation: transition `active → cancelled_was_charter`. Set `cancelledAt = now`, `statusChangedAt = now`. Once in `cancelled_was_charter`, NO transition back to `active` is permitted — locked structurally (service-layer enforcement; future returning-client onboarding writes a new row with `status = never_charter`).
 - `never_charter → active` is NOT permitted (Charter window closes at client 10; can't grant retroactively).
 
-**Estimated effort:** ~2-3 hours total. Migration + service + tests + admin seed extension (for dev/test fixtures) + WIP doc closeout.
+**Estimated effort:** ~2-3 hours total. ACTUAL: shipped 2026-05-27 commit `5b4856bb` — schema + service + 20 tests in a single commit. New migration `0068_youthful_blockbuster.sql`. Service module at `server/src/services/accounting/charter.ts`. Test baseline 233 → 253 (+20).
+
+**Tenet #7 correction caught during implementation:** Pre-implementation reads of `service_tier_pricing.ts` and `client_pricing_overrides.ts` surfaced that the tier-value convention in this codebase is display-style ("Foundation" / "Growth Engine" / "Scale-Up"), NOT snake_case. Q1 doesn't actually use tier values (charter is per-client, not per-tier), so this doesn't affect Q1's implementation — but it was a real verification that prevented Q2 from inheriting the lock doc's incorrect snake_case assumption.
+
+**What is NOT implemented yet** (deferred to follow-up sessions):
+- Onboarding workflow integration — the call site that determines `grantCharterToNewClient` vs `recordNonCharterClient` based on the "first 10 paying clients" check
+- Cancellation workflow integration — the call site that invokes `cancelCharter` when a client cancels
+- Invoice endpoint wiring — POST /invoices (next Phase 4c.5 endpoint) will call `isCharterForInvoicing`
 
 **Decision 5 reference (Tenet #16):** This decision is now LOCKED. Implementation may extend (add optional columns, helper functions) but must not change the locked schema/enum/state-transition contract without an explicit REVISED note.
 
-### ~~Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2)~~ — LOCKED 2026-05-27 Session 4 as Option B
+### ~~Q2: Setup fee handling (ADR-003 Amendment 1 Gap 2)~~ — LOCKED + IMPLEMENTED 2026-05-27 Session 4 (Option B)
 
 **Decision: Option B — Parallel `setup_fee_pricing` table.**
 
@@ -562,7 +569,7 @@ New table `setup_fee_pricing`:
 | Column         | Type      | Notes                                                            |
 |----------------|-----------|------------------------------------------------------------------|
 | id             | uuid PK   |                                                                  |
-| tier           | text      | "foundation" / "growth_engine" / "scale_up" (matching service_tier_pricing convention) |
+| tier           | text      | "Foundation" / "Growth Engine" / "Scale-Up" (matching service_tier_pricing convention) — **CORRECTED 2026-05-27 during Q1 implementation:** the original lock doc text said snake_case; Tenet #7 verification of `service_tier_pricing.ts` surfaced that the actual convention is display-style |
 | amountCents    | integer   | $249 / $349 / $1,200 = 24900 / 34900 / 120000                    |
 | effectiveFrom  | timestamp | Effective-dated, paralleling service_tier_pricing                |
 | effectiveTo    | timestamp | null = currently active                                          |
@@ -582,13 +589,25 @@ Service function in `server/src/services/accounting/pricing.ts` (parallel to exi
 
 | Tier            | Amount Cents | Display |
 |-----------------|--------------|---------|
-| foundation      | 24900        | $249    |
-| growth_engine   | 34900        | $349    |
-| scale_up        | 120000       | $1,200  |
+| Foundation      | 24900        | $249    |
+| Growth Engine   | 34900        | $349    |
+| Scale-Up        | 120000       | $1,200  |
 
 Admin seed endpoint `POST /api/admin/pricing/seed` extended to write these 3 rows alongside the existing 6 `service_tier_pricing` rows. Same `inserted: N, skipped: M` response shape; idempotent.
 
-**Estimated effort:** ~2-3 hours total. Migration + service function + tests + admin seed extension + WIP doc closeout.
+**Estimated effort:** ~2-3 hours total. ACTUAL: shipped 2026-05-27 commit `83b80a72` — schema + migration + service function + admin seed extension + 9 tests in a single commit. New migration `0069_damp_bloodscream.sql`. Service function added to `server/src/services/accounting/pricing.ts` alongside existing `getExpectedPriceCents`. Test baseline 253 → 262 (+9 net new: 6 in pricing.test.ts, 3 net new in admin.test.ts).
+
+**Sub-decision Q2-α-i locked during implementation:** The original Q2 lock specified the admin seed endpoint extension as "Same `{ inserted, skipped }` response shape" but the actual extension required combining two tables' results. Three sub-options surfaced during implementation:
+
+- **Q2-α-i (chosen):** Combined endpoint with per-table sub-objects. Response shape changed from `{ data: { inserted, skipped, ... }, meta }` to `{ data: { pricing: { inserted, ... }, setupFees: { inserted, ... } }, meta }`. Preserves per-table visibility (caller can see EACH table's seed outcome, distinguishing partial success from complete success).
+- Q2-α-ii: Combined endpoint with summed totals. Rejected because it loses the visibility distinction between which table succeeded/failed.
+- Q2-α-iii: Separate endpoint POST /admin/setup-fees/seed. Rejected because the lock specified extending the existing endpoint.
+
+Q2-α-i is the contract for POST /api/admin/pricing/seed going forward. The change is backward-incompatible for the response body — three existing admin.test.ts tests required updates to read from the new nested `data.pricing.*` and `data.setupFees.*` keys (all updates were correct and expected per the locked sub-decision).
+
+**What is NOT implemented yet** (deferred to follow-up sessions):
+- Invoice endpoint wiring — POST /invoices will call `getSetupFeeCents` for setup-fee invoice flows alongside `isCharterForInvoicing` (Q1) + `getExpectedPriceCents` for recurring billing
+- Production seed — POST /api/admin/pricing/seed must be invoked on prod after this deploys to populate the 3 new setup_fee_pricing rows. Not done in any of the implementation commits (Tenet #14 — production data changes are operational work, not code commits)
 
 **Decision 5 reference (Tenet #16):** This decision is now LOCKED. Implementation may extend (add optional columns, helper functions) but must not change the locked schema/seed-values/lookup-semantics contract without an explicit REVISED note.
 

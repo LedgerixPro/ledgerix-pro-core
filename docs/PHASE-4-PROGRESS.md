@@ -512,26 +512,76 @@ After Decision 4 closed feature-complete, the session continued with the write-s
 
 **Q5 newly pending:** Multi-line journal write semantics (QBO JournalEntry + Xero ManualJournal). Decision 5 explicitly excluded these because updating one line's AccountRef without offsetting changes breaks journal balance. The architectural problem (how does the caller express intent — preserve balance? update both lines? require dual-AccountRef?) needs its own decision.
 
-**State at session end (final after Decision 4 + Decision 5 + Pieces A/B/C complete):**
+**Q1 + Q2 — Charter status storage + Setup fee handling (third continuation of Session 4 work):**
 
-- Codebase HEAD: master @ `bfc8549d` (plus this docs commit pending)
-- Test baseline: 233 targeted tests passing (+72 total across the day: +37 Decision 4 arc, +26 Decision 5 implementation, +9 Pieces A/B/C; baseline 161 at Session 3 start)
+After Decision 5 + Pieces A/B/C closed end-to-end, the session continued with the two architectural decisions that gated the Invoice endpoint — Q1 (Charter status storage) and Q2 (Setup fee handling). Both decisions had been documented as "pending" in ADR-003 Amendment 1 since 2026-05-24; both went through a lock-then-implement arc within a single session. 4 commits across the day's third continuation.
+
+**Decision arc:**
+
+Both Q1 and Q2 had three options each, documented in the WIP doc since the Decision 4 + Decision 5 work cleared the read/write dispatcher dependencies. Honest analysis surfaced the right path for each:
+
+- **Q1 (Charter status storage):** Option B chosen — local DB table `client_charter_status`. Per Trust Tenet #14, billing is the primary client-funds touchpoint. Option B's status enum (`active` / `cancelled_was_charter` / `never_charter`) structurally enforces the EA Section 7.1 rules (especially "Charter is permanently lost on cancellation"). Option A (GHL custom field) was rejected because it puts GHL on the critical path for invoicing AND requires procedural-not-structural enforcement of the cancellation rule. Option C (compute from created_at + cutoff) was rejected because it's fundamentally incapable of modeling the cancelled-and-returned-forfeits-Charter rule.
+
+- **Q2 (Setup fee handling):** Option B chosen — parallel `setup_fee_pricing` table. Setup fees don't vary by Charter status (EA Section 7), so they belong in their own table with no `isCharter` column. Aligns with Q1's design principle (each business concern gets its own table). Option A (extend service_tier_pricing with pricing_type discriminator) was rejected because it forces `isCharter` to be a meaningless column on setup_fee rows. Option C (separate endpoint entirely) was rejected as premature separation — setup fees ARE invoices structurally.
+
+Both lock decisions went into the WIP doc in a single commit (Tenet #16 contract-before-code), mirroring the Decision 5 LOCKED pattern from earlier in the session.
+
+**Commits shipped (Q1 + Q2 arc):**
+
+34. **`0cf679d6`** — **docs(wip,phase-4c-5): LOCK Q1 (Charter status storage) + Q2 (Setup fee handling).** Pure docs, no code. Both decisions locked simultaneously: Q1 as Option B (local DB table), Q2 as Option B (parallel table). Full contract for each captured — schema columns, service function signatures, state-transition rules (Q1), seed values (Q2), Tenet rationale, options A/C rejected with reasoning. Per Tenet #16: locked contracts can be referenced by future implementation commits before any code lands.
+
+35. **`5b4856bb`** — **feat(accounting,phase-4c-5): Q1 implementation — Charter status storage.** Single commit containing schema + migration + service + tests. New table `client_charter_status` (10 columns, unique constraint on companyId + ghlContactId). Service module `server/src/services/accounting/charter.ts` with public read API (`getCharterStatus`, `isCharterForInvoicing`) + mutation helpers (`grantCharterToNewClient`, `recordNonCharterClient`, `cancelCharter`) + 3 typed error classes. State-transition rules enforced at service layer: cancelled_was_charter is one-way (CharterTransitionError on attempted reverse), never_charter cannot be retroactively upgraded to active. Integration tests against embedded Postgres — 20 tests covering all read paths, all mutation helpers, default-to-never_charter behavior, scoping, and every FORBIDDEN state transition. Migration `0068_youthful_blockbuster.sql`. Tenet #7 verification of `service_tier_pricing.ts` during pre-implementation surfaced the tier-convention correction (display-style, not snake_case as the lock doc had) — Q1 doesn't use tier values but the verification prevented Q2 from inheriting the bad assumption. Test baseline 233 → 253 (+20).
+
+36. **`83b80a72`** — **feat(accounting,phase-4c-5): Q2 implementation — Setup fee handling.** Single commit containing schema + migration + service + admin seed extension + tests. New table `setup_fee_pricing` (7 columns — NO isCharter, NO contactId per the lock). Service function `getSetupFeeCents` added to existing `pricing.ts` alongside `getExpectedPriceCents`. Admin endpoint POST /api/admin/pricing/seed extended to seed both tables in a single call. Sub-decision Q2-α-i locked during implementation: response shape changed from `{ data: { inserted, skipped, ... }, meta }` to `{ data: { pricing: {...}, setupFees: {...} }, meta }` to preserve per-table visibility (rejected Q2-α-ii summed-totals, which loses visibility; rejected Q2-α-iii separate endpoint, which contradicts the lock's "extend existing endpoint" mandate). 3 existing admin.test.ts tests required updates for the new nested response shape (expected per the locked sub-decision). 3 net new admin.test.ts tests added for the setup fee seeding behavior. Migration `0069_damp_bloodscream.sql`. Test baseline 253 → 262 (+9 net new: 6 in pricing.test.ts, 3 net new in admin.test.ts).
+
+**Q1 + Q2 arc totals:**
+
+3 commits across the day's third continuation. +29 tests (233 → 262). The arc demonstrates two patterns worth keeping:
+
+1. **Tenet #16 contract-before-code in practice** — locking both decisions in docs first (commit 0cf679d6) before any implementation. Implementation commits (5b4856bb, 83b80a72) verified themselves against the locked contracts, surfaced two minor discrepancies (Q1's tier-convention correction; Q2's sub-decision Q2-α-i), and documented both in their commit messages for the doc closeout to fix.
+
+2. **Pre-implementation Tenet #7 verification catches bugs at zero cost** — reading `service_tier_pricing.ts` BEFORE writing Q1's schema surfaced the tier-convention correction. If we'd written snake_case tier values (as the lock doc said) and shipped Q2's admin seed, three existing admin.test.ts tests would have broken AND Q2's seed values would have mismatched service_tier_pricing's display-style values, creating a silent data inconsistency. Five minutes of reading prevented hours of debugging.
+
+**What's done vs deferred:**
+
+DONE:
+- Both schema migrations shipped (0068, 0069)
+- Both service modules complete with full test coverage (charter.ts, pricing.ts extended)
+- Admin seed endpoint extended (POST /api/admin/pricing/seed serves both tables in combined response)
+- All locked contracts implemented per the WIP doc
+
+DEFERRED (to follow-up sessions):
+- Onboarding workflow integration (call site for grantCharterToNewClient / recordNonCharterClient based on the "first 10 paying clients" check)
+- Cancellation workflow integration (call site for cancelCharter)
+- Invoice endpoint wiring (POST /invoices will call both isCharterForInvoicing AND getSetupFeeCents)
+- Production seed invocation (POST /api/admin/pricing/seed must be invoked on prod to populate the 3 new setup_fee_pricing rows — operational work, not code)
+
+**Architectural notes worth keeping:**
+
+- Both Q1 and Q2 went toward "separate, structurally-correct modeling" as a unified design principle. The codebase now has 4 pricing-related tables, each with a single clear responsibility: `service_tier_pricing` (recurring) / `setup_fee_pricing` (one-time) / `client_pricing_overrides` (per-client recurring overrides) / `client_charter_status` (charter lifecycle). The architecture rewards uniformity — when the Invoice endpoint is designed, each pricing concern has a known home.
+
+- The Drizzle `pnpm generate` workflow pattern was used twice today (Q1 + Q2), validating memory #22. Schema-add sequence: write schema/*.ts → update index.ts → `cd packages/db && pnpm generate`. Each schema commit shows ~15k insertions because of the snapshot.json file (drizzle serializes the full schema state per migration); this is expected behavior, not a sign of unwanted changes. Migration numbers auto-increment per the registry, no manual bookkeeping needed.
+
+- POST /invoices is now fully unblocked from architectural prerequisites. Only Q5 (multi-line journal write semantics) remains as a separate pending architectural decision, and Q5 does NOT gate Invoice or Payment endpoint work — it gates only category updates on journal-entry-type transactions, which can wait.
+
+**State at session end (final after Decision 4 + Decision 5 + Pieces A/B/C + Q1 + Q2 complete):**
+
+- Codebase HEAD: master @ `83b80a72` (plus this docs commit pending)
+- Test baseline: 262 targeted tests passing (+101 total across the day: +37 Decision 4 arc, +26 Decision 5 implementation, +9 Pieces A/B/C, +29 Q1 + Q2; baseline 161 at Session 3 start)
 - Full monorepo typecheck: clean
 - Phase 4c.5 status:
   - Defect 1: FIXED + prod-verified ✅
-  - Decision 4 (Q3 resolution): **FEATURE-COMPLETE** ✅
-  - Decision 5: **FEATURE-COMPLETE + INTEGRATED** ✅ (locked, foundation + 5 handlers + final integration all shipped)
-  - Piece A (Decision 5 final integration): COMPLETE ✅
-  - Piece B (TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS approval wired): COMPLETE ✅
-  - Piece C (POST /transactions/:txnId/category route): SHIPPED ✅
-  - Q1 (charter status): still pending
-  - Q2 (setup fees): still pending
-  - Q5 (multi-line journal write semantics): newly pending — surfaced during Decision 5 scoping
-- Phase 4c.5 remaining work (no longer gated by Decisions 4 or 5):
-  - POST /payments re-implementation (~2-3 hours, awaits service signature fixes; gated on Q2)
-  - POST /invoices re-implementation (~3-4 hours, blocked on Q1 + Q2)
-- Q5 (multi-line journal writes) — separate architectural decision when needed
-- The first Phase 4c.5 write endpoint is live end-to-end. The dispatcher + endpoint + approval-replay paths are all operational.
+  - Decision 4 (read dispatcher): FEATURE-COMPLETE ✅
+  - Decision 5 (write dispatcher): FEATURE-COMPLETE + INTEGRATED ✅
+  - POST /transactions/:txnId/category route: SHIPPED end-to-end ✅
+  - Q1 (Charter status storage): LOCKED + IMPLEMENTED ✅
+  - Q2 (Setup fee handling): LOCKED + IMPLEMENTED ✅
+  - Q5 (multi-line journal write semantics): still pending (does not gate any endpoint)
+- Phase 4c.5 endpoint roadmap:
+  - POST /transactions/:txnId/category: SHIPPED ✅
+  - POST /invoices: NOW FULLY UNBLOCKED — both Q1 (charter status) and Q2 (setup fees) prerequisites implemented and tested. Next step: Invoice endpoint design + ship (the design work itself is fresh-session work; not a mechanical implementation since there are still scope questions like setup-fee-vs-recurring discriminator in request body).
+  - POST /payments: unblocked from Q2 perspective; awaits service signature fixes that were noted in earlier session entries
+- Implementation gaps that are NOT architectural blockers (workflow integration, production seed invocation) tracked in the WIP doc's "What is NOT implemented yet" subsections under Q1 and Q2
 
 ### Next session (date TBD)
 
