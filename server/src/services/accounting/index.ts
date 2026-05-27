@@ -3,6 +3,7 @@ import { accountingConnections } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { qboRequest, getQboRealmId } from "./qbo-client.js";
 import { getTransactionById } from "./transaction-lookup.js";
+import { updateTransactionCategory as updateTransactionCategoryDispatcher } from "./transaction-write.js";
 import { xeroRequest } from "./xero-client.js";
 import { logger } from "../../middleware/logger.js";
 import { namesAreSimilar } from "./string-similarity.js";
@@ -1734,59 +1735,47 @@ export async function getReports(
   throw new Error(`Report type not yet implemented: ${reportType}`);
 }
 
-// Platform-agnostic transaction category write-back. Looks up the platform
-// from accounting_connections (same pattern as getNewTransactions et al.)
-// and dispatches to qbo.updateTransactionAccount or xero.updateTransactionAccount.
+// Platform-agnostic transaction category write-back.
 //
-// v1 limitation: does NOT return previousAccountRef. Capturing it would
-// require a pre-update fetch of the transaction, which requires building
-// per-platform get-transaction-by-id functions that don't exist yet
-// (transactions can be Purchases, Deposits, Invoices, Bills, etc. — each
-// with different upstream endpoints). Spec-acknowledged simplification:
-// the audit log "before" field will be null for category updates in v1.
+// Phase 4c.5 Decision 5 refactor (2026-05-27): this function now delegates
+// to updateTransactionCategory from services/accounting/transaction-write.ts,
+// which is the Decision-5-locked write dispatcher. The previous v1 limitation
+// ("does NOT return previousAccountRef") is now resolved — the underlying
+// dispatcher captures previousAccountRef via getTransactionById (Decision 4)
+// before performing the write.
+//
+// Decision 5 covers 6 of 11 transaction types. Calling this function with
+// an excluded type (QBO BillPayment/Payment/Invoice, QBO JournalEntry, Xero
+// ManualJournal) throws TransactionTypeNotCategorizableError. See WIP doc
+// Decision 5 for the supported-type list and reasoning.
+//
+// NOTE: this function exists primarily as a re-export shim for backward
+// compatibility with any future imports from this module path. New code
+// should prefer importing updateTransactionCategory directly from
+// transaction-write.ts.
 export async function updateTransactionCategory(
   db: Db,
   companyId: string,
   contactId: string | null,
   transactionId: string,
   accountRef: string,
-): Promise<{ platform: "quickbooks" | "xero" }> {
-  const connections = await db
-    .select({ platform: accountingConnections.platform })
-    .from(accountingConnections)
-    .where(
-      and(
-        eq(accountingConnections.companyId, companyId),
-        contactFilter(contactId),
-      ),
-    );
-
-  if (connections.length === 0) {
-    throw new Error(`No accounting connection found for companyId=${companyId} contactId=${contactId}`);
-  }
-
-  const platforms = new Set(connections.map((c) => c.platform));
-  const hasQbo = platforms.has("quickbooks");
-  const hasXero = platforms.has("xero");
-
-  if (hasQbo && hasXero) {
-    logger.warn(
-      { companyId, contactId },
-      "Both QBO and Xero connected — preferring QBO for updateTransactionCategory",
-    );
-  }
-
-  if (hasQbo) {
-    await qbo.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
-    return { platform: "quickbooks" };
-  }
-
-  if (hasXero) {
-    await xero.updateTransactionAccount(db, companyId, contactId, transactionId, accountRef);
-    return { platform: "xero" };
-  }
-
-  throw new Error(`Unsupported accounting platform for companyId=${companyId} contactId=${contactId}`);
+): Promise<{
+  platform: "quickbooks" | "xero";
+  txnType: string;
+  previousAccountRef: string | null;
+}> {
+  const result = await updateTransactionCategoryDispatcher(
+    db,
+    companyId,
+    contactId,
+    transactionId,
+    accountRef,
+  );
+  return {
+    platform: result.platform,
+    txnType: result.txnType,
+    previousAccountRef: result.previousAccountRef,
+  };
 }
 
 // Platform-agnostic payment-to-invoice reconciliation. For QBO, entityRef is a
