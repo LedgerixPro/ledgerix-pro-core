@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED AND IMPLEMENTED — Charter status storage + Setup fee handling)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED AND IMPLEMENTED + Decision 6 LOCKED — POST /payments scope)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -20,7 +20,7 @@
   * Piece A (commit `b7da7478`): Decision 5 final integration — already counted above.
   * Piece B (commit `001d547f`): executeApprovedAccountingWrite's TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS case wired to the dispatcher per ADR-003 Q2 replay-from-payload design intent. New "write_failed_replay" action enum value added. +3 tests (227 total).
   * Piece C (commit `bfc8549d`): POST /transactions/:txnId/category route ships end-to-end. URL+body validation, assertCompanyAccess, withIdempotency wrapping (ADR-003 Q5), three response paths (200 success / 202 approval / 400 not categorizable), separated requestedByUserId/requestedByAgentId per actor type (FK safety fix caught pre-commit). +6 tests (233 total).
-- POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)
+- ~~POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)~~ — **SCOPE REVISED 2026-05-27 Session 4: Decision 6 locked.** The original "service signature fixes" phrase under-specified the work. Pre-implementation verification surfaced that the existing `reconcilePayment` has zero external callers, no threshold integration, no idempotency wiring, returns void (deviating from in-file convention), and uses an overloaded `entityRef` parameter. Decision 6 locks the service refactor + threshold wiring + approval-replay wiring + route as a single coordinated arc across 4 pieces (D/E/F/G) parallel to Decision 5's Pieces A/B/C. Estimated total: ~3-4 hours.
 - POST /invoices re-implementation: 3-4 hours (once charter + setup fees + dedupe wired)
 - Dispatcher wiring (Phase 4c.4 stubs -> real writes): 2-3 hours
 - End-to-end tests: 3-5 hours
@@ -300,7 +300,7 @@ All items SHIPPED Session 4. Decision 4 is feature-complete.
 - `POST /transactions/:txnId/category` re-implementation (~1-2 hours) — atop the safety layer; uses the dispatcher's general (no-hint) probe path which now covers all 11 types correctly per Phase 2 strict-discriminator semantics
 - Q1: Charter status storage decision + implementation (~3-5 hours, blocks Invoice endpoint)
 - Q2: Setup fee handling decision + implementation (~3-5 hours, blocks Invoice endpoint)
-- `POST /payments` re-implementation (~2-3 hours, awaits service signature fixes)
+- `POST /payments` re-implementation (~3-4 hours per Decision 6; LOCKED 2026-05-27 Session 4 — see Decision 6 above)
 - `POST /invoices` re-implementation (~3-4 hours, blocked on Q1 + Q2)
 
 **Out of scope for this decision (deferred to implementation):**
@@ -482,6 +482,150 @@ All 6 in-scope Decision 5 transaction types are now writable through the unified
 **FK safety fix (caught pre-commit during Piece C):** Initial implementation conflated `requestedByUserId` with `actorId` (which is derived from BOTH actor.userId and actor.agentId). Would have written agentId into a users-FK field in production. Fixed by explicit per-actor-type derivation; new agent-actor test locks the separation.
 
 **Decision 5 unblocks Phase 4c.5 endpoint roadmap:** The category endpoint is now the first fully-functional Phase 4c.5 write endpoint. POST /payments and POST /invoices remain gated on Q1 (charter status) + Q2 (setup fees) architectural decisions, NOT on dispatcher work.
+
+### Decision 6: POST /payments scope (locked 2026-05-27 Session 4)
+
+The write-side dispatcher for payment-to-invoice reconciliation. Q-pay-1 / Q-pay-2 / Q-pay-3 surfaced during pre-implementation verification of the existing `reconcilePayment` function (services/accounting/index.ts:1680) and were locked together as Decision 6 to give /payments the same locked-contract footing Decision 5 gave /category.
+
+**Pre-implementation findings (Tenet #7 verification):**
+
+Six assumptions verified during pre-lock investigation. All six confirmed:
+1. `reconcilePayment` has zero external callers across the monorepo (server, scripts, packages, tests). Same orphaned-dispatcher situation as the pre-Piece-A legacy `updateTransactionAccount` methods.
+2. `entityRef` parameter is overloaded — CustomerId for QBO, AccountID for Xero. Same name, different semantics, no type-system protection against misuse.
+3. No threshold integration anywhere in services/accounting/index.ts (the Phase 4c.2 threshold framework exists but is not wired into payment flows).
+4. No idempotency code in the service module.
+5. `applyPaymentToInvoice` returns `void` — discards the platform-assigned Payment ID. This deviates from the codebase convention: 17+ other functions in the same file capture the qboRequest/xeroRequest return value with typed shapes.
+6. Decision 4/5 established the platform-inference pattern (transaction-lookup.ts:717 queries accountingConnections to resolve platform from `(companyId, contactId)`).
+
+**Existing payload contract (PaymentThresholdExceededPayload) constrains Decision 6:**
+
+The `accounting.payment.threshold_exceeded` approval type was defined in Phase 4c.4 (commit `e7cec441`). Its payload locks several fields that the implementation must honor:
+
+```ts
+interface PaymentThresholdExceededPayload extends BaseAccountingPayload {
+  // BaseAccountingPayload: companyId, contactId, reason?, idempotencyKey?
+  requestType: "POST /api/accounting/v1/payments";
+  invoiceId: string;
+  amount: number;                              // in cents
+  paymentDate?: string;                        // ISO YYYY-MM-DD
+  entityRef?: string;
+  thresholdAmount: number;
+  expectedRange?: { min: number; max: number };
+}
+```
+
+The payload's `entityRef` is single-field (overloaded), `amount` is in cents, and `paymentDate` is ISO date. The presence of `thresholdAmount` + `expectedRange` confirms that the route layer (which creates the approval row) is responsible for the threshold check.
+
+**Three Q-pay decisions locked:**
+
+#### Q-pay-1: Platform inference (LOCKED — service infers platform from DB)
+
+**Decision:** `reconcilePayment` infers platform from the `accountingConnections` table lookup for `(companyId, contactId)`. The function signature drops the `platform` parameter.
+
+**Rationale:**
+- Matches Decision 4 (`getTransactionById`) and Decision 5 (`updateTransactionCategory`) established pattern
+- Caller convenience: agents and route handlers don't need to know platform to call the service
+- Enables payload re-execution (Q-pay-5): the approval-replay path in `executeApprovedAccountingWrite` can call `reconcilePayment` with just `(companyId, contactId, ...)` from the payload — no platform extraction needed
+
+**Rejected:** Keep `platform` as a required parameter. Cons: forces every caller to do a connection lookup OR pass through opaque platform strings; diverges from established pattern.
+
+#### Q-pay-2: entityRef shape (LOCKED — split service signature, payload preserved)
+
+**Decision:**
+- The service signature splits `entityRef` into two typed optional parameters: `customerId?: string` (QBO) + `accountId?: string` (Xero). The service validates that exactly one is provided based on the resolved platform; throws a typed error otherwise.
+- The payload contract (`PaymentThresholdExceededPayload.entityRef`) is preserved — single field, overloaded. Per ADR-003 Q2 ("payloads must be self-sufficient... re-executable from the payload alone"), the payload is the contract for serialization; changing it would require an Amendment.
+- The route handler translates between payload and service: reads payload's `entityRef`, resolves platform via the same connection lookup the service will use, then calls `reconcilePayment(... , platform === "quickbooks" ? { customerId: entityRef } : { accountId: entityRef })`. Translation seam is at the route, not the service.
+
+**Rationale:**
+- Service stays type-safe: a QBO call cannot accidentally pass an Xero AccountID into `customerId` (different types would mean a typecheck error in test setup)
+- Payload stays serializable per ADR-003 Q2: a single string field is simpler for the approval-replay path
+- The translation logic lives in exactly ONE place (the route handler), is small, and is testable in isolation
+
+**Rejected:**
+- Keep `entityRef` overloaded in both payload and service (Option A in pre-lock discussion). Cons: footgun preserved end-to-end; no type-system protection in test setup; future agent callers can pass the wrong ID type without a typecheck error.
+- Change the payload to split (Option C). Cons: amends ADR-003-locked payload contract; requires migration of any pending approvals in flight (none exist today, but precedent matters); larger blast radius.
+
+#### Q-pay-3: Return shape (LOCKED — audit-trail return paralleling Decision 5)
+
+**Decision:** `reconcilePayment` returns a `ReconcilePaymentResult` interface with the audit-trail fields the caller needs:
+
+```ts
+interface ReconcilePaymentResult {
+  platform: "quickbooks" | "xero";
+  paymentId: string;        // platform-assigned Payment ID (from the QBO/Xero create response)
+  invoiceId: string;
+  amount: number;           // cents (echoed for caller convenience)
+  customerId?: string;      // populated only when platform === "quickbooks"
+  accountId?: string;       // populated only when platform === "xero"
+  paymentDate: string;      // resolved date (server-default for QBO if caller omitted)
+}
+```
+
+**Rationale:**
+- Matches Decision 5's `UpdateTransactionCategoryResult` audit-trail pattern exactly
+- Honors the codebase convention: 17+ functions in services/accounting/index.ts capture qboRequest/xeroRequest return values with typed shapes
+- Returns the platform-assigned `paymentId`, which is currently lost (the existing void return discards it from the QBO/Xero create response)
+- Caller (route handler) uses the result to construct the 200 success response body and the activity_log entry
+
+**Rejected:**
+- Keep `Promise<void>`. Cons: continues to discard `paymentId`; deviates from in-file convention; route handler can't construct an audit-trail-complete response without querying upstream again.
+- Minimal shape `{platform, paymentId}` only. Cons: route handler needs to track and echo `invoiceId`/`amount` separately; fragmented data flow.
+
+#### Q-pay-4: Threshold check location — settled by existing payload (NOT a new decision)
+
+Already constrained by the existing `PaymentThresholdExceededPayload`: the payload includes `thresholdAmount` + `expectedRange`, both populated by the threshold-check logic. Whichever code produces these values is doing the check. That code is the route handler (the only place that creates an approval row with this payload). Service stays threshold-unaware. No decision needed — the payload already settled this.
+
+#### Q-pay-5: Approval-replay path — follows from Q-pay-1
+
+Per ADR-003 Q2: `executeApprovedAccountingWrite` replays the original request from the payload alone. With Q-pay-1 locked (service infers platform from connection), replay calls `reconcilePayment(db, payload.companyId, payload.contactId, payload.invoiceId, payload.amount, payload.entityRef, payload.paymentDate)` — no platform needed in the payload, no platform parameter on the service. The payload's `entityRef` is passed through the same translation logic the route uses (resolve platform, then split into `customerId` or `accountId`).
+
+This means a shared helper between the route handler and the approval-replay path is sensible: `resolveEntityRefByPlatform(db, companyId, contactId, entityRef): Promise<{customerId?: string; accountId?: string}>`. This helper performs the connection lookup AND the split, so both call sites (route + replay) use identical logic.
+
+**Locked service signature:**
+
+```ts
+async function reconcilePayment(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  invoiceId: string,
+  amount: number,                                          // cents
+  ref: { customerId?: string; accountId?: string },        // exactly one required
+  paymentDate?: string,                                    // ISO date; defaults today
+): Promise<ReconcilePaymentResult>
+```
+
+Throws a typed error if neither `customerId` nor `accountId` is supplied, or if the supplied ref doesn't match the resolved platform.
+
+**Locked endpoint contract:**
+
+```
+POST /api/accounting/v1/payments
+Body: { companyId, contactId, invoiceId, amount (cents), entityRef, paymentDate?, reason? }
+Headers: idempotency-key? (optional)
+
+Responses:
+  200 OK { status: "success", data: ReconcilePaymentResult, meta: {...} }
+  202 Accepted { status: "pending_approval", data: { approvalId, approvalType, reason }, meta: {...} }
+                — when amount > applicable threshold; approval row created with type "accounting.payment.threshold_exceeded"
+  400 Bad Request — validation errors (missing required fields, invalid entityRef format, etc.)
+
+Idempotency: full ADR-003 Q5 compliance via withIdempotency wrapper (same pattern as Piece C).
+FK separation: requestedByUserId for board actors, requestedByAgentId for agent actors (Piece C pattern).
+```
+
+**Wiring scope summary:**
+
+This decision unlocks four pieces of work that mirror Pieces A/B/C from Decision 5:
+
+1. **Piece D (Service refactor)** — Refactor `reconcilePayment` + `applyPaymentToInvoice` (both QBO and Xero) to the locked signature/return shape. Internally: capture qboRequest/xeroRequest return values, extract platform-assigned payment ID, return ReconcilePaymentResult. Threshold check NOT added at service layer (settled by Q-pay-4).
+2. **Piece E (Approval-replay wiring)** — Replace the Phase 4c.4 stub for `accounting.payment.threshold_exceeded` in `executeApprovedAccountingWrite`. Replay path uses the same `resolveEntityRefByPlatform` helper the route uses. Three execution outcomes (parallel to Piece B): success → write_executed; missing data → write_failed_replay; unknown errors propagate.
+3. **Piece F (Threshold helper + shared resolver)** — Add `resolveEntityRefByPlatform` (shared between route and replay) and integrate the existing `isThresholdExceeded` from Phase 4c.2 into the route handler logic.
+4. **Piece G (Route)** — POST /api/accounting/v1/payments. URL+body validation; assertCompanyAccess; withIdempotency wrap; threshold check determines 200-vs-202 path; success → reconcilePayment + 200; threshold exceeded → approval creation + 202; FK-safe actor separation. Tests covering all paths.
+
+**Estimated effort:** ~3-4 hours total across the four pieces. Higher than the WIP doc's original "2-3 hours" estimate because the Pre-Decision-6 verification surfaced more scope (threshold integration + approval-replay wiring) than the original gesture suggested.
+
+**Tenet #16 lock notice:** This decision is now LOCKED. Implementation may extend (add optional parameters, helper functions) but must not change the locked service signature, return shape, payload contract, or endpoint response paths without an explicit REVISED note. Sub-decisions discovered during implementation (parallel to Decision 5's Q2-α-i) should be documented in their respective commit messages and closed in the doc closeout.
 
 ## Architecture Decisions Pending
 
