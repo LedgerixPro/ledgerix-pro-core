@@ -199,11 +199,90 @@ const updateQboBillAccount: WriteHandler = async (
   );
 };
 
+// Line shape for QBO Deposit. UNLIKE Purchase/Bill (which use
+// AccountBasedExpenseLineDetail), Deposit lines use DepositLineDetail —
+// a different sub-object with different sibling fields (PaymentMethodRef,
+// CheckNum, TxnType, etc. — all of which must survive the AccountRef
+// mutation).
+//
+// Deposit has TWO account refs in its full shape:
+//   - DepositToAccountRef (top-level): destination bank account
+//   - Line[N].DepositLineDetail.AccountRef (per-line): source account
+//
+// The handler mutates ONLY the per-line source AccountRef. The destination
+// DepositToAccountRef is NOT modified — re-categorization on a Deposit
+// means correcting where the funds came from, not where they landed.
+// Matches the read-side previousAccountRef capture pattern.
+interface QboDepositLineForWrite {
+  DepositLineDetail?: {
+    AccountRef?: { value?: string };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+interface QboDepositRawForWrite {
+  Id: string;
+  SyncToken: string;
+  DepositToAccountRef?: { value?: string };
+  Line?: QboDepositLineForWrite[];
+  [key: string]: unknown;
+}
+
+/**
+ * QBO Deposit write handler. Mutates the first line's
+ * DepositLineDetail.AccountRef (the SOURCE account) and POSTs the full
+ * transaction back to /deposit?operation=update.
+ *
+ * IMPORTANT: top-level DepositToAccountRef is NOT modified. That field
+ * represents the destination bank account; the categorization decision is
+ * about the source account in DepositLineDetail. This matches the
+ * read-side handler's previousAccountRef capture (which also reads from
+ * DepositLineDetail.AccountRef, not DepositToAccountRef).
+ *
+ * Multi-line caveat: first line only, consistent with other multi-line
+ * write handlers. Deposit can legitimately have multiple lines (one per
+ * incoming payment source); selecting only the first is an approximation
+ * for v1. Callers needing per-line write fidelity would need a different
+ * API surface (e.g., POST /transactions/:txnId/line/:lineIdx/category).
+ *
+ * Fields preserved during mutation via spread-merge: PaymentMethodRef,
+ * CheckNum, TxnType, Entity, and any other DepositLineDetail sub-fields
+ * the read-side response surfaces.
+ */
+const updateQboDepositAccount: WriteHandler = async (
+  db,
+  companyId,
+  contactId,
+  lookup,
+  newAccountRef,
+) => {
+  const deposit = lookup.raw as unknown as QboDepositRawForWrite;
+  const firstLine = deposit.Line?.[0];
+  if (!firstLine) {
+    throw new Error(
+      `QBO Deposit ${lookup.txnId} has no line items to categorize`,
+    );
+  }
+  firstLine.DepositLineDetail = {
+    ...(firstLine.DepositLineDetail ?? {}),
+    AccountRef: { value: newAccountRef },
+  };
+  await qboRequest(
+    db,
+    companyId,
+    contactId,
+    "POST",
+    "/deposit?operation=update",
+    deposit,
+  );
+};
+
 const QBO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([
   ["Purchase", updateQboPurchaseAccount],
   ["Bill", updateQboBillAccount],
-  // Decision 5 IN-scope handlers still to add:
-  // ["Deposit", updateQboDepositAccount],
+  ["Deposit", updateQboDepositAccount],
+  // QBO write registry complete — 3 of 3 planned QBO handlers registered.
 ]);
 
 const XERO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([

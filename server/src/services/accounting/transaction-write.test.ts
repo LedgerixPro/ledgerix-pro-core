@@ -439,3 +439,153 @@ describe("updateTransactionCategory — QBO Bill handler", () => {
     expect(qboRequest).not.toHaveBeenCalled();
   });
 });
+
+describe("updateTransactionCategory — QBO Deposit handler", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("dispatches to QBO Deposit handler when lookup returns Deposit type (mutates per-line source AccountRef, NOT top-level DepositToAccountRef)", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-dep-1",
+      platform: "quickbooks",
+      txnType: "Deposit",
+      previousAccountRef: "40100", // per-line source account (per Decision 4 read pattern)
+      raw: {
+        Id: "txn-dep-1",
+        SyncToken: "0",
+        DepositToAccountRef: { value: "10100" }, // destination bank — should NOT be touched
+        Line: [
+          {
+            DetailType: "DepositLineDetail",
+            DepositLineDetail: {
+              AccountRef: { value: "40100" }, // source account — will be mutated
+              PaymentMethodRef: { value: "1" },
+            },
+            Amount: 500.0,
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    const result = await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-dep-1",
+      "40200", // new source account
+    );
+
+    expect(result).toEqual({
+      platform: "quickbooks",
+      txnType: "Deposit",
+      txnId: "txn-dep-1",
+      previousAccountRef: "40100",
+      newAccountRef: "40200",
+    });
+
+    // Verify deposit endpoint called with mutated per-line AccountRef AND
+    // UNCHANGED top-level DepositToAccountRef
+    expect(qboRequest).toHaveBeenCalledTimes(1);
+    expect(qboRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/deposit?operation=update",
+      expect.objectContaining({
+        Id: "txn-dep-1",
+        DepositToAccountRef: { value: "10100" }, // destination preserved
+        Line: expect.arrayContaining([
+          expect.objectContaining({
+            DepositLineDetail: expect.objectContaining({
+              AccountRef: { value: "40200" }, // per-line source mutated
+            }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("preserves PaymentMethodRef + CheckNum + TxnType when mutating AccountRef", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-dep-2",
+      platform: "quickbooks",
+      txnType: "Deposit",
+      previousAccountRef: "40100",
+      raw: {
+        Id: "txn-dep-2",
+        SyncToken: "0",
+        DepositToAccountRef: { value: "10100" },
+        Line: [
+          {
+            DetailType: "DepositLineDetail",
+            DepositLineDetail: {
+              AccountRef: { value: "40100" },
+              PaymentMethodRef: { value: "1" },
+              CheckNum: "12345",
+              TxnType: "Check",
+            },
+            Amount: 500.0,
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-dep-2",
+      "40200",
+    );
+
+    expect(qboRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/deposit?operation=update",
+      expect.objectContaining({
+        Line: expect.arrayContaining([
+          expect.objectContaining({
+            DepositLineDetail: expect.objectContaining({
+              AccountRef: { value: "40200" },
+              PaymentMethodRef: { value: "1" },
+              CheckNum: "12345",
+              TxnType: "Check",
+            }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("throws if QBO Deposit has no line items", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-dep-3",
+      platform: "quickbooks",
+      txnType: "Deposit",
+      previousAccountRef: null,
+      raw: {
+        Id: "txn-dep-3",
+        SyncToken: "0",
+        DepositToAccountRef: { value: "10100" },
+        Line: [],
+      } as any,
+    });
+
+    await expect(
+      updateTransactionCategory(
+        MOCK_DB,
+        COMPANY_ID,
+        CONTACT_ID,
+        "txn-dep-3",
+        "40200",
+      ),
+    ).rejects.toThrow("QBO Deposit txn-dep-3 has no line items to categorize");
+    expect(qboRequest).not.toHaveBeenCalled();
+  });
+});
