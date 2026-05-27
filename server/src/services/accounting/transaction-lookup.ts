@@ -174,6 +174,35 @@ interface QboPaymentFull {
   [key: string]: unknown;
 }
 
+interface QboInvoiceLine {
+  // Invoice lines come in multiple DetailType variants:
+  //   - SalesItemLineDetail: actual sales line (this is what we extract from)
+  //   - SubTotalLineDetail: subtotal/group marker (filtered out)
+  //   - DescriptionOnlyLineDetail, DiscountLineDetail, etc.
+  // Only SalesItemLineDetail carries the ItemAccountRef we need.
+  DetailType?: string;
+  Amount?: number;
+  SalesItemLineDetail?: {
+    ItemRef?: { value?: string; name?: string };
+    ItemAccountRef?: { value?: string; name?: string };
+    UnitPrice?: number;
+    Qty?: number;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+interface QboInvoiceFull {
+  Id: string;
+  SyncToken: string;
+  CustomerRef?: { value?: string };
+  DocNumber?: string;
+  TotalAmt?: number;
+  Balance?: number;
+  Line?: QboInvoiceLine[];
+  [key: string]: unknown;
+}
+
 interface XeroBankTransactionLineItem {
   LineItemID?: string;
   AccountCode?: string;
@@ -421,6 +450,56 @@ async function fetchQboPayment(
   };
 }
 
+async function fetchQboInvoice(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult> {
+  const response = await qboRequest<{ Invoice: QboInvoiceFull }>(
+    db,
+    companyId,
+    contactId,
+    "GET",
+    `/invoice/${txnId}`,
+  );
+  const invoice = response.Invoice;
+  if (!invoice) {
+    throw new Error(`QBO Invoice ${txnId} response missing Invoice field`);
+  }
+  // QBO Invoice lines mix multiple DetailType variants — most commonly
+  // SalesItemLineDetail (actual sales) and SubTotalLineDetail (subtotal
+  // markers). We need ONLY the first SalesItemLineDetail line, because:
+  //   - SubTotalLineDetail lines have no account information
+  //   - DescriptionOnlyLineDetail, DiscountLineDetail also lack ItemAccountRef
+  //
+  // SalesItemLineDetail itself contains TWO refs we could use:
+  //   - ItemRef: pointer to the QBO Item (e.g., "Gardening")
+  //   - ItemAccountRef: the income account the Item resolves to (populated
+  //     on GET responses; e.g., "Landscaping Services" → account id 45)
+  //
+  // We use ItemAccountRef because previousAccountRef is supposed to be an
+  // account reference — ItemRef is one step removed (it's the Item, not
+  // the account). The Invoice GET response conveniently resolves this for
+  // us by populating ItemAccountRef.
+  //
+  // Multi-line invoices: first sales line approximation, consistent with
+  // the pattern across other multi-line types in this dispatcher. Callers
+  // needing per-line fidelity should consume the raw field.
+  const firstSalesLine = invoice.Line?.find(
+    (line) => line.DetailType === "SalesItemLineDetail",
+  );
+  const previousAccountRef =
+    firstSalesLine?.SalesItemLineDetail?.ItemAccountRef?.value ?? null;
+  return {
+    txnId,
+    platform: "quickbooks",
+    txnType: "Invoice",
+    previousAccountRef,
+    raw: invoice,
+  };
+}
+
 async function fetchXeroBankTransaction(
   db: Db,
   companyId: string,
@@ -468,7 +547,8 @@ const QBO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
   ["Deposit", fetchQboDeposit],
   ["BillPayment", fetchQboBillPayment],
   ["Payment", fetchQboPayment],
-  // Future: Invoice
+  ["Invoice", fetchQboInvoice],
+  // QBO type coverage complete — 7 of 7 planned QBO types registered.
 ]);
 
 const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([

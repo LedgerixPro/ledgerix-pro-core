@@ -434,6 +434,125 @@ describe("getTransactionById — hinted-type fast path", () => {
     expect(result.previousAccountRef).toBeNull();
   });
 
+  it("dispatches directly to fetchQboInvoice when hintedType='Invoice' (captures first sales line's ItemAccountRef)", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      Invoice: {
+        Id: "txn-INV-1",
+        SyncToken: "0",
+        CustomerRef: { value: "1" },
+        DocNumber: "1039",
+        TotalAmt: 1000.0,
+        Line: [
+          {
+            DetailType: "SalesItemLineDetail",
+            Amount: 1000.0,
+            SalesItemLineDetail: {
+              ItemRef: { value: "6", name: "Gardening" },
+              ItemAccountRef: { value: "45", name: "Landscaping Services" }, // captured
+              UnitPrice: 100.0,
+              Qty: 10,
+            },
+          },
+          {
+            DetailType: "SubTotalLineDetail",
+            Amount: 1000.0,
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-INV-1",
+      "Invoice",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-INV-1",
+      platform: "quickbooks",
+      txnType: "Invoice",
+      previousAccountRef: "45", // ItemAccountRef from first SalesItemLineDetail
+      raw: expect.objectContaining({ Id: "txn-INV-1" }),
+    });
+    expect(qboRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/invoice/txn-INV-1",
+    );
+  });
+
+  it("filters out non-SalesItem lines (SubTotal, etc.) when finding the first sales line", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    // Construct an invoice where the FIRST line is SubTotalLineDetail
+    // (no ItemAccountRef). The handler must skip it and find the
+    // SalesItemLineDetail line that follows.
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      Invoice: {
+        Id: "txn-INV-2",
+        SyncToken: "0",
+        CustomerRef: { value: "1" },
+        Line: [
+          {
+            DetailType: "DescriptionOnlyLineDetail",
+            Amount: 0,
+          },
+          {
+            DetailType: "SalesItemLineDetail",
+            Amount: 500.0,
+            SalesItemLineDetail: {
+              ItemRef: { value: "7", name: "Consulting" },
+              ItemAccountRef: { value: "46", name: "Consulting Revenue" }, // captured
+              UnitPrice: 250.0,
+              Qty: 2,
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-INV-2",
+      "Invoice",
+    );
+
+    expect(result.previousAccountRef).toBe("46"); // skipped Description line, found Sales line
+  });
+
+  it("returns null previousAccountRef when no SalesItemLineDetail line exists", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    // Pathological case: invoice with only DescriptionOnly/SubTotal lines.
+    // Should not crash; should return null.
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      Invoice: {
+        Id: "txn-INV-3",
+        SyncToken: "0",
+        CustomerRef: { value: "1" },
+        Line: [
+          { DetailType: "DescriptionOnlyLineDetail", Amount: 0 },
+          { DetailType: "SubTotalLineDetail", Amount: 0 },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-INV-3",
+      "Invoice",
+    );
+
+    expect(result.previousAccountRef).toBeNull();
+  });
+
   it("dispatches directly to fetchXeroBankTransaction when hintedType='BankTransaction'", async () => {
     const db = mockDbWithPlatform("xero");
     vi.mocked(xeroRequest).mockResolvedValueOnce({
@@ -546,7 +665,8 @@ describe("getTransactionById — multi-type probing", () => {
       .mockRejectedValueOnce(make404("/journalentry/txn-missing"))
       .mockRejectedValueOnce(make404("/deposit/txn-missing"))
       .mockRejectedValueOnce(make404("/billpayment/txn-missing"))
-      .mockRejectedValueOnce(make404("/payment/txn-missing"));
+      .mockRejectedValueOnce(make404("/payment/txn-missing"))
+      .mockRejectedValueOnce(make404("/invoice/txn-missing"));
 
     // Capture the error from a single invocation; assert type AND properties
     // on the same caught value (avoids calling the function twice, which
@@ -566,6 +686,7 @@ describe("getTransactionById — multi-type probing", () => {
     expect(tnf.attemptedTypes).toContain("Deposit");
     expect(tnf.attemptedTypes).toContain("BillPayment");
     expect(tnf.attemptedTypes).toContain("Payment");
+    expect(tnf.attemptedTypes).toContain("Invoice");
   });
 
   it("for Xero, attempts BankTransaction when no hint provided", async () => {
