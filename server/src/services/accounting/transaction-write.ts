@@ -22,6 +22,7 @@
 import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { qboRequest } from "./qbo-client.js";
+import { xeroRequest } from "./xero-client.js";
 import {
   getTransactionById,
   type TransactionLookupResult,
@@ -285,9 +286,83 @@ const QBO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([
   // QBO write registry complete — 3 of 3 planned QBO handlers registered.
 ]);
 
+// ---------------------------------------------------------------------------
+// Xero per-type write handlers
+// ---------------------------------------------------------------------------
+
+// Line shape for Xero BankTransaction. UNLIKE QBO (which wraps account refs
+// in { value: string } objects under nested *LineDetail sub-objects), Xero
+// LineItems store AccountCode as a plain string directly on the LineItem.
+// Other LineItem fields that must survive AccountRef mutation: Description,
+// Quantity, UnitAmount, ItemCode, TaxType, TaxAmount, Tracking, LineAmount,
+// DiscountRate, etc. The spread-merge pattern preserves all of these.
+interface XeroBankTransactionLineForWrite {
+  AccountCode?: string;
+  [key: string]: unknown;
+}
+
+interface XeroBankTransactionRawForWrite {
+  BankTransactionID: string;
+  // Xero BankTransaction full shape includes Type (SPEND/RECEIVE), Status,
+  // Contact, BankAccount, LineItems, etc. We only need LineItems[] for the
+  // mutation; other fields are passed through unchanged.
+  LineItems?: XeroBankTransactionLineForWrite[];
+  [key: string]: unknown;
+}
+
+/**
+ * Xero BankTransaction write handler. Mutates the first LineItem's
+ * AccountCode and POSTs the full transaction back to /BankTransactions.
+ *
+ * Xero update semantics differ from QBO:
+ *   - POST /BankTransactions serves BOTH create and update — Xero detects
+ *     the update case by presence of BankTransactionID in the body
+ *   - No ?operation=update query param needed
+ *   - Body wraps the transaction in a BankTransactions array (Xero idiom
+ *     for batch-capable endpoints — single-item case still requires the
+ *     array wrapper)
+ *
+ * AccountCode is a plain string (not a wrapper object), so the mutation
+ * is simpler than QBO's { value: ... } pattern: direct assignment of the
+ * new code string. Spread-merge still used for defensive consistency
+ * with the QBO handlers and to preserve any future LineItem fields
+ * not modeled in XeroBankTransactionLineForWrite.
+ *
+ * Multi-line caveat: first line only, consistent with all other Decision 5
+ * handlers. Xero BankTransactions typically have one LineItem (one per
+ * imported bank feed entry); multi-line cases are rare in practice.
+ */
+const updateXeroBankTransactionAccount: WriteHandler = async (
+  db,
+  companyId,
+  contactId,
+  lookup,
+  newAccountCode,
+) => {
+  const txn = lookup.raw as unknown as XeroBankTransactionRawForWrite;
+  const firstLine = txn.LineItems?.[0];
+  if (!firstLine) {
+    throw new Error(
+      `Xero BankTransaction ${lookup.txnId} has no line items to categorize`,
+    );
+  }
+  txn.LineItems![0] = {
+    ...firstLine,
+    AccountCode: newAccountCode,
+  };
+  await xeroRequest(
+    db,
+    companyId,
+    contactId,
+    "POST",
+    "/BankTransactions",
+    { BankTransactions: [txn] },
+  );
+};
+
 const XERO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([
-  // Decision 5 IN-scope handlers will register here:
-  // ["BankTransaction", updateXeroBankTransactionAccount],
+  ["BankTransaction", updateXeroBankTransactionAccount],
+  // Decision 5 IN-scope handlers still to add:
   // ["Invoice", updateXeroInvoiceOrBillAccount],
   // ["Bill", updateXeroInvoiceOrBillAccount],
   // ["ManualJournal", deferred to Q5]

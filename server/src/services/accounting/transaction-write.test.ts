@@ -22,8 +22,17 @@ vi.mock("./qbo-client.js", async (importOriginal) => {
   };
 });
 
+vi.mock("./xero-client.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./xero-client.js")>();
+  return {
+    ...actual,
+    xeroRequest: vi.fn(),
+  };
+});
+
 import { getTransactionById } from "./transaction-lookup.js";
 import { qboRequest } from "./qbo-client.js";
+import { xeroRequest } from "./xero-client.js";
 import {
   updateTransactionCategory,
   TransactionTypeNotCategorizableError,
@@ -587,5 +596,173 @@ describe("updateTransactionCategory — QBO Deposit handler", () => {
       ),
     ).rejects.toThrow("QBO Deposit txn-dep-3 has no line items to categorize");
     expect(qboRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateTransactionCategory — Xero BankTransaction handler", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("dispatches to Xero BankTransaction handler when lookup returns BankTransaction type", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-xbt-1",
+      platform: "xero",
+      txnType: "BankTransaction",
+      previousAccountRef: "200", // existing account code
+      raw: {
+        BankTransactionID: "txn-xbt-1",
+        Type: "SPEND",
+        Status: "AUTHORISED",
+        Contact: { ContactID: "contact-1" },
+        BankAccount: { AccountID: "bank-1" },
+        LineItems: [
+          {
+            Description: "Coffee for the office",
+            Quantity: 1.0,
+            UnitAmount: 4.50,
+            AccountCode: "200", // existing account — will be mutated
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(xeroRequest).mockResolvedValueOnce({} as any);
+
+    const result = await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-xbt-1",
+      "429", // new account code
+    );
+
+    // Result shape verification
+    expect(result).toEqual({
+      platform: "xero",
+      txnType: "BankTransaction",
+      txnId: "txn-xbt-1",
+      previousAccountRef: "200",
+      newAccountRef: "429",
+    });
+
+    // Verify xeroRequest called with the right URL + body shape
+    expect(xeroRequest).toHaveBeenCalledTimes(1);
+    expect(xeroRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/BankTransactions", // Xero create-or-update endpoint
+      {
+        BankTransactions: [
+          expect.objectContaining({
+            BankTransactionID: "txn-xbt-1",
+            LineItems: expect.arrayContaining([
+              expect.objectContaining({
+                AccountCode: "429", // mutated to new code
+              }),
+            ]),
+          }),
+        ],
+      },
+    );
+
+    // Verify qboRequest was NOT called — this is the xero path
+    expect(qboRequest).not.toHaveBeenCalled();
+  });
+
+  it("preserves LineItem fields (Description, Quantity, UnitAmount, TaxType, Tracking) during AccountCode mutation", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-xbt-2",
+      platform: "xero",
+      txnType: "BankTransaction",
+      previousAccountRef: "200",
+      raw: {
+        BankTransactionID: "txn-xbt-2",
+        Type: "SPEND",
+        LineItems: [
+          {
+            Description: "Equipment lease",
+            Quantity: 1.0,
+            UnitAmount: 250.00,
+            AccountCode: "200",
+            TaxType: "INPUT2",
+            TaxAmount: 32.61,
+            LineAmount: 250.00,
+            Tracking: [
+              {
+                Name: "Department",
+                Option: "Engineering",
+              },
+            ],
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(xeroRequest).mockResolvedValueOnce({} as any);
+
+    await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-xbt-2",
+      "429",
+    );
+
+    expect(xeroRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/BankTransactions",
+      {
+        BankTransactions: [
+          expect.objectContaining({
+            LineItems: expect.arrayContaining([
+              expect.objectContaining({
+                AccountCode: "429",
+                Description: "Equipment lease",
+                Quantity: 1.0,
+                UnitAmount: 250.00,
+                TaxType: "INPUT2",
+                TaxAmount: 32.61,
+                LineAmount: 250.00,
+                Tracking: [
+                  {
+                    Name: "Department",
+                    Option: "Engineering",
+                  },
+                ],
+              }),
+            ]),
+          }),
+        ],
+      },
+    );
+  });
+
+  it("throws if Xero BankTransaction has no line items", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-xbt-3",
+      platform: "xero",
+      txnType: "BankTransaction",
+      previousAccountRef: null,
+      raw: {
+        BankTransactionID: "txn-xbt-3",
+        Type: "SPEND",
+        LineItems: [],
+      } as any,
+    });
+
+    await expect(
+      updateTransactionCategory(
+        MOCK_DB,
+        COMPANY_ID,
+        CONTACT_ID,
+        "txn-xbt-3",
+        "429",
+      ),
+    ).rejects.toThrow("Xero BankTransaction txn-xbt-3 has no line items to categorize");
+    expect(xeroRequest).not.toHaveBeenCalled();
   });
 });
