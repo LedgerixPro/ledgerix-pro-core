@@ -1643,3 +1643,293 @@ describe("GET /api/accounting/v1/reports — service layer behavior", () => {
     expect(res.body.error).toBe("Internal server error");
   });
 });
+
+// ============================================================================
+// POST /api/accounting/v1/transactions/:txnId/category
+// ============================================================================
+
+vi.mock("../services/accounting/transaction-write.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../services/accounting/transaction-write.js")>();
+  return {
+    ...actual,
+    updateTransactionCategory: vi.fn(),
+  };
+});
+
+vi.mock("../services/approvals.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/approvals.js")>();
+  return {
+    ...actual,
+    approvalService: vi.fn(),
+  };
+});
+
+vi.mock("../services/idempotency.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/idempotency.js")>();
+  return {
+    ...actual,
+    withIdempotency: vi.fn(),
+  };
+});
+
+import {
+  updateTransactionCategory,
+  TransactionTypeNotCategorizableError,
+} from "../services/accounting/transaction-write.js";
+import { TransactionNotFoundError } from "../services/accounting/transaction-lookup.js";
+import { approvalService } from "../services/approvals.js";
+import { withIdempotency } from "../services/idempotency.js";
+
+const POST_COMPANY_ID = "f60117de-1131-433c-934f-3fe88bfaa163";
+
+describe("POST /api/accounting/v1/transactions/:txnId/category", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // Default withIdempotency: pass-through (no idempotency key → real
+    // semantics), just runs the work and returns { ...result, replayed: false }
+    vi.mocked(withIdempotency).mockImplementation(async (_db, _opts, work) => {
+      const r = await work();
+      return { ...r, replayed: false };
+    });
+  });
+
+  it("returns 200 with data envelope on successful write", async () => {
+    vi.mocked(updateTransactionCategory).mockResolvedValueOnce({
+      platform: "quickbooks",
+      txnType: "Purchase",
+      txnId: "txn-pur-1",
+      previousAccountRef: "60100",
+      newAccountRef: "60200",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-pur-1/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("success");
+    expect(res.body.data).toEqual({
+      platform: "quickbooks",
+      txnType: "Purchase",
+      txnId: "txn-pur-1",
+      previousAccountRef: "60100",
+      newAccountRef: "60200",
+    });
+    expect(res.body.meta.idempotencyReplay).toBe(false);
+    expect(typeof res.body.meta.performedAt).toBe("string");
+    expect(typeof res.body.meta.latencyMs).toBe("number");
+
+    // No hintedType — endpoint callers don't know transaction types, so
+    // the route omits the 6th arg (dispatcher does multi-type probe).
+    expect(updateTransactionCategory).toHaveBeenCalledWith(
+      fakeDb,
+      POST_COMPANY_ID,
+      "test-contact-id",
+      "txn-pur-1",
+      "60200",
+    );
+  });
+
+  it("returns 202 + creates approval when TransactionNotFoundError is thrown", async () => {
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
+      new TransactionNotFoundError(
+        "quickbooks",
+        "txn-missing",
+        ["Purchase", "Bill", "JournalEntry", "Deposit", "BillPayment", "Payment", "Invoice"],
+      ),
+    );
+
+    const fakeApproval = {
+      id: "approval-uuid-1",
+      companyId: POST_COMPANY_ID,
+      type: "accounting.transaction.category_with_unknown_previous",
+      status: "pending",
+    };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({
+      create: createMock,
+    } as any);
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-missing/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+        reason: "Bookkeeper override",
+      });
+
+    expect(res.status).toBe(202);
+    expect(res.body.status).toBe("pending_approval");
+    expect(res.body.data.approvalId).toBe("approval-uuid-1");
+    expect(res.body.data.approvalType).toBe(
+      "accounting.transaction.category_with_unknown_previous",
+    );
+    expect(res.body.data.reason).toContain("txn-missing");
+    expect(res.body.data.reason).toContain("Purchase, Bill");
+    expect(res.body.meta.idempotencyReplay).toBe(false);
+
+    // Verify approvalService.create received the right payload shape
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const [createdCompanyId, createPayload] = createMock.mock.calls[0];
+    expect(createdCompanyId).toBe(POST_COMPANY_ID);
+    expect(createPayload.type).toBe(
+      "accounting.transaction.category_with_unknown_previous",
+    );
+    expect(createPayload.status).toBe("pending");
+    // FK separation: board actor → requestedByUserId set, requestedByAgentId null
+    expect(createPayload.requestedByUserId).toBe("test-user");
+    expect(createPayload.requestedByAgentId).toBeNull();
+    expect(createPayload.payload).toMatchObject({
+      requestType: "POST /api/accounting/v1/transactions/:txnId/category",
+      companyId: POST_COMPANY_ID,
+      contactId: "test-contact-id",
+      txnId: "txn-missing",
+      newAccountRef: "60200",
+      reason: "Bookkeeper override",
+      unknownPreviousReason: "transaction_type_unknown",
+    });
+  });
+
+  it("uses requestedByAgentId (not requestedByUserId) when actor is an agent", async () => {
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
+      new TransactionNotFoundError(
+        "quickbooks",
+        "txn-agent-1",
+        ["Purchase", "Bill"],
+      ),
+    );
+
+    const fakeApproval = { id: "approval-uuid-agent-1" };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({
+      create: createMock,
+    } as any);
+
+    // Agent actor scoped to the same company they're operating on (per
+    // authz.ts agent rules: agent.companyId must match the request's
+    // companyId or the request is 403).
+    const agentActor: ActorOverride = {
+      type: "agent",
+      agentId: "agent-xyz-789",
+      companyId: POST_COMPANY_ID,
+      source: "agent_key",
+    };
+    const app = buildTestApp(agentActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-agent-1/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(202);
+    expect(res.body.data.approvalId).toBe("approval-uuid-agent-1");
+
+    // FK separation: agent actor → requestedByAgentId set, requestedByUserId null.
+    // This is the assertion that would have caught the latent FK bug from
+    // the original Piece C implementation (which stored agentId in
+    // requestedByUserId, violating the users FK constraint).
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const [, createPayload] = createMock.mock.calls[0];
+    expect(createPayload.requestedByUserId).toBeNull();
+    expect(createPayload.requestedByAgentId).toBe("agent-xyz-789");
+  });
+
+  it("returns 400 when TransactionTypeNotCategorizableError is thrown", async () => {
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
+      new TransactionTypeNotCategorizableError(
+        "quickbooks",
+        "BillPayment",
+        "txn-bp-1",
+      ),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-bp-1/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("quickbooks.BillPayment");
+    expect(res.body.error).toContain("does not support category updates");
+    expect(res.body.details).toMatchObject({
+      code: "transaction_type_not_categorizable",
+      platform: "quickbooks",
+      txnType: "BillPayment",
+      txnId: "txn-bp-1",
+    });
+  });
+
+  it("returns 400 when newAccountRef is missing from body", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-1/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        // newAccountRef intentionally omitted
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid newAccountRef");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_parameter",
+      parameter: "newAccountRef",
+    });
+    // Dispatcher should NOT have been reached — body validation rejected first
+    expect(updateTransactionCategory).not.toHaveBeenCalled();
+  });
+
+  it("returns idempotencyReplay: true when withIdempotency reports a replay", async () => {
+    // Override the default beforeEach withIdempotency mock with a replay
+    vi.mocked(withIdempotency).mockResolvedValueOnce({
+      status: 200,
+      body: {
+        status: "success",
+        data: {
+          platform: "quickbooks",
+          txnType: "Purchase",
+          txnId: "txn-pur-1",
+          previousAccountRef: "60100",
+          newAccountRef: "60200",
+        },
+        meta: {
+          performedAt: "2026-05-27T10:00:00.000Z",
+          latencyMs: 12,
+        },
+      },
+      replayed: true, // <-- the replay signal
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-pur-1/category")
+      .set("Idempotency-Key", "test-idempotency-key-abc")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("success");
+    expect(res.body.meta.idempotencyReplay).toBe(true);
+
+    // The inner work function should NOT have been invoked — withIdempotency
+    // returned the cached response directly
+    expect(updateTransactionCategory).not.toHaveBeenCalled();
+  });
+});

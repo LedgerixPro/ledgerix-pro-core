@@ -4,6 +4,14 @@ import { HttpError, badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
 import { getAccounts, getBills, getInvoices, getNewTransactions, getReports, type SupportedReportType } from "../services/accounting/index.js";
+import {
+  updateTransactionCategory,
+  TransactionTypeNotCategorizableError,
+} from "../services/accounting/transaction-write.js";
+import { TransactionNotFoundError } from "../services/accounting/transaction-lookup.js";
+import { approvalService } from "../services/approvals.js";
+import { withIdempotency } from "../services/idempotency.js";
+import { ACCOUNTING_APPROVAL_TYPES } from "../services/accounting/write-approvals.js";
 
 const MAX_TRANSACTIONS = 5000;
 const MAX_BILLS = 5000;
@@ -424,6 +432,219 @@ export function accountingRoutes(db: Db) {
         rowCount: result.report.rows.length,
       },
     });
+  });
+
+  router.post("/accounting/v1/transactions/:txnId/category", async (req, res) => {
+    const startedAt = Date.now();
+
+    // ---- URL param validation ----
+    const txnId = req.params.txnId;
+    if (!txnId || typeof txnId !== "string" || txnId.length > 200) {
+      throw badRequest("Invalid txnId", {
+        code: "invalid_parameter",
+        parameter: "txnId",
+      });
+    }
+
+    // ---- Body validation ----
+    const body = req.body as {
+      companyId?: unknown;
+      contactId?: unknown;
+      newAccountRef?: unknown;
+      reason?: unknown;
+    };
+    if (!body || typeof body !== "object") {
+      throw badRequest("Request body required", {
+        code: "missing_body",
+      });
+    }
+    if (typeof body.companyId !== "string" || body.companyId.length === 0) {
+      throw badRequest("Invalid companyId", {
+        code: "invalid_parameter",
+        parameter: "companyId",
+      });
+    }
+    if (typeof body.contactId !== "string" || body.contactId.length === 0 || body.contactId.length > 100) {
+      throw badRequest("Invalid contactId", {
+        code: "invalid_parameter",
+        parameter: "contactId",
+      });
+    }
+    if (typeof body.newAccountRef !== "string" || body.newAccountRef.length === 0 || body.newAccountRef.length > 100) {
+      throw badRequest("Invalid newAccountRef", {
+        code: "invalid_parameter",
+        parameter: "newAccountRef",
+      });
+    }
+    if (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 500)) {
+      throw badRequest("Invalid reason", {
+        code: "invalid_parameter",
+        parameter: "reason",
+      });
+    }
+
+    const companyId = body.companyId;
+    const contactId = body.contactId;
+    const newAccountRef = body.newAccountRef;
+    const reason = body.reason as string | undefined;
+
+    // ---- Auth ----
+    assertCompanyAccess(req, companyId);
+
+    // ---- Actor context for logging + approvals ----
+    const actorId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? null
+        : req.actor.type === "board"
+          ? req.actor.userId ?? null
+          : null;
+
+    // ---- Idempotency wrapping ----
+    // Per ADR-003 Q5: writes that trigger approvals MUST be idempotent.
+    // We wrap the entire operation (including approval creation) in
+    // withIdempotency so that a retry with the same key returns the
+    // cached response (either the 200 success or the 202 pending).
+    const idempotencyKey = req.header("idempotency-key") ?? null;
+
+    const result = await withIdempotency<{
+      status: "success" | "pending_approval";
+      data: Record<string, unknown>;
+      meta: Record<string, unknown>;
+    }>(
+      db,
+      {
+        companyId,
+        key: idempotencyKey,
+        requestBody: { txnId, ...body },
+      },
+      async () => {
+        // ---- Try the write ----
+        try {
+          const writeResult = await updateTransactionCategory(
+            db,
+            companyId,
+            contactId,
+            txnId,
+            newAccountRef,
+            // No hintedType — endpoint callers don't know transaction
+            // types. The dispatcher does multi-type probe to resolve.
+          );
+
+          // SUCCESS path → 200
+          return {
+            status: 200,
+            body: {
+              status: "success" as const,
+              data: {
+                platform: writeResult.platform,
+                txnType: writeResult.txnType,
+                txnId: writeResult.txnId,
+                previousAccountRef: writeResult.previousAccountRef,
+                newAccountRef: writeResult.newAccountRef,
+              },
+              meta: {
+                performedAt: new Date().toISOString(),
+                latencyMs: Date.now() - startedAt,
+              },
+            },
+          };
+        } catch (err) {
+          // TRANSACTION NOT FOUND → 202 + create approval row
+          if (err instanceof TransactionNotFoundError) {
+            const approval = await approvalService(db).create(companyId, {
+              type: ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS,
+              status: "pending",
+              // Separate FK references per actor type:
+              //   - board actor → requestedByUserId (FK to users.id)
+              //   - agent actor → requestedByAgentId (FK to agents.id)
+              // Storing agentId in requestedByUserId would violate the users
+              // FK constraint in production. The previous unified actorId
+              // pattern conflated the two and was a latent FK bug surfaced
+              // during Piece C review.
+              requestedByUserId:
+                req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+              requestedByAgentId:
+                req.actor.type === "agent" ? (req.actor.agentId ?? null) : null,
+              payload: {
+                requestType: "POST /api/accounting/v1/transactions/:txnId/category",
+                companyId,
+                contactId,
+                txnId,
+                newAccountRef,
+                reason: reason ?? null,
+                idempotencyKey: idempotencyKey ?? null,
+                unknownPreviousReason: "transaction_type_unknown",
+              } as Record<string, unknown>,
+            });
+
+            return {
+              status: 202,
+              body: {
+                status: "pending_approval" as const,
+                data: {
+                  approvalId: approval.id,
+                  approvalType: ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS,
+                  reason:
+                    `Transaction ${txnId} could not be resolved against the platform's known transaction types ` +
+                    `(${err.attemptedTypes.join(", ")}). The category update is queued for human review.`,
+                },
+                meta: {
+                  performedAt: new Date().toISOString(),
+                  latencyMs: Date.now() - startedAt,
+                },
+              },
+            };
+          }
+
+          // TYPE NOT CATEGORIZABLE → 400
+          if (err instanceof TransactionTypeNotCategorizableError) {
+            throw badRequest(
+              `Transaction type ${err.platform}.${err.txnType} does not support category updates.`,
+              {
+                code: "transaction_type_not_categorizable",
+                platform: err.platform,
+                txnType: err.txnType,
+                txnId: err.txnId,
+                supportedTypes: "QBO: Purchase, Bill, Deposit; Xero: BankTransaction, Invoice, Bill",
+              },
+            );
+          }
+
+          // Other errors propagate (HttpResponseError, network failures, etc.)
+          // Caught by the global error handler — typically 502 or 500.
+          throw err;
+        }
+      },
+    );
+
+    // ---- Logger info ----
+    logger.info(
+      {
+        actorType: req.actor.type,
+        actorId,
+        companyId,
+        contactId,
+        txnId,
+        endpoint: "POST /api/accounting/v1/transactions/:txnId/category",
+        outcomeStatus: result.body.status,
+        httpStatus: result.status,
+        replayed: result.replayed,
+        idempotencyKeyPresent: idempotencyKey !== null,
+        latencyMs: Date.now() - startedAt,
+      },
+      "accounting.transactions.category.post",
+    );
+
+    // ---- Response ----
+    // Add idempotencyReplay flag to meta per ADR-003 Q5
+    const finalBody = {
+      ...result.body,
+      meta: {
+        ...(result.body.meta as Record<string, unknown>),
+        idempotencyReplay: result.replayed,
+      },
+    };
+    res.status(result.status).json(finalBody);
   });
 
 
