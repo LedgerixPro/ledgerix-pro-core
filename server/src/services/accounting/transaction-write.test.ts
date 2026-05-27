@@ -766,3 +766,246 @@ describe("updateTransactionCategory — Xero BankTransaction handler", () => {
     expect(xeroRequest).not.toHaveBeenCalled();
   });
 });
+
+describe("updateTransactionCategory — Xero Invoice/Bill shared handler", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("dispatches Invoice (Type=ACCREC) through the shared handler", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-xinv-1",
+      platform: "xero",
+      txnType: "Invoice", // resolved by Decision 4 read dispatcher from ACCREC
+      previousAccountRef: "200",
+      raw: {
+        InvoiceID: "txn-xinv-1",
+        Type: "ACCREC", // sales Invoice — MUST be preserved on writeback
+        Status: "AUTHORISED",
+        InvoiceNumber: "INV-001",
+        Contact: { ContactID: "contact-1" },
+        LineItems: [
+          {
+            Description: "Consulting services",
+            Quantity: 10,
+            UnitAmount: 100.0,
+            AccountCode: "200",
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(xeroRequest).mockResolvedValueOnce({} as any);
+
+    const result = await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-xinv-1",
+      "260",
+    );
+
+    expect(result).toEqual({
+      platform: "xero",
+      txnType: "Invoice",
+      txnId: "txn-xinv-1",
+      previousAccountRef: "200",
+      newAccountRef: "260",
+    });
+
+    // Critical assertions:
+    //   - /Invoices endpoint (NOT /BankTransactions)
+    //   - { Invoices: [...] } array-wrapped body
+    //   - Type field PRESERVED as "ACCREC" on writeback
+    //   - LineItem AccountCode mutated to "260"
+    expect(xeroRequest).toHaveBeenCalledTimes(1);
+    expect(xeroRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/Invoices",
+      {
+        Invoices: [
+          expect.objectContaining({
+            InvoiceID: "txn-xinv-1",
+            Type: "ACCREC", // Type preservation — must NOT be dropped or changed
+            LineItems: expect.arrayContaining([
+              expect.objectContaining({
+                AccountCode: "260",
+              }),
+            ]),
+          }),
+        ],
+      },
+    );
+  });
+
+  it("dispatches Bill (Type=ACCPAY) through the SAME shared handler", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-xbill-1",
+      platform: "xero",
+      txnType: "Bill", // resolved by Decision 4 read dispatcher from ACCPAY
+      previousAccountRef: "400",
+      raw: {
+        InvoiceID: "txn-xbill-1",
+        Type: "ACCPAY", // purchase Bill — MUST be preserved on writeback
+        Status: "AUTHORISED",
+        InvoiceNumber: "BILL-001",
+        Contact: { ContactID: "vendor-1" },
+        LineItems: [
+          {
+            Description: "Office supplies",
+            Quantity: 1,
+            UnitAmount: 250.0,
+            AccountCode: "400",
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(xeroRequest).mockResolvedValueOnce({} as any);
+
+    const result = await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-xbill-1",
+      "429",
+    );
+
+    expect(result).toEqual({
+      platform: "xero",
+      txnType: "Bill",
+      txnId: "txn-xbill-1",
+      previousAccountRef: "400",
+      newAccountRef: "429",
+    });
+
+    // Same endpoint as Invoice — verifies the shared-handler / shared-endpoint
+    // pattern. Type preserved as "ACCPAY".
+    expect(xeroRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/Invoices",
+      {
+        Invoices: [
+          expect.objectContaining({
+            InvoiceID: "txn-xbill-1",
+            Type: "ACCPAY", // Type preservation — must NOT be dropped or changed to ACCREC
+            LineItems: expect.arrayContaining([
+              expect.objectContaining({
+                AccountCode: "429",
+              }),
+            ]),
+          }),
+        ],
+      },
+    );
+  });
+
+  it("preserves Invoice fields (Status, InvoiceNumber, Contact, Reference) during AccountCode mutation", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-xinv-2",
+      platform: "xero",
+      txnType: "Invoice",
+      previousAccountRef: "200",
+      raw: {
+        InvoiceID: "txn-xinv-2",
+        Type: "ACCREC",
+        Status: "AUTHORISED",
+        InvoiceNumber: "INV-002",
+        Reference: "PO #12345",
+        Contact: { ContactID: "contact-2", Name: "ACME Corp" },
+        DueDate: "2026-06-15",
+        LineItems: [
+          {
+            Description: "Software license",
+            Quantity: 1,
+            UnitAmount: 1500.0,
+            AccountCode: "200",
+            TaxType: "OUTPUT2",
+            TaxAmount: 150.0,
+            LineAmount: 1500.0,
+            Tracking: [
+              { Name: "Region", Option: "North America" },
+            ],
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(xeroRequest).mockResolvedValueOnce({} as any);
+
+    await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-xinv-2",
+      "260",
+    );
+
+    expect(xeroRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/Invoices",
+      {
+        Invoices: [
+          expect.objectContaining({
+            // Top-level fields preserved
+            InvoiceID: "txn-xinv-2",
+            Type: "ACCREC",
+            Status: "AUTHORISED",
+            InvoiceNumber: "INV-002",
+            Reference: "PO #12345",
+            Contact: { ContactID: "contact-2", Name: "ACME Corp" },
+            DueDate: "2026-06-15",
+            // LineItem fields preserved alongside AccountCode mutation
+            LineItems: expect.arrayContaining([
+              expect.objectContaining({
+                AccountCode: "260",
+                Description: "Software license",
+                Quantity: 1,
+                UnitAmount: 1500.0,
+                TaxType: "OUTPUT2",
+                TaxAmount: 150.0,
+                LineAmount: 1500.0,
+                Tracking: [
+                  { Name: "Region", Option: "North America" },
+                ],
+              }),
+            ]),
+          }),
+        ],
+      },
+    );
+  });
+
+  it("throws if Xero Invoice has no line items (error message uses txnType from lookup, NOT hardcoded 'Invoice')", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-xbill-3",
+      platform: "xero",
+      txnType: "Bill", // important: this is a Bill, so the error message should say "Bill"
+      previousAccountRef: null,
+      raw: {
+        InvoiceID: "txn-xbill-3",
+        Type: "ACCPAY",
+        LineItems: [],
+      } as any,
+    });
+
+    await expect(
+      updateTransactionCategory(
+        MOCK_DB,
+        COMPANY_ID,
+        CONTACT_ID,
+        "txn-xbill-3",
+        "429",
+      ),
+    ).rejects.toThrow("Xero Bill txn-xbill-3 has no line items to categorize");
+    // Verify the error message used "Bill" (from txnType), NOT "Invoice"
+    // (which would be wrong since the same handler serves both types)
+    expect(xeroRequest).not.toHaveBeenCalled();
+  });
+});

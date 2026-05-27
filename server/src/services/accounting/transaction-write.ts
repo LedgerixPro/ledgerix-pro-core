@@ -360,12 +360,88 @@ const updateXeroBankTransactionAccount: WriteHandler = async (
   );
 };
 
+// Line shape for Xero Invoice/Bill. SAME shape as BankTransaction — both use
+// plain-string AccountCode on each LineItem. We define a separate interface
+// here for naming clarity (the Invoice's full shape has different sibling
+// fields than BankTransaction — Type, InvoiceNumber, DueDate, Contact, etc.).
+interface XeroInvoiceLineForWrite {
+  AccountCode?: string;
+  [key: string]: unknown;
+}
+
+interface XeroInvoiceOrBillRawForWrite {
+  InvoiceID: string;
+  // Type is the ACCREC/ACCPAY discriminator. MUST be preserved in the write
+  // body so Xero doesn't silently change the invoice type during update.
+  Type?: "ACCREC" | "ACCPAY" | string;
+  LineItems?: XeroInvoiceLineForWrite[];
+  [key: string]: unknown;
+}
+
+/**
+ * Xero Invoice/Bill shared write handler. Mutates the first LineItem's
+ * AccountCode and POSTs the full transaction back to /Invoices.
+ *
+ * SHARED HANDLER for BOTH txnType "Invoice" AND txnType "Bill". Mirrors
+ * the Decision 4 REVISED pattern: Xero serves ACCREC (sales Invoice) and
+ * ACCPAY (purchase Bill) from the same /Invoices/{InvoiceID} read endpoint
+ * AND the same /Invoices write endpoint. The Type field discriminates
+ * between them; the handler must preserve Type on the write body.
+ *
+ * Body shape: { Invoices: [txn] } — same plural-key + array-wrapper idiom
+ * as /BankTransactions. Xero treats single-item writes as 1-element batches.
+ *
+ * Status-restricted updates: Xero restricts what can be updated on
+ * AUTHORISED/PAID invoices (the rules are status-specific and field-specific).
+ * The handler does NOT pre-validate against these rules — if Xero rejects
+ * the write with a status error, the existing HttpResponseError mechanism
+ * propagates the failure naturally and the caller surfaces it to the user.
+ * Pre-validating Xero's business rules locally would duplicate logic that's
+ * already authoritative on Xero's side.
+ *
+ * Multi-line caveat: first LineItem only, consistent with all other
+ * Decision 5 handlers. Invoices/Bills can legitimately have multiple line
+ * items (one per product/service); selecting only the first is an
+ * approximation for v1.
+ */
+const updateXeroInvoiceOrBillAccount: WriteHandler = async (
+  db,
+  companyId,
+  contactId,
+  lookup,
+  newAccountCode,
+) => {
+  const txn = lookup.raw as unknown as XeroInvoiceOrBillRawForWrite;
+  const firstLine = txn.LineItems?.[0];
+  if (!firstLine) {
+    throw new Error(
+      `Xero ${lookup.txnType} ${lookup.txnId} has no line items to categorize`,
+    );
+  }
+  txn.LineItems![0] = {
+    ...firstLine,
+    AccountCode: newAccountCode,
+  };
+  await xeroRequest(
+    db,
+    companyId,
+    contactId,
+    "POST",
+    "/Invoices",
+    { Invoices: [txn] },
+  );
+};
+
 const XERO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([
   ["BankTransaction", updateXeroBankTransactionAccount],
-  // Decision 5 IN-scope handlers still to add:
-  // ["Invoice", updateXeroInvoiceOrBillAccount],
-  // ["Bill", updateXeroInvoiceOrBillAccount],
-  // ["ManualJournal", deferred to Q5]
+  ["Invoice", updateXeroInvoiceOrBillAccount],
+  ["Bill", updateXeroInvoiceOrBillAccount],
+  // Xero write registry complete — 3 of 3 in-scope Xero type keys
+  // covered by 2 handler functions (Invoice + Bill share the
+  // updateXeroInvoiceOrBillAccount handler per the Decision 4 REVISED
+  // pattern). ManualJournal write semantics deferred to Q5
+  // (multi-line Debit/Credit balance preservation — needs its own
+  // architectural decision).
 ]);
 
 // ---------------------------------------------------------------------------
