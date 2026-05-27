@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { clientPricingOverrides, serviceTierPricing } from "@paperclipai/db";
+import { clientPricingOverrides, serviceTierPricing, setupFeePricing } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 
 // Pricing source-of-truth for Ledgerix Pro service tiers per ADR-003 Q6.
@@ -89,5 +89,58 @@ export async function getExpectedPriceCents(
     amountCents: tierPrices[0].monthlyAmountCents,
     source: isCharter ? "tier_charter" : "tier_standard",
     priceRecordId: tierPrices[0].id,
+  };
+}
+
+// ============================================================================
+// Setup fees (Q2)
+// ============================================================================
+//
+// Setup fees are structurally different from monthly recurring pricing:
+//   - They don't vary by Charter status (EA Section 7: "All clients
+//     (including Charter) pay a one-time setup fee at onboarding")
+//   - They don't have per-client overrides (v1 scope; may extend later)
+//
+// The function signature reflects this — only `tier` is required, no
+// isCharter or contactId. See setup_fee_pricing.ts for the schema rationale.
+
+export interface SetupFee {
+  amountCents: number;
+  priceRecordId: string;
+}
+
+export class SetupFeeNotFoundError extends Error {
+  constructor(tier: string) {
+    super(`No active setup fee found for tier='${tier}'`);
+    this.name = "SetupFeeNotFoundError";
+  }
+}
+
+// Get the one-time setup fee for a service tier. Returns the currently
+// active fee (effective_to IS NULL). Throws SetupFeeNotFoundError if no
+// active row exists for the tier — indicates a configuration gap, the
+// admin seed endpoint should have populated this row.
+export async function getSetupFeeCents(
+  db: Db,
+  tier: ServiceTier,
+): Promise<SetupFee> {
+  const rows = await db
+    .select({
+      id: setupFeePricing.id,
+      amountCents: setupFeePricing.amountCents,
+    })
+    .from(setupFeePricing)
+    .where(
+      and(eq(setupFeePricing.tier, tier), isNull(setupFeePricing.effectiveTo)),
+    )
+    .limit(1);
+
+  if (rows.length === 0) {
+    throw new SetupFeeNotFoundError(tier);
+  }
+
+  return {
+    amountCents: rows[0].amountCents,
+    priceRecordId: rows[0].id,
   };
 }

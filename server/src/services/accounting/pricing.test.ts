@@ -1,10 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   getExpectedPriceCents,
+  getSetupFeeCents,
   PricingNotFoundError,
+  SetupFeeNotFoundError,
   type ServiceTier,
 } from "./pricing.js";
-import { clientPricingOverrides, serviceTierPricing } from "@paperclipai/db";
+import {
+  clientPricingOverrides,
+  serviceTierPricing,
+  setupFeePricing,
+} from "@paperclipai/db";
 
 // Mock the DB with a fluent Drizzle-style interface. Each test sets up
 // specific return values for the two select-chains used by the service:
@@ -365,5 +371,142 @@ describe("getExpectedPriceCents", () => {
     );
 
     expect(result.priceRecordId).toBe("tier-uuid-7");
+  });
+});
+
+// ============================================================================
+// getSetupFeeCents (Q2)
+// ============================================================================
+
+interface SetupFeeRow {
+  id: string;
+  amountCents: number;
+}
+
+// Minimal mock for the single-table query shape used by getSetupFeeCents:
+//   db.select({...}).from(setupFeePricing).where(...).limit(1)
+// Returns the configured rows when .from() is called against setupFeePricing,
+// empty array otherwise (defends against accidental cross-table reads).
+function createSetupFeeMockDb(setupFeeRows: SetupFeeRow[] = []) {
+  let currentTable: "setup_fee" | null = null;
+  const db: Record<string, unknown> = {};
+
+  db.select = vi.fn(() => {
+    currentTable = null;
+    return db;
+  });
+
+  db.from = vi.fn((table: unknown) => {
+    if (table === setupFeePricing) currentTable = "setup_fee";
+    return db;
+  });
+
+  db.where = vi.fn(() => db);
+
+  db.limit = vi.fn(async () => {
+    if (currentTable === "setup_fee") return setupFeeRows;
+    return [];
+  });
+
+  return { db };
+}
+
+describe("getSetupFeeCents", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the active setup fee for Foundation tier", async () => {
+    const { db } = createSetupFeeMockDb([
+      { id: "setup-fee-uuid-foundation", amountCents: 24900 },
+    ]);
+
+    const result = await getSetupFeeCents(
+      // @ts-expect-error mock db
+      db,
+      "Foundation",
+    );
+
+    expect(result.amountCents).toBe(24900);
+    expect(result.priceRecordId).toBe("setup-fee-uuid-foundation");
+  });
+
+  it("returns the active setup fee for Growth Engine tier", async () => {
+    const { db } = createSetupFeeMockDb([
+      { id: "setup-fee-uuid-ge", amountCents: 34900 },
+    ]);
+
+    const result = await getSetupFeeCents(
+      // @ts-expect-error mock db
+      db,
+      "Growth Engine",
+    );
+
+    expect(result.amountCents).toBe(34900);
+    expect(result.priceRecordId).toBe("setup-fee-uuid-ge");
+  });
+
+  it("returns the active setup fee for Scale-Up tier", async () => {
+    const { db } = createSetupFeeMockDb([
+      { id: "setup-fee-uuid-su", amountCents: 120000 },
+    ]);
+
+    const result = await getSetupFeeCents(
+      // @ts-expect-error mock db
+      db,
+      "Scale-Up",
+    );
+
+    expect(result.amountCents).toBe(120000);
+    expect(result.priceRecordId).toBe("setup-fee-uuid-su");
+  });
+
+  it("throws SetupFeeNotFoundError when no active row exists for the tier", async () => {
+    const { db } = createSetupFeeMockDb([]);
+
+    let caught: unknown;
+    try {
+      await getSetupFeeCents(
+        // @ts-expect-error mock db
+        db,
+        "Foundation",
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(SetupFeeNotFoundError);
+    expect((caught as Error).message).toContain("Foundation");
+  });
+
+  it("WHERE clause includes effective_to IS NULL (active rows only)", async () => {
+    // The mock returns whatever it's given regardless of WHERE clauses, but
+    // we can verify the .where() spy was called — meaning the lookup is
+    // filtered, not a naked SELECT-all. The real isNull(effectiveTo) filter
+    // is enforced by SQL; this test documents the contract via the spy.
+    const { db } = createSetupFeeMockDb([
+      { id: "setup-fee-uuid-current", amountCents: 25000 },
+    ]);
+
+    const result = await getSetupFeeCents(
+      // @ts-expect-error mock db
+      db,
+      "Foundation",
+    );
+
+    expect(result.amountCents).toBe(25000); // current row, not historical
+    expect(db.where).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns SetupFeeNotFoundError mentioning the requested tier name", async () => {
+    const { db } = createSetupFeeMockDb([]);
+
+    await expect(
+      getSetupFeeCents(
+        // @ts-expect-error mock db
+        db,
+        "Scale-Up",
+      ),
+    ).rejects.toThrow("Scale-Up");
   });
 });

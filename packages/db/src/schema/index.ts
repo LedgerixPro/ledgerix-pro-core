@@ -70,4 +70,5 @@ export { smsConsentLog } from "./sms_consent_log.js";
 export { serviceTierPricing } from "./service_tier_pricing.js";
 export { clientPricingOverrides } from "./client_pricing_overrides.js";
 export { clientCharterStatus } from "./client_charter_status.js";
+export { setupFeePricing } from "./setup_fee_pricing.js";
 export { writeThresholds } from "./write_thresholds.js";

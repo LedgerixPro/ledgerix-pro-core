@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { serviceTierPricing, writeThresholds } from "@paperclipai/db";
+import { serviceTierPricing, setupFeePricing, writeThresholds } from "@paperclipai/db";
 import { assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { logger } from "../middleware/logger.js";
 import { compareAndSeed } from "../services/admin/compare-and-seed.js";
@@ -29,6 +29,14 @@ const SERVICE_TIER_PRICING_SEED = [
   { tier: "Growth Engine", isCharter: false, monthlyAmountCents: 59900, currency: "USD" },
   { tier: "Scale-Up", isCharter: true, monthlyAmountCents: 99900, currency: "USD" },
   { tier: "Scale-Up", isCharter: false, monthlyAmountCents: 129900, currency: "USD" },
+];
+
+// Q2 (LOCKED 2026-05-27 commit 0cf679d6): one-time setup fees per tier.
+// No Charter discount (EA Section 7: same fee for Charter and Standard).
+const SETUP_FEE_PRICING_SEED = [
+  { tier: "Foundation", amountCents: 24900, currency: "USD" },
+  { tier: "Growth Engine", amountCents: 34900, currency: "USD" },
+  { tier: "Scale-Up", amountCents: 120000, currency: "USD" },
 ];
 
 // EA v3.3 Section 6.3 threshold defaults.
@@ -68,7 +76,8 @@ export function adminRoutes(db: Db) {
     const actor = getActorInfo(req);
 
     try {
-      const result = await compareAndSeed(db, {
+      // Seed service_tier_pricing (existing 6-row table)
+      const pricingResult = await compareAndSeed(db, {
         table: serviceTierPricing,
         identityFields: ["tier", "isCharter"],
         valueFields: ["monthlyAmountCents", "currency"],
@@ -77,21 +86,46 @@ export function adminRoutes(db: Db) {
         schemaLabel: "service_tier_pricing",
       });
 
+      // Seed setup_fee_pricing (Q2 — 3 rows). No isCharter dimension;
+      // identity is tier alone.
+      const setupFeeResult = await compareAndSeed(db, {
+        table: setupFeePricing,
+        identityFields: ["tier"],
+        valueFields: ["amountCents", "currency"],
+        effectiveToField: "effectiveTo",
+        candidateRows: SETUP_FEE_PRICING_SEED,
+        schemaLabel: "setup_fee_pricing",
+      });
+
+      const combined = {
+        pricing: pricingResult,
+        setupFees: setupFeeResult,
+      };
+
       const audit = await logActivity(db, {
         companyId: null,
         actorType: actor.actorType,
         actorId: actor.actorId,
         action: "admin.pricing.seed",
-        entityType: "service_tier_pricing",
+        entityType: "service_tier_pricing+setup_fee_pricing",
         entityId: "canonical",
         agentId: null,
         status: "success",
         details: {
-          inserted: result.inserted,
-          skipped: result.skipped,
-          superseded: result.superseded,
-          newRows: result.newRows,
-          candidateCount: SERVICE_TIER_PRICING_SEED.length,
+          pricing: {
+            inserted: pricingResult.inserted,
+            skipped: pricingResult.skipped,
+            superseded: pricingResult.superseded,
+            newRows: pricingResult.newRows,
+            candidateCount: SERVICE_TIER_PRICING_SEED.length,
+          },
+          setupFees: {
+            inserted: setupFeeResult.inserted,
+            skipped: setupFeeResult.skipped,
+            superseded: setupFeeResult.superseded,
+            newRows: setupFeeResult.newRows,
+            candidateCount: SETUP_FEE_PRICING_SEED.length,
+          },
         },
       });
 
@@ -100,13 +134,14 @@ export function adminRoutes(db: Db) {
           actorType: actor.actorType,
           actorId: actor.actorId,
           endpoint: "POST /api/admin/pricing/seed",
-          ...result,
+          pricing: pricingResult,
+          setupFees: setupFeeResult,
         },
         "admin.pricing.seed",
       );
 
       res.json({
-        data: result,
+        data: combined,
         meta: {
           performedAt: new Date().toISOString(),
           auditLogId: audit.id,
@@ -119,7 +154,7 @@ export function adminRoutes(db: Db) {
         actorType: actor.actorType,
         actorId: actor.actorId,
         action: "admin.pricing.seed",
-        entityType: "service_tier_pricing",
+        entityType: "service_tier_pricing+setup_fee_pricing",
         entityId: "canonical",
         agentId: null,
         status: "failure",

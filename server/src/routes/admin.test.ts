@@ -134,34 +134,64 @@ describe("POST /admin/pricing/seed — happy path", () => {
     (logActivity as ReturnType<typeof vi.fn>).mockResolvedValue(DEFAULT_AUDIT_ROW);
   });
 
-  it("returns 200 with the seed result and audit log id in the response envelope", async () => {
+  it("returns 200 with the combined seed result (pricing + setupFees) and audit log id in the response envelope", async () => {
     const app = buildTestApp(localBoardActor);
     const res = await request(app).post("/admin/pricing/seed").send({});
 
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual(DEFAULT_SEED_RESULT);
+    // Q2 (LOCKED): response shape is now { pricing, setupFees } — combined
+    // result of the two compareAndSeed calls (service_tier_pricing + setup_fee_pricing)
+    expect(res.body.data).toEqual({
+      pricing: DEFAULT_SEED_RESULT,
+      setupFees: DEFAULT_SEED_RESULT,
+    });
     expect(res.body.meta).toHaveProperty("performedAt");
     expect(res.body.meta.auditLogId).toBe(DEFAULT_AUDIT_ROW.id);
   });
 
-  it("calls compareAndSeed with the canonical pricing seed config", async () => {
+  it("calls compareAndSeed TWICE: once for service_tier_pricing, once for setup_fee_pricing", async () => {
     const app = buildTestApp(localBoardActor);
     await request(app).post("/admin/pricing/seed").send({});
 
-    expect(compareAndSeed).toHaveBeenCalledTimes(1);
-    const callArgs = (compareAndSeed as ReturnType<typeof vi.fn>).mock.calls[0];
-    const opts = callArgs[1] as Record<string, unknown>;
+    // Q2 (LOCKED): two seed operations per request
+    expect(compareAndSeed).toHaveBeenCalledTimes(2);
 
-    // Verify the helper was called with the documented seed shape.
-    expect(opts.identityFields).toEqual(["tier", "isCharter"]);
-    expect(opts.valueFields).toEqual(["monthlyAmountCents", "currency"]);
-    expect(opts.effectiveToField).toBe("effectiveTo");
-    expect(opts.schemaLabel).toBe("service_tier_pricing");
+    // First call: service_tier_pricing (existing)
+    const firstOpts = (compareAndSeed as ReturnType<typeof vi.fn>).mock.calls[0][1] as Record<string, unknown>;
+    expect(firstOpts.identityFields).toEqual(["tier", "isCharter"]);
+    expect(firstOpts.valueFields).toEqual(["monthlyAmountCents", "currency"]);
+    expect(firstOpts.effectiveToField).toBe("effectiveTo");
+    expect(firstOpts.schemaLabel).toBe("service_tier_pricing");
     // 3 tiers × 2 charter variants = 6 canonical rows.
-    expect((opts.candidateRows as unknown[]).length).toBe(6);
+    expect((firstOpts.candidateRows as unknown[]).length).toBe(6);
+
+    // Second call: setup_fee_pricing (Q2 — 3 rows, no isCharter)
+    const secondOpts = (compareAndSeed as ReturnType<typeof vi.fn>).mock.calls[1][1] as Record<string, unknown>;
+    expect(secondOpts.identityFields).toEqual(["tier"]); // no isCharter — setup fees don't vary
+    expect(secondOpts.valueFields).toEqual(["amountCents", "currency"]);
+    expect(secondOpts.effectiveToField).toBe("effectiveTo");
+    expect(secondOpts.schemaLabel).toBe("setup_fee_pricing");
+    // 3 tiers × 1 (no charter variants) = 3 canonical rows.
+    expect((secondOpts.candidateRows as unknown[]).length).toBe(3);
   });
 
-  it("writes a success activity log with the seed result and the calling user identity", async () => {
+  it("setup fee seed candidate rows match EA Section 7 canonical values", async () => {
+    const app = buildTestApp(localBoardActor);
+    await request(app).post("/admin/pricing/seed").send({});
+
+    const setupFeeCall = (compareAndSeed as ReturnType<typeof vi.fn>).mock.calls[1];
+    const setupFeeOpts = setupFeeCall[1] as Record<string, unknown>;
+    const candidateRows = setupFeeOpts.candidateRows as Array<Record<string, unknown>>;
+
+    // Locked EA Section 7 values: Foundation $249, Growth Engine $349, Scale-Up $1,200
+    expect(candidateRows).toEqual([
+      { tier: "Foundation", amountCents: 24900, currency: "USD" },
+      { tier: "Growth Engine", amountCents: 34900, currency: "USD" },
+      { tier: "Scale-Up", amountCents: 120000, currency: "USD" },
+    ]);
+  });
+
+  it("writes a success activity log with combined pricing + setupFees details and the calling user identity", async () => {
     const app = buildTestApp(localBoardActor);
     await request(app).post("/admin/pricing/seed").send({});
 
@@ -171,15 +201,55 @@ describe("POST /admin/pricing/seed — happy path", () => {
     expect(auditArgs.actorType).toBe("user");
     expect(auditArgs.actorId).toBe("test-user");
     expect(auditArgs.action).toBe("admin.pricing.seed");
-    expect(auditArgs.entityType).toBe("service_tier_pricing");
+    // Q2 (LOCKED): entityType reflects both tables seeded in this endpoint
+    expect(auditArgs.entityType).toBe("service_tier_pricing+setup_fee_pricing");
     expect(auditArgs.entityId).toBe("canonical");
     expect(auditArgs.status).toBe("success");
+
+    // Q2 (LOCKED): details has nested pricing + setupFees sub-objects
     const details = auditArgs.details as Record<string, unknown>;
-    expect(details.inserted).toBe(DEFAULT_SEED_RESULT.inserted);
-    expect(details.skipped).toBe(DEFAULT_SEED_RESULT.skipped);
-    expect(details.superseded).toBe(DEFAULT_SEED_RESULT.superseded);
-    expect(details.newRows).toBe(DEFAULT_SEED_RESULT.newRows);
-    expect(details.candidateCount).toBe(6);
+    const pricingDetails = details.pricing as Record<string, unknown>;
+    expect(pricingDetails.inserted).toBe(DEFAULT_SEED_RESULT.inserted);
+    expect(pricingDetails.skipped).toBe(DEFAULT_SEED_RESULT.skipped);
+    expect(pricingDetails.superseded).toBe(DEFAULT_SEED_RESULT.superseded);
+    expect(pricingDetails.newRows).toBe(DEFAULT_SEED_RESULT.newRows);
+    expect(pricingDetails.candidateCount).toBe(6);
+
+    const setupFeeDetails = details.setupFees as Record<string, unknown>;
+    expect(setupFeeDetails.inserted).toBe(DEFAULT_SEED_RESULT.inserted);
+    expect(setupFeeDetails.candidateCount).toBe(3);
+  });
+
+  it("first-time seed: data.setupFees.inserted reflects the 3 setup fee rows when compareAndSeed returns inserted:3", async () => {
+    // Override the default mock: pricing returns 6 inserted, setup fees returns 3 inserted
+    (compareAndSeed as ReturnType<typeof vi.fn>)
+      .mockReset()
+      .mockResolvedValueOnce({ inserted: 6, skipped: 0, superseded: 0, newRows: 0 })
+      .mockResolvedValueOnce({ inserted: 3, skipped: 0, superseded: 0, newRows: 0 });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/admin/pricing/seed").send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.pricing.inserted).toBe(6);
+    expect(res.body.data.setupFees.inserted).toBe(3);
+    expect(res.body.data.setupFees.skipped).toBe(0);
+  });
+
+  it("idempotent re-seed: data.setupFees.skipped reflects 3 when all rows already exist", async () => {
+    (compareAndSeed as ReturnType<typeof vi.fn>)
+      .mockReset()
+      .mockResolvedValueOnce({ inserted: 0, skipped: 6, superseded: 0, newRows: 0 })
+      .mockResolvedValueOnce({ inserted: 0, skipped: 3, superseded: 0, newRows: 0 });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/admin/pricing/seed").send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.pricing.skipped).toBe(6);
+    expect(res.body.data.pricing.inserted).toBe(0);
+    expect(res.body.data.setupFees.skipped).toBe(3);
+    expect(res.body.data.setupFees.inserted).toBe(0);
   });
 });
 
