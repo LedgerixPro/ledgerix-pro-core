@@ -154,6 +154,26 @@ interface QboBillPaymentFull {
   [key: string]: unknown;
 }
 
+interface QboPaymentLine {
+  // Payment lines (like BillPayment lines) contain LinkedTxn references —
+  // here pointing to the Invoices being paid. No per-line AccountRef.
+  Amount?: number;
+  LinkedTxn?: Array<{ TxnId?: string; TxnType?: string }>;
+  [key: string]: unknown;
+}
+
+interface QboPaymentFull {
+  Id: string;
+  SyncToken: string;
+  CustomerRef?: { value?: string };
+  ARAccountRef?: { value?: string };
+  DepositToAccountRef?: { value?: string };
+  PaymentMethodRef?: { value?: string };
+  TotalAmt?: number;
+  Line?: QboPaymentLine[];
+  [key: string]: unknown;
+}
+
 interface XeroBankTransactionLineItem {
   LineItemID?: string;
   AccountCode?: string;
@@ -352,6 +372,55 @@ async function fetchQboBillPayment(
   };
 }
 
+async function fetchQboPayment(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult> {
+  const response = await qboRequest<{ Payment: QboPaymentFull }>(
+    db,
+    companyId,
+    contactId,
+    "GET",
+    `/payment/${txnId}`,
+  );
+  const payment = response.Payment;
+  if (!payment) {
+    throw new Error(`QBO Payment ${txnId} response missing Payment field`);
+  }
+  // Payment is the customer-side counterpart to BillPayment. Like
+  // BillPayment, the lines contain LinkedTxn references (to Invoices being
+  // paid) rather than per-line AccountRefs. The relevant account refs are
+  // both top-level:
+  //   - DepositToAccountRef: where the money LANDED (bank account, or
+  //     "Undeposited Funds" by default)
+  //   - ARAccountRef: the AR account the payment REDUCES (typically
+  //     "Accounts Receivable")
+  //
+  // We capture DepositToAccountRef as previousAccountRef. Reasoning:
+  // re-categorization workflows on a Payment act on the destination side —
+  // a user fixing a Payment is correcting which bank account it landed in
+  // (e.g., wrong account selected, or moving from Undeposited Funds to
+  // Checking). The ARAccountRef rarely changes in practice.
+  //
+  // Fallback: if DepositToAccountRef is missing (some QBO Payments don't
+  // populate it when defaulting to Undeposited Funds), fall back to
+  // ARAccountRef so audit trails still have something useful. If both are
+  // missing, return null.
+  const previousAccountRef =
+    payment.DepositToAccountRef?.value ??
+    payment.ARAccountRef?.value ??
+    null;
+  return {
+    txnId,
+    platform: "quickbooks",
+    txnType: "Payment",
+    previousAccountRef,
+    raw: payment,
+  };
+}
+
 async function fetchXeroBankTransaction(
   db: Db,
   companyId: string,
@@ -398,7 +467,8 @@ const QBO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
   ["JournalEntry", fetchQboJournalEntry],
   ["Deposit", fetchQboDeposit],
   ["BillPayment", fetchQboBillPayment],
-  // Future: Payment, Invoice
+  ["Payment", fetchQboPayment],
+  // Future: Invoice
 ]);
 
 const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([

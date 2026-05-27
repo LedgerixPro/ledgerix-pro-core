@@ -332,6 +332,108 @@ describe("getTransactionById — hinted-type fast path", () => {
     });
   });
 
+  it("dispatches directly to fetchQboPayment when hintedType='Payment' (captures DepositToAccountRef)", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      Payment: {
+        Id: "txn-PMT-1",
+        SyncToken: "0",
+        CustomerRef: { value: "100" },
+        ARAccountRef: { value: "11000" }, // Accounts Receivable — NOT captured
+        DepositToAccountRef: { value: "10100" }, // Checking — captured
+        TotalAmt: 500.0,
+        Line: [
+          {
+            Amount: 500.0,
+            LinkedTxn: [{ TxnId: "200", TxnType: "Invoice" }],
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-PMT-1",
+      "Payment",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-PMT-1",
+      platform: "quickbooks",
+      txnType: "Payment",
+      previousAccountRef: "10100", // DepositToAccountRef — destination
+      raw: expect.objectContaining({ Id: "txn-PMT-1" }),
+    });
+    expect(qboRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/payment/txn-PMT-1",
+    );
+  });
+
+  it("falls back to ARAccountRef when DepositToAccountRef is missing", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      Payment: {
+        Id: "txn-PMT-2",
+        SyncToken: "0",
+        CustomerRef: { value: "100" },
+        ARAccountRef: { value: "11000" }, // captured as fallback
+        // DepositToAccountRef intentionally absent (QBO defaulted to Undeposited Funds)
+        TotalAmt: 250.0,
+        Line: [
+          {
+            Amount: 250.0,
+            LinkedTxn: [{ TxnId: "201", TxnType: "Invoice" }],
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-PMT-2",
+      "Payment",
+    );
+
+    expect(result.previousAccountRef).toBe("11000"); // AR fallback
+  });
+
+  it("returns null previousAccountRef when both DepositToAccountRef and ARAccountRef are missing", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      Payment: {
+        Id: "txn-PMT-3",
+        SyncToken: "0",
+        CustomerRef: { value: "100" },
+        // Both AR and DepositTo intentionally absent
+        TotalAmt: 100.0,
+        Line: [
+          {
+            Amount: 100.0,
+            LinkedTxn: [{ TxnId: "202", TxnType: "Invoice" }],
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-PMT-3",
+      "Payment",
+    );
+
+    expect(result.previousAccountRef).toBeNull();
+  });
+
   it("dispatches directly to fetchXeroBankTransaction when hintedType='BankTransaction'", async () => {
     const db = mockDbWithPlatform("xero");
     vi.mocked(xeroRequest).mockResolvedValueOnce({
@@ -443,7 +545,8 @@ describe("getTransactionById — multi-type probing", () => {
       .mockRejectedValueOnce(make404("/bill/txn-missing"))
       .mockRejectedValueOnce(make404("/journalentry/txn-missing"))
       .mockRejectedValueOnce(make404("/deposit/txn-missing"))
-      .mockRejectedValueOnce(make404("/billpayment/txn-missing"));
+      .mockRejectedValueOnce(make404("/billpayment/txn-missing"))
+      .mockRejectedValueOnce(make404("/payment/txn-missing"));
 
     // Capture the error from a single invocation; assert type AND properties
     // on the same caught value (avoids calling the function twice, which
@@ -462,6 +565,7 @@ describe("getTransactionById — multi-type probing", () => {
     expect(tnf.attemptedTypes).toContain("JournalEntry");
     expect(tnf.attemptedTypes).toContain("Deposit");
     expect(tnf.attemptedTypes).toContain("BillPayment");
+    expect(tnf.attemptedTypes).toContain("Payment");
   });
 
   it("for Xero, attempts BankTransaction when no hint provided", async () => {
