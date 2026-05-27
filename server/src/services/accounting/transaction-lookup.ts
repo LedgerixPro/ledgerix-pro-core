@@ -92,6 +92,23 @@ interface QboBillFull {
   [key: string]: unknown;
 }
 
+interface QboJournalEntryLine {
+  DetailType?: string;
+  JournalEntryLineDetail?: {
+    PostingType?: "Debit" | "Credit";
+    AccountRef?: { value?: string };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+interface QboJournalEntryFull {
+  Id: string;
+  SyncToken: string;
+  Line?: QboJournalEntryLine[];
+  [key: string]: unknown;
+}
+
 interface XeroBankTransactionLineItem {
   LineItemID?: string;
   AccountCode?: string;
@@ -167,6 +184,43 @@ async function fetchQboBill(
   };
 }
 
+async function fetchQboJournalEntry(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult> {
+  const response = await qboRequest<{ JournalEntry: QboJournalEntryFull }>(
+    db,
+    companyId,
+    contactId,
+    "GET",
+    `/journalentry/${txnId}`,
+  );
+  const journalEntry = response.JournalEntry;
+  if (!journalEntry) {
+    throw new Error(`QBO JournalEntry ${txnId} response missing JournalEntry field`);
+  }
+  // JournalEntries are multi-line by nature: each line has its own AccountRef
+  // (typically one Debit and one Credit, but potentially more). There is no
+  // single canonical "previous account" for a journal — we capture the FIRST
+  // line's AccountRef here for consistency with the Purchase/Bill handlers,
+  // but callers needing per-line account fidelity should consume the `raw`
+  // field directly. This is documented in the dispatcher contract: the
+  // previousAccountRef return value is a hint, not a source of truth for
+  // multi-line transactions.
+  const firstLine = journalEntry.Line?.[0];
+  const previousAccountRef =
+    firstLine?.JournalEntryLineDetail?.AccountRef?.value ?? null;
+  return {
+    txnId,
+    platform: "quickbooks",
+    txnType: "JournalEntry",
+    previousAccountRef,
+    raw: journalEntry,
+  };
+}
+
 async function fetchXeroBankTransaction(
   db: Db,
   companyId: string,
@@ -210,7 +264,8 @@ type FetchHandler = (
 const QBO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
   ["Purchase", fetchQboPurchase],
   ["Bill", fetchQboBill],
-  // Future: JournalEntry, Deposit, BillPayment, Payment, Invoice
+  ["JournalEntry", fetchQboJournalEntry],
+  // Future: Deposit, BillPayment, Payment, Invoice
 ]);
 
 const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([

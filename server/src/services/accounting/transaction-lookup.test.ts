@@ -121,6 +121,55 @@ describe("getTransactionById — hinted-type fast path", () => {
     );
   });
 
+  it("dispatches directly to fetchQboJournalEntry when hintedType='JournalEntry'", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      JournalEntry: {
+        Id: "txn-JE-1",
+        SyncToken: "0",
+        Line: [
+          {
+            DetailType: "JournalEntryLineDetail",
+            JournalEntryLineDetail: {
+              PostingType: "Debit",
+              AccountRef: { value: "60100" },
+            },
+          },
+          {
+            DetailType: "JournalEntryLineDetail",
+            JournalEntryLineDetail: {
+              PostingType: "Credit",
+              AccountRef: { value: "20100" },
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-JE-1",
+      "JournalEntry",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-JE-1",
+      platform: "quickbooks",
+      txnType: "JournalEntry",
+      previousAccountRef: "60100", // First line's account (the Debit side) per the documented approximation
+      raw: expect.objectContaining({ Id: "txn-JE-1" }),
+    });
+    expect(qboRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/journalentry/txn-JE-1",
+    );
+  });
+
   it("dispatches directly to fetchXeroBankTransaction when hintedType='BankTransaction'", async () => {
     const db = mockDbWithPlatform("xero");
     vi.mocked(xeroRequest).mockResolvedValueOnce({
@@ -215,8 +264,10 @@ describe("getTransactionById — multi-type probing", () => {
   it("throws TransactionNotFoundError when all types are exhausted", async () => {
     const db = mockDbWithPlatform("quickbooks");
     // All registered types throw 404 (Phase 2 strict: only 404 continues
-    // the probe loop; non-404 rethrows immediately). Both Purchase and Bill
-    // return 404 → loop exhausts → TransactionNotFoundError.
+    // the probe loop; non-404 rethrows immediately). Purchase, Bill, and
+    // JournalEntry all return 404 → loop exhausts → TransactionNotFoundError.
+    // NOTE: When new types are added to QBO_TYPE_REGISTRY, add a corresponding
+    // mockRejectedValueOnce call here so the loop reaches exhaustion.
     const make404 = (path: string) =>
       new HttpResponseError(
         `QBO request failed: 404 GET ${path}`,
@@ -227,7 +278,8 @@ describe("getTransactionById — multi-type probing", () => {
       );
     vi.mocked(qboRequest)
       .mockRejectedValueOnce(make404("/purchase/txn-missing"))
-      .mockRejectedValueOnce(make404("/bill/txn-missing"));
+      .mockRejectedValueOnce(make404("/bill/txn-missing"))
+      .mockRejectedValueOnce(make404("/journalentry/txn-missing"));
 
     // Capture the error from a single invocation; assert type AND properties
     // on the same caught value (avoids calling the function twice, which
@@ -243,6 +295,7 @@ describe("getTransactionById — multi-type probing", () => {
     expect(tnf.platform).toBe("quickbooks");
     expect(tnf.attemptedTypes).toContain("Purchase");
     expect(tnf.attemptedTypes).toContain("Bill");
+    expect(tnf.attemptedTypes).toContain("JournalEntry");
   });
 
   it("for Xero, attempts BankTransaction when no hint provided", async () => {
