@@ -466,21 +466,72 @@ Test baseline trajectory: 161 (Session 3 start) → 164 (Defect 1 integration te
 
 - **#21 (Decision 4 Phase 2 type expansion gotcha):** the type-exhaustion test is coupled to QBO_TYPE_REGISTRY cardinality. Every new type added requires growing the mock queue AND the attemptedTypes assertions. Locked via NOTE comment in the test file + memory. Came in handy 6 times across the type-expansion commits.
 
-**State at session end (final after Decision 4 complete):**
+**Decision 5 + Pieces A/B/C — Phase 4c.5 write dispatcher + endpoint shipped (continuation of Session 4 work):**
 
-- Codebase HEAD: master @ `4e9d70be` (plus this docs commit pending)
-- Test baseline: 198 targeted tests passing (+37 across Decision 4 implementation arc)
+After Decision 4 closed feature-complete, the session continued with the write-side counterpart (Decision 5) plus the three Pieces (A/B/C) needed to land the POST /transactions/:txnId/category endpoint end-to-end. Locked decision → foundation → per-type handlers → integration → approval wiring → endpoint route → tests at each stage. The complete arc shipped in a single session over 10 commits.
+
+**Commits shipped (Decision 5 arc):**
+
+24. **`07c056e5`** — **docs(wip): Decision 5 LOCKED — write-side dispatcher scope.** Per Tenet #16, the contract is locked in docs BEFORE any code implementing it. Decision 5 covers 6 of 11 read types — the asymmetry with Decision 4 is by design (some types don't have a meaningful "category" to update; multi-line journals require Debit/Credit balance preservation deferred to a new Q5 question). Three sub-options surfaced and decided: D5-B (only supported types in registry, excluded types throw typed error) + Sub-D5-iii (defer journal types to Q5). Pure docs, no code, no test changes.
+
+25. **`69505e90`** — **feat(accounting,phase-4c-5): Decision 5 foundation — write-side dispatcher module + integration shim.** New `transaction-write.ts` module exports the WriteHandler type, public `updateTransactionCategory` orchestrator, `TransactionTypeNotCategorizableError` class (distinct from Decision 4's TransactionNotFoundError), and empty per-platform write registries. Tests cover the 5 excluded types throwing the right error + propagation tests + error class constructor. Existing service-level updateTransactionCategory in index.ts refactored to delegate to the new dispatcher (return shape additively expanded from {platform} to {platform, txnType, previousAccountRef}). Test baseline 198 → 206 (+8 tests).
+
+26. **`d90d5304`** — **Handler #1: QBO Purchase.** First per-type write handler. Mutates Line[0].AccountBasedExpenseLineDetail.AccountRef via spread-merge; POSTs full transaction to /purchase?operation=update. 3 tests (happy path / field preservation / no-line-items pathological). Establishes the per-type pattern. Test baseline 206 → 209.
+
+27. **`034ac5c4`** — **Handler #2: QBO Bill.** Structurally identical to Purchase (same shared QboAccountBasedExpenseTxnForWrite interface introduced this commit). Different write endpoint (/bill?operation=update). 3 tests. Test baseline 209 → 212.
+
+28. **`eb77d817`** — **Handler #3: QBO Deposit (QBO half COMPLETE).** Different line shape (DepositLineDetail.AccountRef, not AccountBasedExpenseLineDetail). Critical design decision documented: handler mutates per-line source AccountRef ONLY, not top-level DepositToAccountRef (destination bank account). Test 1 dual-asserts both the per-line mutation AND the destination preservation. 3 tests. Test baseline 212 → 215.
+
+29. **`5f30c3b2`** — **Handler #4: Xero BankTransaction.** First Xero write handler. Three structural differences from QBO documented in handler JSDoc: AccountCode is plain string (not wrapper object), POST /BankTransactions serves both create-and-update (no ?operation=update query), body wraps in BankTransactions array. 3 tests. Test baseline 215 → 218.
+
+30. **`e7ee3273`** — **Handler #5: Xero Invoice/Bill shared (Decision 5 FEATURE-COMPLETE).** Same shared-handler pattern as Decision 4's REVISED note: one handler function registered under BOTH "Invoice" and "Bill" registry keys; same /Invoices endpoint serves both ACCREC and ACCPAY; Type field preserved on writeback. 4 tests (ACCREC → Invoice / ACCPAY → Bill same handler / field preservation / no-lines error message uses lookup.txnType for caller-correct messaging). Decision 5 final coverage: 6 type keys covered by 5 handler functions (Xero Invoice/Bill share). Test baseline 218 → 222.
+
+**Commits shipped (Pieces A/B/C):**
+
+31. **`b7da7478`** — **refactor(accounting,phase-4c-5): Piece A — Decision 5 final integration.** Three changes: (1) Extended updateTransactionCategory signature with optional hintedType?: string parameter (Tenet #16 compliant interface EXTENSION); (2) DELETED legacy qbo.updateTransactionAccount + xero.updateTransactionAccount methods from services/accounting/index.ts (zero callers verified) plus 5 orphaned local interfaces (~85 lines removed); (3) Updated 2 stale comment references. Single canonical write entry point established. +2 tests (hintedType plumbing). Test baseline 222 → 224.
+
+32. **`001d547f`** — **feat(accounting,phase-4c-5): Piece B — wire TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS approval to Decision 5 dispatcher.** Replaces the Phase 4c.4 stub with real execution. Approval execution now replays the original POST request from the payload per ADR-003 Q2 design intent ("payloads must be self-sufficient... the request that arrived must be re-executable from the payload alone"). New "write_failed_replay" action enum value distinguishes "we tried but the underlying operation failed" from "we never tried" (stub_logged) and "we tried and it worked" (write_executed). Three outcomes handled: success → write_executed + upstreamResult; still-not-found → write_failed_replay; type-not-categorizable → write_failed_replay; unknown errors propagate. -1 stub test + 4 new tests = +3 net. Test baseline 224 → 227.
+
+33. **`bfc8549d`** — **feat(accounting,phase-4c-5): Piece C — POST /transactions/:txnId/category route.** First Phase 4c.5 write endpoint shipped end-to-end. Validates URL+body params, assertCompanyAccess, withIdempotency wrapping (ADR-003 Q5 compliance), three response paths (200 success / 202 approval / 400 not categorizable). FK safety fix caught pre-commit: separated requestedByUserId/requestedByAgentId per actor type to prevent agent IDs being written to a users-FK field in production. New agent-actor test locks the FK separation (would have caught the bug if written first). +6 tests (5 originally planned + 1 agent-actor test from the FK fix). Test baseline 227 → 233.
+
+**Decision 5 + Pieces A/B/C totals:**
+
+10 commits across the day's continuation. +35 tests (198 → 233). The single-session arc establishes the same Path Y discipline that worked for Decision 4: per-type API verification before code, one focused change per commit, dedicated tests per code path. Path Y validated again — the FK bug caught pre-commit during Piece C is exactly the kind of issue that benefits from focused commits over batched ones.
+
+**End-to-end paths now operational:**
+
+1. **Direct programmatic caller** (e.g., internal services or future agents): `updateTransactionCategory(db, companyId, contactId, txnId, newAccountRef, hintedType?)` from `transaction-write.ts`.
+2. **HTTP endpoint**: `POST /api/accounting/v1/transactions/:txnId/category` with full ADR-003 Q4 + Q5 compliance (202 pending-approval shape + idempotency replay support).
+3. **Approval-replay path**: Approved `accounting.transaction.category_with_unknown_previous` rows trigger the dispatcher via `executeApprovedAccountingWrite`. Three execution outcomes via the new `write_failed_replay` action enum value.
+
+**Architectural notes worth keeping:**
+
+- Decision 5's asymmetry with Decision 4 (write covers 6 of 11 read types) is documented in-code AND in the WIP doc Decision 5 spec. Not an oversight; matches QBO/Xero API constraints.
+- The shared-handler pattern (one handler / multiple registry keys) shipped for both reads (Decision 4 REVISED, Xero Invoice/Bill) AND writes (Decision 5, Xero Invoice/Bill). Mirrors actual API surface — same endpoint, Type discriminator on response.
+- The FK safety fix during Piece C is a generalizable pattern worth remembering: when storing actor context to FK fields, always derive separately per actor type, NEVER unify via a single actorId variable. The latent bug existed because we treated logger context (which doesn't enforce FK) and approval-row context (which does) identically. Future write endpoints with approval-row creation should follow this pattern.
+
+**Q5 newly pending:** Multi-line journal write semantics (QBO JournalEntry + Xero ManualJournal). Decision 5 explicitly excluded these because updating one line's AccountRef without offsetting changes breaks journal balance. The architectural problem (how does the caller express intent — preserve balance? update both lines? require dual-AccountRef?) needs its own decision.
+
+**State at session end (final after Decision 4 + Decision 5 + Pieces A/B/C complete):**
+
+- Codebase HEAD: master @ `bfc8549d` (plus this docs commit pending)
+- Test baseline: 233 targeted tests passing (+72 total across the day: +37 Decision 4 arc, +26 Decision 5 implementation, +9 Pieces A/B/C; baseline 161 at Session 3 start)
 - Full monorepo typecheck: clean
 - Phase 4c.5 status:
   - Defect 1: FIXED + prod-verified ✅
-  - Decision 4 (Q3 resolution): **FEATURE-COMPLETE** ✅ (LOCKED + Phase 1 SHIPPED + Phase 2 foundation SHIPPED + Phase 2 type expansion SHIPPED for all 11 types)
+  - Decision 4 (Q3 resolution): **FEATURE-COMPLETE** ✅
+  - Decision 5: **FEATURE-COMPLETE + INTEGRATED** ✅ (locked, foundation + 5 handlers + final integration all shipped)
+  - Piece A (Decision 5 final integration): COMPLETE ✅
+  - Piece B (TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS approval wired): COMPLETE ✅
+  - Piece C (POST /transactions/:txnId/category route): SHIPPED ✅
   - Q1 (charter status): still pending
   - Q2 (setup fees): still pending
-- Phase 4c.5 NEXT-NATURAL-STEP work (no longer gated by Decision 4):
-  - POST /transactions/:txnId/category re-implementation (~1-2 hours, now unblocked)
-  - POST /payments re-implementation (~2-3 hours, awaits service signature fixes)
+  - Q5 (multi-line journal write semantics): newly pending — surfaced during Decision 5 scoping
+- Phase 4c.5 remaining work (no longer gated by Decisions 4 or 5):
+  - POST /payments re-implementation (~2-3 hours, awaits service signature fixes; gated on Q2)
   - POST /invoices re-implementation (~3-4 hours, blocked on Q1 + Q2)
-- IMMEDIATE next work options: POST /transactions/:txnId/category re-implementation (the most-natural next step now that Decision 4 is complete) OR Q1/Q2 architectural decisions
+- Q5 (multi-line journal writes) — separate architectural decision when needed
+- The first Phase 4c.5 write endpoint is live end-to-end. The dispatcher + endpoint + approval-replay paths are all operational.
 
 ### Next session (date TBD)
 

@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 FEATURE-COMPLETE + Decision 5 LOCKED — write-side dispatcher scope)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 FEATURE-COMPLETE + Decision 5 FEATURE-COMPLETE + POST /transactions/:txnId/category endpoint SHIPPED end-to-end)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -15,7 +15,11 @@
 - Charter status storage decision + implementation: 3-5 hours
 - Setup fee handling decision + implementation: 3-5 hours
 - ~~Implement Decision 4 (get-transaction-by-id infrastructure for QBO + Xero, per-type dispatch): 5-7 hours total~~ — **COMPLETE Session 4 (2026-05-27)**. Phase 1 shipped commit `bffa3b16` (dispatcher + 3 types). Phase 2 foundation shipped commit `635e4998` (HttpResponseError + strict dispatcher). Phase 2 type expansion shipped across 6 commits: `8830f206` (JournalEntry), `7027c79a` (Deposit), `2195544a` (BillPayment), `769a39ca` (Payment), `bf96d2d3` (Invoice — QBO half complete), `4e9d70be` (Xero Invoice/Bill/ManualJournal — feature-complete). Dispatcher now covers all 11 planned types: 7 QBO handlers + 3 Xero handlers (Xero Invoice/Bill share a handler per the REVISED note below). Test baseline 161 → 198 (+37).
-- POST /transactions/:txnId/category re-implementation: 1-2 hours (once infra exists)
+- ~~Implement Decision 5 (write-side dispatcher for transaction category updates): ~3-4 hours total~~ — **COMPLETE Session 4 (2026-05-27)**. Foundation shipped commit `69505e90` (transaction-write.ts module + dispatcher + TransactionTypeNotCategorizableError class + 8 tests). 5 per-type handlers shipped across 5 commits: `d90d5304` (QBO Purchase), `034ac5c4` (QBO Bill, shared QboAccountBasedExpenseTxnForWrite interface), `eb77d817` (QBO Deposit, QBO half complete), `5f30c3b2` (Xero BankTransaction), `e7ee3273` (Xero Invoice/Bill shared, Decision 5 feature-complete). Final integration shipped commit `b7da7478` (legacy qbo.updateTransactionAccount + xero.updateTransactionAccount deleted; hintedType parameter added to updateTransactionCategory). 6 type keys covered by 5 handler functions (Xero Invoice/Bill share); 5 excluded types throw TransactionTypeNotCategorizableError. Test baseline 198 → 224 (+26).
+- ~~Implement POST /api/accounting/v1/transactions/:txnId/category endpoint (~1-2 hours)~~ — **COMPLETE Session 4 (2026-05-27)**. Pieces A+B+C shipped:
+  * Piece A (commit `b7da7478`): Decision 5 final integration — already counted above.
+  * Piece B (commit `001d547f`): executeApprovedAccountingWrite's TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS case wired to the dispatcher per ADR-003 Q2 replay-from-payload design intent. New "write_failed_replay" action enum value added. +3 tests (227 total).
+  * Piece C (commit `bfc8549d`): POST /transactions/:txnId/category route ships end-to-end. URL+body validation, assertCompanyAccess, withIdempotency wrapping (ADR-003 Q5), three response paths (200 success / 202 approval / 400 not categorizable), separated requestedByUserId/requestedByAgentId per actor type (FK safety fix caught pre-commit). +6 tests (233 total).
 - POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)
 - POST /invoices re-implementation: 3-4 hours (once charter + setup fees + dedupe wired)
 - Dispatcher wiring (Phase 4c.4 stubs -> real writes): 2-3 hours
@@ -435,6 +439,49 @@ For each supported type, verify the write endpoint and field mutation against th
 **Estimated effort:** ~3-4 hours for full Decision 5 implementation (dispatcher + 5 handlers + tests + service-layer integration). Less than Decision 4's effort because read-side dispatcher patterns are now established and the per-handler work is mechanical.
 
 **Decision 5 unblocks:** The POST /transactions/:txnId/category endpoint re-implementation. Once Decision 5 ships, the endpoint becomes a thin wrapper around `updateTransactionCategory` with: success → 200, `TransactionNotFoundError` → 202 + approval creation, `TransactionTypeNotCategorizableError` → 400.
+
+**Decision 5 COMPLETE (2026-05-27 end-of-Session-4):**
+
+All 6 in-scope Decision 5 transaction types are now writable through the unified `updateTransactionCategory` dispatcher. Implementation arc shipped in a single session over 10 commits:
+
+| Commit       | What shipped                                                                                |
+|--------------|---------------------------------------------------------------------------------------------|
+| `07c056e5`   | docs(wip): Decision 5 LOCKED — write-side dispatcher scope                                  |
+| `69505e90`   | Foundation: transaction-write.ts module + dispatcher + TransactionTypeNotCategorizableError |
+| `d90d5304`   | Handler #1: QBO Purchase                                                                    |
+| `034ac5c4`   | Handler #2: QBO Bill (introduced shared QboAccountBasedExpenseTxnForWrite interface)        |
+| `eb77d817`   | Handler #3: QBO Deposit (QBO half complete)                                                 |
+| `5f30c3b2`   | Handler #4: Xero BankTransaction                                                            |
+| `e7ee3273`   | Handler #5: Xero Invoice/Bill shared (Decision 5 FEATURE-COMPLETE)                          |
+| `b7da7478`   | Piece A: final integration — delete legacy methods, add hintedType parameter                |
+| `001d547f`   | Piece B: wire TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS approval to dispatcher                  |
+| `bfc8549d`   | Piece C: POST /transactions/:txnId/category route SHIPPED end-to-end                        |
+
+**Final coverage:**
+
+| Platform | Type Keys                          | Handler Functions                                              |
+|----------|------------------------------------|----------------------------------------------------------------|
+| QBO      | 3 (Purchase, Bill, Deposit)        | 3                                                              |
+| Xero     | 3 (BankTransaction, Invoice, Bill) | 2 (Invoice + Bill share updateXeroInvoiceOrBillAccount)        |
+| **Total**| **6 type keys**                    | **5 handler functions** (shared-handler savings — same pattern as Decision 4) |
+
+5 EXCLUDED types correctly throw `TransactionTypeNotCategorizableError`:
+- QBO BillPayment (top-level discriminated funds-source, not a category)
+- QBO Payment (top-level funds-flow accounts, not a category)
+- QBO Invoice (Item-based account mapping, not direct AccountRef edit)
+- QBO JournalEntry (multi-line Debit/Credit balance preservation — deferred to Q5)
+- Xero ManualJournal (same as QBO JournalEntry — deferred to Q5)
+
+**Test trajectory across Decision 5 arc:** 198 (Decision 4 close) → 224 (Decision 5 implementation) → 227 (Piece B) → 233 (Piece C). +35 tests across Decision 5 + Pieces A/B/C.
+
+**End-to-end paths now operational:**
+1. **Direct programmatic caller:** `updateTransactionCategory(db, companyId, contactId, txnId, newAccountRef, hintedType?)` from transaction-write.ts. The single canonical write entry point.
+2. **HTTP endpoint:** `POST /api/accounting/v1/transactions/:txnId/category` with full ADR-003 Q4 + Q5 compliance (202 approval shape, idempotency replay support).
+3. **Approval-replay path:** Approved `accounting.transaction.category_with_unknown_previous` rows trigger `updateTransactionCategory` via `executeApprovedAccountingWrite`. Three execution outcomes captured via the new `write_failed_replay` action enum value.
+
+**FK safety fix (caught pre-commit during Piece C):** Initial implementation conflated `requestedByUserId` with `actorId` (which is derived from BOTH actor.userId and actor.agentId). Would have written agentId into a users-FK field in production. Fixed by explicit per-actor-type derivation; new agent-actor test locks the separation.
+
+**Decision 5 unblocks Phase 4c.5 endpoint roadmap:** The category endpoint is now the first fully-functional Phase 4c.5 write endpoint. POST /payments and POST /invoices remain gated on Q1 (charter status) + Q2 (setup fees) architectural decisions, NOT on dispatcher work.
 
 ## Architecture Decisions Pending
 
