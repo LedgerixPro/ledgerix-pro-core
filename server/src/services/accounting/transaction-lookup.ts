@@ -109,6 +109,24 @@ interface QboJournalEntryFull {
   [key: string]: unknown;
 }
 
+interface QboDepositLine {
+  DetailType?: string;
+  DepositLineDetail?: {
+    AccountRef?: { value?: string };
+    PaymentMethodRef?: { value?: string };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+interface QboDepositFull {
+  Id: string;
+  SyncToken: string;
+  DepositToAccountRef?: { value?: string };
+  Line?: QboDepositLine[];
+  [key: string]: unknown;
+}
+
 interface XeroBankTransactionLineItem {
   LineItemID?: string;
   AccountCode?: string;
@@ -221,6 +239,46 @@ async function fetchQboJournalEntry(
   };
 }
 
+async function fetchQboDeposit(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult> {
+  const response = await qboRequest<{ Deposit: QboDepositFull }>(
+    db,
+    companyId,
+    contactId,
+    "GET",
+    `/deposit/${txnId}`,
+  );
+  const deposit = response.Deposit;
+  if (!deposit) {
+    throw new Error(`QBO Deposit ${txnId} response missing Deposit field`);
+  }
+  // Deposit has TWO account-ref locations:
+  //   - DepositToAccountRef (top-level): the bank account RECEIVING the funds
+  //   - Line[].DepositLineDetail.AccountRef (per-line): the SOURCE account
+  //     being categorized (typically a customer's pending payment account or
+  //     a sales account)
+  // For audit-trail purposes — which is what previousAccountRef exists for —
+  // we capture the FIRST LINE's source AccountRef. Re-categorization
+  // workflows act on the source side, not the destination bank account.
+  // Multi-line approximation caveat applies (same as Bill, JournalEntry,
+  // Purchase): callers needing per-line fidelity should consume the raw
+  // field directly.
+  const firstLine = deposit.Line?.[0];
+  const previousAccountRef =
+    firstLine?.DepositLineDetail?.AccountRef?.value ?? null;
+  return {
+    txnId,
+    platform: "quickbooks",
+    txnType: "Deposit",
+    previousAccountRef,
+    raw: deposit,
+  };
+}
+
 async function fetchXeroBankTransaction(
   db: Db,
   companyId: string,
@@ -265,7 +323,8 @@ const QBO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
   ["Purchase", fetchQboPurchase],
   ["Bill", fetchQboBill],
   ["JournalEntry", fetchQboJournalEntry],
-  // Future: Deposit, BillPayment, Payment, Invoice
+  ["Deposit", fetchQboDeposit],
+  // Future: BillPayment, Payment, Invoice
 ]);
 
 const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([

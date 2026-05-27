@@ -170,6 +170,49 @@ describe("getTransactionById — hinted-type fast path", () => {
     );
   });
 
+  it("dispatches directly to fetchQboDeposit when hintedType='Deposit'", async () => {
+    const db = mockDbWithPlatform("quickbooks");
+    vi.mocked(qboRequest).mockResolvedValueOnce({
+      Deposit: {
+        Id: "txn-DEP-1",
+        SyncToken: "0",
+        DepositToAccountRef: { value: "10000" }, // bank account (destination — NOT captured)
+        Line: [
+          {
+            DetailType: "DepositLineDetail",
+            DepositLineDetail: {
+              AccountRef: { value: "40100" }, // source account — captured as previousAccountRef
+              PaymentMethodRef: { value: "1" },
+            },
+          },
+        ],
+      },
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-DEP-1",
+      "Deposit",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-DEP-1",
+      platform: "quickbooks",
+      txnType: "Deposit",
+      previousAccountRef: "40100", // First line's source AccountRef (NOT the destination DepositToAccountRef)
+      raw: expect.objectContaining({ Id: "txn-DEP-1" }),
+    });
+    expect(qboRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/deposit/txn-DEP-1",
+    );
+  });
+
   it("dispatches directly to fetchXeroBankTransaction when hintedType='BankTransaction'", async () => {
     const db = mockDbWithPlatform("xero");
     vi.mocked(xeroRequest).mockResolvedValueOnce({
@@ -279,7 +322,8 @@ describe("getTransactionById — multi-type probing", () => {
     vi.mocked(qboRequest)
       .mockRejectedValueOnce(make404("/purchase/txn-missing"))
       .mockRejectedValueOnce(make404("/bill/txn-missing"))
-      .mockRejectedValueOnce(make404("/journalentry/txn-missing"));
+      .mockRejectedValueOnce(make404("/journalentry/txn-missing"))
+      .mockRejectedValueOnce(make404("/deposit/txn-missing"));
 
     // Capture the error from a single invocation; assert type AND properties
     // on the same caught value (avoids calling the function twice, which
@@ -296,6 +340,7 @@ describe("getTransactionById — multi-type probing", () => {
     expect(tnf.attemptedTypes).toContain("Purchase");
     expect(tnf.attemptedTypes).toContain("Bill");
     expect(tnf.attemptedTypes).toContain("JournalEntry");
+    expect(tnf.attemptedTypes).toContain("Deposit");
   });
 
   it("for Xero, attempts BankTransaction when no hint provided", async () => {
