@@ -564,24 +564,93 @@ DEFERRED (to follow-up sessions):
 
 - POST /invoices is now fully unblocked from architectural prerequisites. Only Q5 (multi-line journal write semantics) remains as a separate pending architectural decision, and Q5 does NOT gate Invoice or Payment endpoint work — it gates only category updates on journal-entry-type transactions, which can wait.
 
-**State at session end (final after Decision 4 + Decision 5 + Pieces A/B/C + Q1 + Q2 complete):**
+**Decision 6 — POST /payments scope (fourth continuation of Session 4 work):**
 
-- Codebase HEAD: master @ `83b80a72` (plus this docs commit pending)
-- Test baseline: 262 targeted tests passing (+101 total across the day: +37 Decision 4 arc, +26 Decision 5 implementation, +9 Pieces A/B/C, +29 Q1 + Q2; baseline 161 at Session 3 start)
+After Q1 + Q2 closeout, the session continued with Decision 6 — the second Phase 4c.5 write endpoint (POST /payments). What was originally documented as "POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)" turned out to be substantially larger work. The honest-scope correction surfaced during Tenet-#7 verification, locked Decision 6 with clear contracts, then shipped end-to-end in 5 commits across the same session.
+
+**Decision arc:**
+
+The work began with a sloppy initial scope assessment — I (the assistant) claimed "POST /payments is bigger than service signature fixes" by reading 50 lines of code and then jumped to enumerating four architectural Q-decisions. User pushback ("did you verify every assumption first?") was correct. After explicit Tenet #7 verification of all 6 assumptions (zero callers on the existing dispatcher; overloaded entityRef parameter; no threshold integration; no idempotency wiring; void return deviating from 17+ in-file conventions; established Decision 4/5 platform-inference pattern), the verified findings informed Decision 6's lock. Pattern worth keeping: verify BEFORE estimating, not after recommending.
+
+Three Q-pay sub-decisions locked:
+
+- **Q-pay-1 (Platform inference):** Service infers platform from accountingConnections lookup — matches Decision 4/5 pattern. Caller drops platform parameter.
+- **Q-pay-2 (entityRef split):** Service signature splits the overloaded entityRef into typed `customerId?` + `accountId?` params; payload preserves entityRef per ADR-003 Q2. Route + replay both use the same `resolveEntityRefByPlatform` helper for translation.
+- **Q-pay-3 (Audit-trail return):** Service returns `ReconcilePaymentResult` paralleling Decision 5's `UpdateTransactionCategoryResult`. Honors the 17+ in-file convention of capturing qboRequest/xeroRequest typed returns.
+
+Q-pay-4 (threshold check at route layer) was settled by the existing `PaymentThresholdExceededPayload` shape — no decision needed. Q-pay-5 (approval-replay path) follows from Q-pay-1.
+
+Two more sub-decisions surfaced DURING implementation and were locked separately (parallel to Decision 5's Q2-α-i pattern):
+
+- **Q-pay-F-i (during Piece F):** Both helpers (`resolveEntityRefByPlatform` + `evaluatePaymentThreshold`) live in a single new file `payments-helpers.ts`. Not split; not in `thresholds.ts`; not in `index.ts`.
+- **Q-pay-F-ii (during Piece F):** v1 ships without `expectedRange` in the payload. The optional field stays in the locked contract for future invoice-balance-comparison work, but `evaluatePaymentThreshold` returns only `thresholdAmount`.
+
+**Commits shipped (Decision 6 arc):**
+
+37. **`0924fb94`** — **docs(wip,phase-4c-5): LOCK Decision 6 — POST /payments scope (Q-pay-1 + Q-pay-2 + Q-pay-3).** Per Tenet #16 contract-before-code, Decision 6 locked in docs BEFORE any implementation. 6 assumptions verified at lock time; 3 Q-pay decisions documented with rejected alternatives. Pure docs.
+
+38. **`37c55a08`** — **Piece D: Service refactor for reconcilePayment.** ReconcilePaymentResult interface + PaymentReferenceError class. Refactored both `qbo.applyPaymentToInvoice` and `xero.applyPaymentToInvoice` to capture platform-assigned paymentId via typed qboRequest/xeroRequest generics (QBO response shape `{ Payment: { Id, TxnDate? } }`, Xero response shape `{ Payments: Array<{ PaymentID }> }` — both verified via web research before code). Refactored `reconcilePayment` dispatcher: removed platform parameter (Q-pay-1), added accountingConnections lookup, validates ref split per Q-pay-2 with 4 distinct PaymentReferenceError reasons. 19 new tests in `reconcile-payment.test.ts`. Test baseline 262 → 281 (+19).
+
+39. **`0d419021`** — **Piece F: Shared helpers — resolveEntityRefByPlatform + evaluatePaymentThreshold.** New file `payments-helpers.ts` per Q-pay-F-i. `resolveEntityRefByPlatform` performs the connection lookup + entityRef-to-split-ref translation. `evaluatePaymentThreshold` integrates the existing Phase 4c.2 `getMostSpecificThreshold` for the route handler's threshold check. Per Q-pay-F-ii, returns only `thresholdAmount` — expectedRange deferred. 16 new tests in `payments-helpers.test.ts`. Test baseline 281 → 297 (+16).
+
+40. **`46f60b53`** — **Piece E: Approval-replay wiring for PAYMENT_THRESHOLD_EXCEEDED.** Replaced the Phase 4c.4 stub with real execution via `reconcilePayment` (Piece D) using `resolveEntityRefByPlatform` (Piece F). Three outcomes parallel to Piece B: success → write_executed; payload missing entityRef OR EntityRefResolutionError OR PaymentReferenceError → write_failed_replay; unknown errors propagate. 4 net tests in `write-approvals.test.ts` (-1 stub removed + 5 new). Test baseline 297 → 301 (+4).
+
+41. **`41376751`** — **Piece G: POST /api/accounting/v1/payments route (FEATURE-COMPLETE).** Validates body (companyId, contactId, invoiceId, amount as positive integer cents, entityRef, optional paymentDate matching YYYY-MM-DD regex, optional reason). assertCompanyAccess. withIdempotency wrap with two-step work: threshold check (Piece F) → if exceeded, create approval row + 202; else, resolve + dispatch via Piece D + 200. Two domain-specific 400 codes (entity_ref_resolution_failed, payment_reference_invalid) for resolver/ref-validation failures. FK-safe actor separation per Piece C pattern. Sub-decision Q-pay-F-ii honored — payload omits expectedRange. 7 new tests in `accounting.test.ts` (including the agent-actor FK-separation test). Test baseline 301 → 308 (+7).
+
+**Decision 6 arc totals:**
+
+5 commits. +27 tests across the implementation arc (281 → 308). Per-commit ranges: 4-19. The arc demonstrates four patterns worth keeping:
+
+1. **Lock-then-implement discipline (Tenet #16 contract-before-code):** Decision 6 locked first with full sub-decision rationale, then implementation across 4 pieces validated against the locked contract. Two new sub-decisions (Q-pay-F-i, Q-pay-F-ii) surfaced during implementation and were documented in commit messages for clean closeout — parallel to Decision 5's Q2-α-i pattern.
+
+2. **Tenet #7 verification catches scope errors (and assumption-jumping):** The initial sloppy scope assessment ("POST /payments is bigger than service signature fixes") got correct pushback. After 6-assumption verification, the true scope was locked with grounded reasoning. The pattern "verify BEFORE estimating, not after recommending" is the right discipline.
+
+3. **Single source of truth for translation logic:** `resolveEntityRefByPlatform` is used by BOTH the route handler (Piece G) AND the approval-replay path (Piece E). This was deliberately designed in Q-pay-2 + Piece F — identical translation guarantees identical behavior at both call sites. If a bug surfaces in translation, fixing it in one place fixes both.
+
+4. **Path Y discipline validated (again):** One focused commit per concern. Piece D shipped the service layer alone; Piece F shipped helpers alone; Piece E shipped replay wiring alone; Piece G shipped the route alone. Each commit was small enough to verify in isolation. The agent-actor FK-separation test in Piece G's tests is a direct parallel to Piece C's same test — the pattern is now established and reused without re-deriving.
+
+**End-to-end paths now operational for /payments:**
+
+1. **Direct programmatic caller:** `reconcilePayment(db, companyId, contactId, invoiceId, amount, ref, paymentDate?)` from `services/accounting/index.ts`. Single canonical service-layer entry point.
+2. **HTTP endpoint:** `POST /api/accounting/v1/payments` with full ADR-003 Q4 + Q5 compliance.
+3. **Approval-replay path:** Approved `accounting.payment.threshold_exceeded` rows trigger `reconcilePayment` via the same `resolveEntityRefByPlatform` helper the route uses.
+
+**Approval dispatcher wiring status after Piece E:**
+
+| Type                                                         | Status            | Wired by                |
+|--------------------------------------------------------------|-------------------|-------------------------|
+| accounting.transaction.category_with_unknown_previous        | WIRED ✅           | Piece B (commit 001d547f) → Decision 5 |
+| accounting.payment.threshold_exceeded                        | WIRED ✅ (this arc) | Piece E (commit 46f60b53) → Decision 6 |
+| accounting.invoice.dedupe_ambiguous                          | STILL A STUB      | Awaits Invoice endpoint design |
+| accounting.invoice.pricing_mismatch                          | STILL A STUB      | Awaits Invoice endpoint design |
+
+**Architectural notes worth keeping:**
+
+- Decision 6's "lock-then-implement" + "shared-resolver-between-route-and-replay" patterns are now established conventions for write endpoints in Phase 4c.5. Future endpoint work (POST /invoices) should follow the same shape.
+- The Tenet #7 scope-correction pattern is worth internalizing: when initial estimates feel "small," verify the assumptions explicitly. The 6-assumption verification at Decision 6 lock time prevented a much larger downstream cost than the 5-10 minutes the verification took.
+- POST /invoices is now the next-natural-step. It's architecturally unblocked (Q1 + Q2 prerequisites implemented), but the design itself requires fresh-session thinking: the request body needs to discriminate between recurring vs setup-fee invoices, validate against the right service function (getExpectedPriceCents vs getSetupFeeCents), and handle the two remaining approval types (invoice.dedupe_ambiguous + invoice.pricing_mismatch) — three things in one endpoint, not the cleaner one-thing-per-endpoint pattern Pieces C and G followed.
+
+**State at session end (final after Decision 4 + Decision 5 + Pieces A/B/C + Q1 + Q2 + Decision 6 complete):**
+
+- Codebase HEAD: master @ `41376751` (plus this docs commit pending)
+- Test baseline: 308 targeted tests passing (+147 total across the day: +37 Decision 4 arc, +26 Decision 5 implementation, +9 Pieces A/B/C, +29 Q1 + Q2, +46 Decision 6 arc; baseline 161 at Session 3 start)
 - Full monorepo typecheck: clean
 - Phase 4c.5 status:
   - Defect 1: FIXED + prod-verified ✅
   - Decision 4 (read dispatcher): FEATURE-COMPLETE ✅
-  - Decision 5 (write dispatcher): FEATURE-COMPLETE + INTEGRATED ✅
+  - Decision 5 (write dispatcher — category): FEATURE-COMPLETE + INTEGRATED ✅
   - POST /transactions/:txnId/category route: SHIPPED end-to-end ✅
   - Q1 (Charter status storage): LOCKED + IMPLEMENTED ✅
   - Q2 (Setup fee handling): LOCKED + IMPLEMENTED ✅
+  - Decision 6 (POST /payments scope): FEATURE-COMPLETE ✅
+  - POST /payments route: SHIPPED end-to-end ✅
   - Q5 (multi-line journal write semantics): still pending (does not gate any endpoint)
 - Phase 4c.5 endpoint roadmap:
   - POST /transactions/:txnId/category: SHIPPED ✅
-  - POST /invoices: NOW FULLY UNBLOCKED — both Q1 (charter status) and Q2 (setup fees) prerequisites implemented and tested. Next step: Invoice endpoint design + ship (the design work itself is fresh-session work; not a mechanical implementation since there are still scope questions like setup-fee-vs-recurring discriminator in request body).
-  - POST /payments: unblocked from Q2 perspective; awaits service signature fixes that were noted in earlier session entries
-- Implementation gaps that are NOT architectural blockers (workflow integration, production seed invocation) tracked in the WIP doc's "What is NOT implemented yet" subsections under Q1 and Q2
+  - POST /payments: SHIPPED ✅
+  - POST /invoices: architecturally unblocked from Q1 + Q2 prerequisites; design work follows. Next step is fresh-session design (request body schema must discriminate between recurring vs setup-fee billing modes; wire to `getExpectedPriceCents` + `isCharterForInvoicing` for recurring, `getSetupFeeCents` for setup; the two remaining approval-dispatcher stubs — invoice.dedupe_ambiguous + invoice.pricing_mismatch — wire as part of this work).
+- Approval dispatcher wiring status: 2 of 4 types WIRED (transaction-category + payment-threshold); 2 of 4 await Invoice endpoint
+- Implementation gaps that are NOT architectural blockers (workflow integration for charter status, production seed invocation for setup fees) continue to be tracked in the WIP doc's "What is NOT implemented yet" subsections under Q1 and Q2
 
 ### Next session (date TBD)
 

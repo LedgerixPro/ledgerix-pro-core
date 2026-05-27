@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED AND IMPLEMENTED + Decision 6 LOCKED — POST /payments scope)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED AND IMPLEMENTED + Decision 6 FEATURE-COMPLETE — POST /payments endpoint SHIPPED end-to-end)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -483,7 +483,7 @@ All 6 in-scope Decision 5 transaction types are now writable through the unified
 
 **Decision 5 unblocks Phase 4c.5 endpoint roadmap:** The category endpoint is now the first fully-functional Phase 4c.5 write endpoint. POST /payments and POST /invoices remain gated on Q1 (charter status) + Q2 (setup fees) architectural decisions, NOT on dispatcher work.
 
-### Decision 6: POST /payments scope (locked 2026-05-27 Session 4)
+### Decision 6: POST /payments scope (LOCKED + FEATURE-COMPLETE 2026-05-27 Session 4)
 
 The write-side dispatcher for payment-to-invoice reconciliation. Q-pay-1 / Q-pay-2 / Q-pay-3 surfaced during pre-implementation verification of the existing `reconcilePayment` function (services/accounting/index.ts:1680) and were locked together as Decision 6 to give /payments the same locked-contract footing Decision 5 gave /category.
 
@@ -626,6 +626,36 @@ This decision unlocks four pieces of work that mirror Pieces A/B/C from Decision
 **Estimated effort:** ~3-4 hours total across the four pieces. Higher than the WIP doc's original "2-3 hours" estimate because the Pre-Decision-6 verification surfaced more scope (threshold integration + approval-replay wiring) than the original gesture suggested.
 
 **Tenet #16 lock notice:** This decision is now LOCKED. Implementation may extend (add optional parameters, helper functions) but must not change the locked service signature, return shape, payload contract, or endpoint response paths without an explicit REVISED note. Sub-decisions discovered during implementation (parallel to Decision 5's Q2-α-i) should be documented in their respective commit messages and closed in the doc closeout.
+
+**Decision 6 COMPLETE (2026-05-27 end-of-Session-4):**
+
+All 4 pieces of the Decision 6 arc are now shipped end-to-end. Implementation arc spanned 5 commits in a single session:
+
+| Commit       | What shipped                                                                                          |
+|--------------|-------------------------------------------------------------------------------------------------------|
+| `0924fb94`   | docs(wip,phase-4c-5): LOCK Decision 6 — POST /payments scope (Q-pay-1 + Q-pay-2 + Q-pay-3)            |
+| `37c55a08`   | Piece D: Service refactor — ReconcilePaymentResult + PaymentReferenceError + split-ref + platform inference |
+| `0d419021`   | Piece F: Shared helpers — resolveEntityRefByPlatform + evaluatePaymentThreshold                        |
+| `46f60b53`   | Piece E: Approval-replay wiring — PAYMENT_THRESHOLD_EXCEEDED stub replaced with real reconcilePayment   |
+| `41376751`   | Piece G: POST /api/accounting/v1/payments route (FEATURE-COMPLETE)                                     |
+
+**Sub-decisions locked DURING implementation (parallel to Decision 5's Q2-α-i pattern):**
+
+- **Q-pay-F-i (LOCKED during Piece F):** Both helpers (`resolveEntityRefByPlatform` + `evaluatePaymentThreshold`) live in a SINGLE new file `payments-helpers.ts`. Rejected: splitting into two files; extending the existing `thresholds.ts`; placing the resolver in `index.ts`. Reasoning: both helpers are payment-specific concerns, single file is more discoverable, keeps `thresholds.ts` generic and `index.ts` from growing.
+
+- **Q-pay-F-ii (LOCKED during Piece F):** v1 ships WITHOUT `expectedRange` in the `PaymentThresholdExceededPayload`. The optional field stays in the locked payload contract for future invoice-balance-comparison work, but `evaluatePaymentThreshold` returns only `thresholdAmount` and the route handler creates approval rows with `expectedRange: undefined`. Rejected: implementing invoice-balance comparison in Piece F (over-scoped); removing `expectedRange` from the payload via REVISED note (loses future option). Reasoning: optional field, contract permits omitting; invoice-balance comparison would double upstream latency per payment request; threshold check alone is sufficient for v1 Trust Tenet #14 compliance.
+
+**Test trajectory across Decision 6 arc:** 281 (post-Piece-D baseline) → 297 (Piece F) → 301 (Piece E) → 308 (Piece G). +27 tests across the implementation arc.
+
+**End-to-end paths now operational:**
+
+1. **Direct programmatic caller:** `reconcilePayment(db, companyId, contactId, invoiceId, amount, ref, paymentDate?)` from `services/accounting/index.ts`. Single canonical service-layer entry point.
+2. **HTTP endpoint:** `POST /api/accounting/v1/payments` with full ADR-003 Q4 + Q5 compliance (202 pending-approval shape + idempotency replay support). Three response paths: 200 success / 202 approval / 400 validation.
+3. **Approval-replay path:** Approved `accounting.payment.threshold_exceeded` rows trigger `reconcilePayment` via `resolveEntityRefByPlatform` (the Piece F helper used by BOTH the route and the replay path — single source of truth for the entityRef-to-split-ref translation).
+
+**Pre-implementation scope correction worth keeping:** The WIP doc's original "POST /payments re-implementation: 2-3 hours (once thresholds + service signature fixes done)" was under-specified. Tenet-#7-driven verification of 6 assumptions about the existing infrastructure surfaced the true scope (zero callers on the existing dispatcher; no threshold integration; no idempotency wiring; void return deviating from 17+ in-file conventions; overloaded entityRef parameter). The verified findings informed Decision 6's lock. Final actual implementation: ~3-4 hours across 5 commits. The pattern "verify before estimating" prevented hours of unscoped work.
+
+**Decision 6 unblocks Phase 4c.5 endpoint roadmap:** POST /payments is the second fully-functional Phase 4c.5 write endpoint after POST /transactions/:txnId/category (Piece C). POST /invoices remains the third — architecturally unblocked from Q1 + Q2 prerequisites (both implemented), but still requires its own design work (request body schema, setup-fee-vs-recurring discriminator, etc.). The two remaining `executeApprovedAccountingWrite` stubs (`accounting.invoice.dedupe_ambiguous` + `accounting.invoice.pricing_mismatch`) await the Invoice endpoint design.
 
 ## Architecture Decisions Pending
 
