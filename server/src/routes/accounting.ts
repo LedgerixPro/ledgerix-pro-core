@@ -3,12 +3,17 @@ import type { Db } from "@paperclipai/db";
 import { HttpError, badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
-import { getAccounts, getBills, getInvoices, getNewTransactions, getReports, type SupportedReportType } from "../services/accounting/index.js";
+import { getAccounts, getBills, getInvoices, getNewTransactions, getReports, reconcilePayment, PaymentReferenceError, type SupportedReportType } from "../services/accounting/index.js";
 import {
   updateTransactionCategory,
   TransactionTypeNotCategorizableError,
 } from "../services/accounting/transaction-write.js";
 import { TransactionNotFoundError } from "../services/accounting/transaction-lookup.js";
+import {
+  resolveEntityRefByPlatform,
+  evaluatePaymentThreshold,
+  EntityRefResolutionError,
+} from "../services/accounting/payments-helpers.js";
 import { approvalService } from "../services/approvals.js";
 import { withIdempotency } from "../services/idempotency.js";
 import { ACCOUNTING_APPROVAL_TYPES } from "../services/accounting/write-approvals.js";
@@ -637,6 +642,270 @@ export function accountingRoutes(db: Db) {
 
     // ---- Response ----
     // Add idempotencyReplay flag to meta per ADR-003 Q5
+    const finalBody = {
+      ...result.body,
+      meta: {
+        ...(result.body.meta as Record<string, unknown>),
+        idempotencyReplay: result.replayed,
+      },
+    };
+    res.status(result.status).json(finalBody);
+  });
+
+  router.post("/accounting/v1/payments", async (req, res) => {
+    const startedAt = Date.now();
+
+    // ---- Body validation ----
+    const body = req.body as {
+      companyId?: unknown;
+      contactId?: unknown;
+      invoiceId?: unknown;
+      amount?: unknown;
+      entityRef?: unknown;
+      paymentDate?: unknown;
+      reason?: unknown;
+    };
+    if (!body || typeof body !== "object") {
+      throw badRequest("Request body required", {
+        code: "missing_body",
+      });
+    }
+    if (typeof body.companyId !== "string" || body.companyId.length === 0) {
+      throw badRequest("Invalid companyId", {
+        code: "invalid_parameter",
+        parameter: "companyId",
+      });
+    }
+    if (typeof body.contactId !== "string" || body.contactId.length === 0 || body.contactId.length > 100) {
+      throw badRequest("Invalid contactId", {
+        code: "invalid_parameter",
+        parameter: "contactId",
+      });
+    }
+    if (typeof body.invoiceId !== "string" || body.invoiceId.length === 0 || body.invoiceId.length > 200) {
+      throw badRequest("Invalid invoiceId", {
+        code: "invalid_parameter",
+        parameter: "invoiceId",
+      });
+    }
+    if (typeof body.amount !== "number" || !Number.isInteger(body.amount) || body.amount <= 0) {
+      throw badRequest("Invalid amount (must be positive integer cents)", {
+        code: "invalid_parameter",
+        parameter: "amount",
+      });
+    }
+    if (typeof body.entityRef !== "string" || body.entityRef.length === 0 || body.entityRef.length > 200) {
+      throw badRequest("Invalid entityRef", {
+        code: "invalid_parameter",
+        parameter: "entityRef",
+      });
+    }
+    if (body.paymentDate !== undefined) {
+      if (typeof body.paymentDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(body.paymentDate)) {
+        throw badRequest("Invalid paymentDate (must be YYYY-MM-DD)", {
+          code: "invalid_parameter",
+          parameter: "paymentDate",
+        });
+      }
+    }
+    if (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 500)) {
+      throw badRequest("Invalid reason", {
+        code: "invalid_parameter",
+        parameter: "reason",
+      });
+    }
+
+    const companyId = body.companyId;
+    const contactId = body.contactId;
+    const invoiceId = body.invoiceId;
+    const amount = body.amount;
+    const entityRef = body.entityRef;
+    const paymentDate = body.paymentDate as string | undefined;
+    const reason = body.reason as string | undefined;
+
+    // ---- Auth ----
+    assertCompanyAccess(req, companyId);
+
+    // ---- Actor context for logging (FK-safe separation handled at approval-creation point) ----
+    const actorId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? null
+        : req.actor.type === "board"
+          ? req.actor.userId ?? null
+          : null;
+
+    // ---- Idempotency wrapping ----
+    // Per ADR-003 Q5 + Piece C pattern: writes that trigger approvals MUST be
+    // idempotent. The entire flow (threshold check + reconcilePayment OR
+    // approval creation) is wrapped so that a retry with the same key returns
+    // the cached response (200 success or 202 pending).
+    const idempotencyKey = req.header("idempotency-key") ?? null;
+
+    const result = await withIdempotency<{
+      status: "success" | "pending_approval";
+      data: Record<string, unknown>;
+      meta: Record<string, unknown>;
+    }>(
+      db,
+      {
+        companyId,
+        key: idempotencyKey,
+        requestBody: body,
+      },
+      async () => {
+        // ---- Step 1: Threshold check (Piece F evaluatePaymentThreshold) ----
+        // Per Decision 6 Q-pay-4: threshold check happens at the route layer
+        // (the only place that creates approval rows with the
+        // PaymentThresholdExceededPayload). Service stays threshold-unaware.
+        const thresholdResult = await evaluatePaymentThreshold(
+          db,
+          contactId,
+          amount,
+        );
+
+        if (thresholdResult.exceeded) {
+          // 202 path: threshold exceeded → create approval row, return 202.
+          // FK-safe actor separation per Piece C pattern.
+          const approval = await approvalService(db).create(companyId, {
+            type: ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
+            status: "pending",
+            requestedByUserId:
+              req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+            requestedByAgentId:
+              req.actor.type === "agent" ? (req.actor.agentId ?? null) : null,
+            payload: {
+              requestType: "POST /api/accounting/v1/payments",
+              companyId,
+              contactId,
+              invoiceId,
+              amount,
+              entityRef,
+              paymentDate: paymentDate ?? null,
+              reason: reason ?? null,
+              idempotencyKey: idempotencyKey ?? null,
+              thresholdAmount: thresholdResult.thresholdAmount!,
+              // expectedRange omitted per sub-decision Q-pay-F-ii
+              // (v1 ships without invoice-balance comparison)
+            } as Record<string, unknown>,
+          });
+
+          return {
+            status: 202,
+            body: {
+              status: "pending_approval" as const,
+              data: {
+                approvalId: approval.id,
+                approvalType: ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
+                reason:
+                  thresholdResult.reason ??
+                  `Payment amount ${amount} cents exceeds the applicable threshold ` +
+                    `(${thresholdResult.thresholdAmount} cents). Approval required.`,
+              },
+              meta: {
+                performedAt: new Date().toISOString(),
+                latencyMs: Date.now() - startedAt,
+              },
+            },
+          };
+        }
+
+        // ---- Step 2: Threshold not exceeded → execute payment directly ----
+        try {
+          // Translate the payload's overloaded entityRef into the service's
+          // split ref via the Piece F helper. Same translation logic used by
+          // the approval-replay path (Piece E) — single source of truth.
+          const resolved = await resolveEntityRefByPlatform(
+            db,
+            companyId,
+            contactId,
+            entityRef,
+          );
+
+          // Execute the payment via the Decision 6 dispatcher.
+          const writeResult = await reconcilePayment(
+            db,
+            companyId,
+            contactId,
+            invoiceId,
+            amount,
+            resolved.ref,
+            paymentDate,
+          );
+
+          // 200 success path.
+          return {
+            status: 200,
+            body: {
+              status: "success" as const,
+              data: {
+                platform: writeResult.platform,
+                paymentId: writeResult.paymentId,
+                invoiceId: writeResult.invoiceId,
+                amount: writeResult.amount,
+                customerId: writeResult.customerId,
+                accountId: writeResult.accountId,
+                paymentDate: writeResult.paymentDate,
+              },
+              meta: {
+                performedAt: new Date().toISOString(),
+                latencyMs: Date.now() - startedAt,
+              },
+            },
+          };
+        } catch (err) {
+          // ENTITY REF RESOLUTION FAILURE → 400 (the connection-state-dependent
+          // problems are caller-correctable; surface them honestly).
+          if (err instanceof EntityRefResolutionError) {
+            throw badRequest(
+              `Entity ref resolution failed: ${err.reason}`,
+              {
+                code: "entity_ref_resolution_failed",
+                reason: err.reason,
+                resolvedPlatform: err.resolvedPlatform,
+              },
+            );
+          }
+
+          // PAYMENT REFERENCE VALIDATION FAILURE → 400 (the supplied ref doesn't
+          // match the resolved platform — caller-correctable).
+          if (err instanceof PaymentReferenceError) {
+            throw badRequest(
+              `Payment reference invalid for platform ${err.platform}: ${err.reason}`,
+              {
+                code: "payment_reference_invalid",
+                platform: err.platform,
+                reason: err.reason,
+              },
+            );
+          }
+
+          // Other errors propagate (HttpResponseError, network failures, etc.)
+          // Caught by the global error handler — typically 502 or 500.
+          throw err;
+        }
+      },
+    );
+
+    // ---- Logger info ----
+    logger.info(
+      {
+        actorType: req.actor.type,
+        actorId,
+        companyId,
+        contactId,
+        invoiceId,
+        amount,
+        endpoint: "POST /api/accounting/v1/payments",
+        outcomeStatus: result.body.status,
+        httpStatus: result.status,
+        replayed: result.replayed,
+        idempotencyKeyPresent: idempotencyKey !== null,
+        latencyMs: Date.now() - startedAt,
+      },
+      "accounting.payments.post",
+    );
+
+    // ---- Response with idempotencyReplay flag ----
     const finalBody = {
       ...result.body,
       meta: {

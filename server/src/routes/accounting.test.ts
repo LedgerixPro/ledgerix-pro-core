@@ -1933,3 +1933,365 @@ describe("POST /api/accounting/v1/transactions/:txnId/category", () => {
     expect(updateTransactionCategory).not.toHaveBeenCalled();
   });
 });
+
+// ============================================================================
+// POST /api/accounting/v1/payments (Decision 6 Piece G)
+// ============================================================================
+
+// Re-declare the accounting/index.js mock including reconcilePayment.
+// Vitest hoists all vi.mock calls and the last definition for a given module
+// path wins. Earlier blocks for accounting/index.js (lines 7, 422, 694, 972,
+// 1251) all already include the same `...actual` spread and accumulate the
+// previously-mocked functions. We re-list those existing functions here so
+// the route's existing callers (getNewTransactions, getBills, getInvoices,
+// getAccounts, getReports) continue to resolve to spies, and we add
+// reconcilePayment for Piece G's needs.
+vi.mock("../services/accounting/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/index.js")>();
+  return {
+    ...actual,
+    getNewTransactions: vi.fn(),
+    getBills: vi.fn(),
+    getInvoices: vi.fn(),
+    getAccounts: vi.fn(),
+    getReports: vi.fn(),
+    reconcilePayment: vi.fn(),
+  };
+});
+
+vi.mock("../services/accounting/payments-helpers.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/payments-helpers.js")>();
+  return {
+    ...actual,
+    resolveEntityRefByPlatform: vi.fn(),
+    evaluatePaymentThreshold: vi.fn(),
+  };
+});
+
+import { reconcilePayment, PaymentReferenceError } from "../services/accounting/index.js";
+import {
+  resolveEntityRefByPlatform,
+  evaluatePaymentThreshold,
+  EntityRefResolutionError,
+} from "../services/accounting/payments-helpers.js";
+
+describe("POST /api/accounting/v1/payments", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // Default withIdempotency: pass-through (no idempotency key → real
+    // semantics), just runs the work and returns { ...result, replayed: false }
+    vi.mocked(withIdempotency).mockImplementation(async (_db, _opts, work) => {
+      const r = await work();
+      return { ...r, replayed: false };
+    });
+  });
+
+  it("returns 200 with payment result when threshold is not exceeded", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({ exceeded: false });
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "quickbooks",
+      ref: { customerId: "cust-1" },
+    });
+    vi.mocked(reconcilePayment).mockResolvedValueOnce({
+      platform: "quickbooks",
+      paymentId: "qbo-pay-1",
+      invoiceId: "inv-1",
+      amount: 50000,
+      customerId: "cust-1",
+      accountId: undefined,
+      paymentDate: "2026-05-27",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-1",
+        amount: 50000,
+        entityRef: "cust-1",
+        paymentDate: "2026-05-27",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("success");
+    expect(res.body.data).toEqual({
+      platform: "quickbooks",
+      paymentId: "qbo-pay-1",
+      invoiceId: "inv-1",
+      amount: 50000,
+      customerId: "cust-1",
+      accountId: undefined,
+      paymentDate: "2026-05-27",
+    });
+    expect(res.body.meta.idempotencyReplay).toBe(false);
+    expect(typeof res.body.meta.performedAt).toBe("string");
+    expect(typeof res.body.meta.latencyMs).toBe("number");
+
+    // Threshold check called with payload values
+    expect(evaluatePaymentThreshold).toHaveBeenCalledWith(
+      fakeDb,
+      "test-contact-id",
+      50000,
+    );
+    // Resolver + dispatcher called with payload values
+    expect(resolveEntityRefByPlatform).toHaveBeenCalledWith(
+      fakeDb,
+      POST_COMPANY_ID,
+      "test-contact-id",
+      "cust-1",
+    );
+    expect(reconcilePayment).toHaveBeenCalledWith(
+      fakeDb,
+      POST_COMPANY_ID,
+      "test-contact-id",
+      "inv-1",
+      50000,
+      { customerId: "cust-1" },
+      "2026-05-27",
+    );
+  });
+
+  it("returns 202 + creates approval when threshold is exceeded (board actor)", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({
+      exceeded: true,
+      thresholdAmount: 1000000,
+      reason: "Payment amount exceeds $10,000 threshold per EA Section 6.3",
+    });
+
+    const fakeApproval = {
+      id: "approval-pay-1",
+      companyId: POST_COMPANY_ID,
+      type: "accounting.payment.threshold_exceeded",
+      status: "pending",
+    };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({
+      create: createMock,
+    } as any);
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-large",
+        amount: 1500000, // $15,000, exceeds $10K threshold
+        entityRef: "cust-1",
+        paymentDate: "2026-05-27",
+        reason: "Annual platform fee",
+      });
+
+    expect(res.status).toBe(202);
+    expect(res.body.status).toBe("pending_approval");
+    expect(res.body.data.approvalId).toBe("approval-pay-1");
+    expect(res.body.data.approvalType).toBe(
+      "accounting.payment.threshold_exceeded",
+    );
+    expect(res.body.data.reason).toContain("$10,000 threshold");
+    expect(res.body.meta.idempotencyReplay).toBe(false);
+
+    // Short-circuit: resolver + dispatcher NOT called on threshold-exceed path
+    expect(resolveEntityRefByPlatform).not.toHaveBeenCalled();
+    expect(reconcilePayment).not.toHaveBeenCalled();
+
+    // Approval payload structure
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const [createdCompanyId, createPayload] = createMock.mock.calls[0];
+    expect(createdCompanyId).toBe(POST_COMPANY_ID);
+    expect(createPayload.type).toBe("accounting.payment.threshold_exceeded");
+    expect(createPayload.status).toBe("pending");
+    // FK separation: board actor → requestedByUserId set, requestedByAgentId null
+    expect(createPayload.requestedByUserId).toBe("test-user");
+    expect(createPayload.requestedByAgentId).toBeNull();
+    expect(createPayload.payload).toMatchObject({
+      requestType: "POST /api/accounting/v1/payments",
+      companyId: POST_COMPANY_ID,
+      contactId: "test-contact-id",
+      invoiceId: "inv-large",
+      amount: 1500000,
+      entityRef: "cust-1",
+      paymentDate: "2026-05-27",
+      reason: "Annual platform fee",
+      thresholdAmount: 1000000,
+    });
+    // Per sub-decision Q-pay-F-ii: v1 omits expectedRange even though the
+    // payload contract leaves it as an optional field
+    expect(createPayload.payload.expectedRange).toBeUndefined();
+  });
+
+  it("uses requestedByAgentId (not requestedByUserId) when actor is an agent and threshold is exceeded", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({
+      exceeded: true,
+      thresholdAmount: 1000000,
+      reason: "Threshold exceeded",
+    });
+
+    const fakeApproval = { id: "approval-pay-agent-1" };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({
+      create: createMock,
+    } as any);
+
+    const agentActor: ActorOverride = {
+      type: "agent",
+      agentId: "agent-pay-xyz",
+      companyId: POST_COMPANY_ID,
+      source: "agent_key",
+    };
+    const app = buildTestApp(agentActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-large",
+        amount: 1500000,
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(202);
+    expect(res.body.data.approvalId).toBe("approval-pay-agent-1");
+
+    // FK separation: agent actor → requestedByAgentId set, requestedByUserId null
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const [, createPayload] = createMock.mock.calls[0];
+    expect(createPayload.requestedByUserId).toBeNull();
+    expect(createPayload.requestedByAgentId).toBe("agent-pay-xyz");
+  });
+
+  it("returns 400 when EntityRefResolutionError is thrown (no_connection_found)", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({ exceeded: false });
+    vi.mocked(resolveEntityRefByPlatform).mockRejectedValueOnce(
+      new EntityRefResolutionError(POST_COMPANY_ID, "test-contact-id", "no_connection_found"),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-1",
+        amount: 50000,
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Entity ref resolution failed");
+    expect(res.body.details).toMatchObject({
+      code: "entity_ref_resolution_failed",
+      reason: "no_connection_found",
+    });
+    // reconcilePayment must NOT have been called since the resolver failed first
+    expect(reconcilePayment).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when PaymentReferenceError is thrown (wrong_ref_for_platform)", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({ exceeded: false });
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "xero",
+      ref: { accountId: "acct-1" },
+    });
+    vi.mocked(reconcilePayment).mockRejectedValueOnce(
+      new PaymentReferenceError(
+        POST_COMPANY_ID,
+        "test-contact-id",
+        "xero",
+        { accountId: "acct-1" },
+        "wrong_ref_for_platform",
+      ),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-1",
+        amount: 50000,
+        entityRef: "acct-1",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Payment reference invalid for platform xero");
+    expect(res.body.details).toMatchObject({
+      code: "payment_reference_invalid",
+      platform: "xero",
+      reason: "wrong_ref_for_platform",
+    });
+  });
+
+  it("returns 400 when amount is missing from body", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-1",
+        // amount intentionally omitted
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid amount (must be positive integer cents)");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_parameter",
+      parameter: "amount",
+    });
+    // No service-layer calls — validation rejected first
+    expect(evaluatePaymentThreshold).not.toHaveBeenCalled();
+    expect(resolveEntityRefByPlatform).not.toHaveBeenCalled();
+    expect(reconcilePayment).not.toHaveBeenCalled();
+  });
+
+  it("returns idempotencyReplay: true when withIdempotency reports a replay", async () => {
+    // Override the default beforeEach withIdempotency mock with a replay
+    vi.mocked(withIdempotency).mockResolvedValueOnce({
+      status: 200,
+      body: {
+        status: "success",
+        data: {
+          platform: "quickbooks",
+          paymentId: "qbo-pay-cached",
+          invoiceId: "inv-1",
+          amount: 50000,
+          customerId: "cust-1",
+          accountId: undefined,
+          paymentDate: "2026-05-27",
+        },
+        meta: {
+          performedAt: "2026-05-27T10:00:00.000Z",
+          latencyMs: 12,
+        },
+      },
+      replayed: true, // <-- the replay signal
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .set("Idempotency-Key", "test-pay-idempotency-key-xyz")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-1",
+        amount: 50000,
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("success");
+    expect(res.body.data.paymentId).toBe("qbo-pay-cached");
+    expect(res.body.meta.idempotencyReplay).toBe(true);
+
+    // Inner work should NOT have been invoked — withIdempotency returned cached
+    expect(evaluatePaymentThreshold).not.toHaveBeenCalled();
+    expect(resolveEntityRefByPlatform).not.toHaveBeenCalled();
+    expect(reconcilePayment).not.toHaveBeenCalled();
+  });
+});
