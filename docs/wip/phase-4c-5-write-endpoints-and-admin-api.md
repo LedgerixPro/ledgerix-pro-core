@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 FEATURE-COMPLETE — all 11 types covered across QBO + Xero)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 FEATURE-COMPLETE + Decision 5 LOCKED — write-side dispatcher scope)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -322,6 +322,119 @@ All items SHIPPED Session 4. Decision 4 is feature-complete.
 - Integration tests via embedded Postgres for `accounting_connections` queries (same pattern established for compareAndSeed in Session 3).
 - Per-type fetch handler tests use mocked QBO/Xero responses (the platform APIs themselves don't need to be hit during tests).
 - Production verification once shipped: call `getTransactionById` against Enyrgy Inc's real Xero data for each implemented type, confirm `previousAccountRef` matches what's in the Xero UI.
+
+---
+
+### Decision 5: Write-side dispatcher scope (locked 2026-05-27 mid-Session 4)
+
+**Locked.** Per-type write handlers behind a unified `updateTransactionCategory` dispatcher. Covers 6 of 11 transaction types from Decision 4 — the asymmetry is by design and matches QBO/Xero API reality.
+
+**Background and reasoning:**
+
+Decision 4 (read-side) ships per-type `fetchXxx` handlers behind `getTransactionById`, covering all 11 transaction types so writes can capture `previousAccountRef` for audit trails. Decision 5 is the WRITE-side counterpart: it ships per-type `updateXxxAccount` handlers behind `updateTransactionCategory`, dispatching from a registry similar to Decision 4's `QBO_TYPE_REGISTRY` / `XERO_TYPE_REGISTRY`.
+
+A naive symmetric approach would replicate Decision 4's 11-type coverage on the write side. Verification against QBO/Xero APIs surfaced two reasons that doesn't work:
+
+1. **Some types don't have a meaningful "category" to update.** For BillPayment and Payment, the relevant account refs are top-level (CheckPayment.BankAccountRef, DepositToAccountRef, ARAccountRef) — re-categorizing means reassigning the funds-source or funds-destination, not categorizing the transaction. For QBO Invoice, the line account refs come from Items (Item → income account mapping), so changing the category requires reassigning the Item, not directly editing the AccountRef.
+
+2. **Multi-line journals require Debit/Credit balance preservation.** For JournalEntry and ManualJournal, updating only the first line's AccountRef would break the journal's balance. Safe write semantics require either updating offsetting lines simultaneously or constraining the operation to specific cases (e.g., single-line journals only). This is its own architectural problem and warrants its own decision.
+
+**Per Tenet #14 (Trust Tenet)** — "no partial-spec compliance on safety-critical write endpoints" — Decision 5 is scoped to the types where category-update writes are safe and well-defined. Unsupported types are explicitly enumerated below; multi-line journals are deferred to a future Q5 decision.
+
+**Scope — types IN Decision 5 (6 types, write registry):**
+
+| Platform | Type            | Write endpoint                  | Field to mutate                                |
+|----------|-----------------|---------------------------------|------------------------------------------------|
+| QBO      | Purchase        | POST /purchase?operation=update | Line[0].AccountBasedExpenseLineDetail.AccountRef |
+| QBO      | Bill            | POST /bill?operation=update     | Line[0].AccountBasedExpenseLineDetail.AccountRef |
+| QBO      | Deposit         | POST /deposit?operation=update  | Line[0].DepositLineDetail.AccountRef           |
+| Xero     | BankTransaction | POST /BankTransactions          | LineItems[0].AccountCode                       |
+| Xero     | Invoice (ACCREC)| POST /Invoices                  | LineItems[0].AccountCode                       |
+| Xero     | Bill (ACCPAY)   | POST /Invoices                  | LineItems[0].AccountCode                       |
+
+Note: Xero Invoice and Bill share the same write endpoint, mirroring the read-side shared-handler pattern from Decision 4's REVISED note. The same `updateXeroInvoiceOrBill` handler will serve both registry keys.
+
+**Scope — types EXPLICITLY EXCLUDED from Decision 5 (5 types):**
+
+| Type             | Why excluded                                                                          |
+|------------------|---------------------------------------------------------------------------------------|
+| QBO BillPayment  | Account refs are top-level (CheckPayment.BankAccountRef OR CreditCardPayment.CCAccountRef) — not a "category" to categorize but a funds-source to reassign. Distinct operation. |
+| QBO Payment      | Same as BillPayment — top-level DepositToAccountRef / ARAccountRef are funds-flow accounts, not categorization. |
+| QBO Invoice      | Line account refs come from Items (`ItemRef` → ItemAccountRef on GET only). Changing the account requires reassigning the Item or editing the Item itself — not a direct AccountRef edit. |
+| QBO JournalEntry | Multi-line Debit/Credit pairing — updating one line breaks balance. Deferred to Q5 decision. |
+| Xero ManualJournal | Same as QBO JournalEntry — multi-line Debit/Credit pairing. Deferred to Q5 decision. |
+
+**Unified interface contract:**
+
+```ts
+interface UpdateTransactionCategoryResult {
+  platform: "quickbooks" | "xero";
+  txnType: string;
+  txnId: string;
+  previousAccountRef: string | null;
+  newAccountRef: string;
+}
+
+// Thrown by updateTransactionCategory when the type returned by the read
+// dispatcher is not in the write registry. Distinct from TransactionNotFoundError
+// (which is thrown by getTransactionById when no platform GET succeeds).
+export class TransactionTypeNotCategorizableError extends Error {
+  constructor(
+    public readonly platform: "quickbooks" | "xero",
+    public readonly txnType: string,
+    public readonly txnId: string,
+  ) {
+    super(`Transaction type ${platform}.${txnType} (txnId=${txnId}) does not support category updates. See Decision 5 in WIP doc for the supported-type list.`);
+    this.name = "TransactionTypeNotCategorizableError";
+  }
+}
+
+export async function updateTransactionCategory(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+  newAccountRef: string,
+): Promise<UpdateTransactionCategoryResult>;
+```
+
+**Locked behavior:**
+
+1. Call `getTransactionById(db, companyId, contactId, txnId)` — Decision 4 dispatcher returns the transaction with its `previousAccountRef` and resolved `txnType`.
+2. Look up the write handler in the appropriate `QBO_WRITE_REGISTRY` or `XERO_WRITE_REGISTRY` (keyed by `txnType`).
+3. If no write handler is registered for this type → throw `TransactionTypeNotCategorizableError`. Endpoint callers map this to HTTP 400 with a clear "type not supported" message.
+4. If a write handler exists → call it with the lookup's `raw` field, the `newAccountRef`, and the existing platform clients (`qboRequest`/`xeroRequest`).
+5. The write handler mutates the relevant line field in the `raw` object and POSTs the update to the platform.
+6. Return `UpdateTransactionCategoryResult` with `previousAccountRef` from the lookup, `newAccountRef` passed through, and the resolved `platform` + `txnType`.
+
+**Implementation pattern (mirrors Decision 4's Path Y discipline):**
+
+For each of the 6 supported types:
+1. A `WriteHandler` function (`updateQboPurchaseAccount`, `updateXeroBankTransactionAccount`, etc.) that takes the lookup result + new account ref + platform clients.
+2. Registration in `QBO_WRITE_REGISTRY` or `XERO_WRITE_REGISTRY`.
+3. Per-handler unit tests covering the happy path + any platform-specific quirks.
+4. The existing single-type write functions in `services/accounting/index.ts` (`qbo.updateTransactionAccount` for Purchase only, `xero.updateTransactionAccount` for BankTransaction only) are refactored to use the new dispatcher with `hintedType` set, matching the Decision 4 read-side refactor pattern.
+
+**Out of scope for Decision 5 (deferred):**
+
+- **Q5: Multi-line journal write semantics.** JournalEntry (QBO) and ManualJournal (Xero) writes require Debit/Credit balance preservation logic. Architectural problem worth its own decision. Pending.
+- BillPayment / Payment / QBO Invoice category-update semantics — these types fundamentally don't fit a "category update" operation; if a future use case emerges (e.g., reassigning a Payment's destination account), it would be a separate endpoint with different semantics, not an extension of Decision 5.
+- Bulk category updates (categorize multiple txns in one call). Single-transaction scope only for v1.
+
+**Blast radius:**
+
+- New code: `transaction-write.ts` module (or extension to `transaction-lookup.ts`) with the write registries and 5 handler functions (Xero Invoice + Bill share one handler — 6 supported types, 5 handler functions).
+- Refactor: `qbo.updateTransactionAccount` and `xero.updateTransactionAccount` in `services/accounting/index.ts` to use the new dispatcher with `hintedType` set. These functions are currently called only by Phase 1's Decision 4 refactor and existing bookkeeping agent paths.
+- Existing service-level `updateTransactionCategory` (line ~1745 of `services/accounting/index.ts`) gets significantly rewritten — currently type-narrow with the obsolete "v1 limitation" docstring; becomes the public-facing dispatcher caller.
+- Tests: at minimum 6 new write-handler tests + dispatcher orchestration tests + `TransactionTypeNotCategorizableError` tests for the 5 unsupported types (verify the right error gets thrown).
+
+**Verification approach:**
+
+For each supported type, verify the write endpoint and field mutation against the QBO/Xero API docs BEFORE writing the handler. Path Y discipline from Decision 4: one type per commit (or tight batched commits where structurally identical), API verification before code, dedicated tests per code path. The dispatcher's behavior on unsupported types gets dedicated tests too — `TransactionTypeNotCategorizableError` must be thrown with the right platform/txnType/txnId for each of the 5 excluded types.
+
+**Estimated effort:** ~3-4 hours for full Decision 5 implementation (dispatcher + 5 handlers + tests + service-layer integration). Less than Decision 4's effort because read-side dispatcher patterns are now established and the per-handler work is mechanical.
+
+**Decision 5 unblocks:** The POST /transactions/:txnId/category endpoint re-implementation. Once Decision 5 ships, the endpoint becomes a thin wrapper around `updateTransactionCategory` with: success → 200, `TransactionNotFoundError` → 202 + approval creation, `TransactionTypeNotCategorizableError` → 400.
 
 ## Architecture Decisions Pending
 
