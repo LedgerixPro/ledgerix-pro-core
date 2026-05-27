@@ -152,6 +152,49 @@ export interface Report {
   rows: ReportRow[];
 }
 
+// Decision 6 (locked 2026-05-27, see docs/wip/phase-4c-5-write-endpoints-and-admin-api.md):
+// Audit-trail return shape for payment-to-invoice reconciliation. Parallels
+// Decision 5's UpdateTransactionCategoryResult. The platform-assigned paymentId
+// is the critical audit field — previously discarded by void returns.
+export interface ReconcilePaymentResult {
+  platform: "quickbooks" | "xero";
+  // Platform-assigned Payment ID (from the QBO Payment.Id or Xero Payments[0].PaymentID
+  // response field). The audit-trail anchor.
+  paymentId: string;
+  invoiceId: string;
+  amount: number; // cents (echoed for caller convenience)
+  // Populated only when platform === "quickbooks"
+  customerId?: string;
+  // Populated only when platform === "xero"
+  accountId?: string;
+  // Resolved date. For QBO: caller-provided or server-default (today). For Xero:
+  // caller-provided (required by Xero — defaulted to today's ISO date if caller omitted).
+  paymentDate: string;
+}
+
+// Decision 6 typed error: caller-side ref validation fails when neither customerId
+// nor accountId is supplied, or when the supplied ref doesn't match the resolved
+// platform. Distinguishable from unknown errors so the route handler can return 400.
+export class PaymentReferenceError extends Error {
+  constructor(
+    public readonly companyId: string,
+    public readonly contactId: string | null,
+    public readonly platform: "quickbooks" | "xero",
+    public readonly suppliedRef: { customerId?: string; accountId?: string },
+    public readonly reason:
+      | "no_ref_supplied"
+      | "wrong_ref_for_platform"
+      | "both_refs_supplied",
+  ) {
+    super(
+      `Payment reference invalid for platform=${platform} ` +
+        `(reason=${reason}): supplied customerId=${suppliedRef.customerId ?? "null"}, ` +
+        `accountId=${suppliedRef.accountId ?? "null"}`,
+    );
+    this.name = "PaymentReferenceError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // QBO Report raw types (P&L, Balance Sheet, Cash Flow, Trial Balance share
 // this general structure; per-row contents differ by report)
@@ -796,7 +839,9 @@ export const qbo = {
     return [...purchases, ...deposits, ...transfers];
   },
 
-  // Apply a Payment to an Invoice. QBO server defaults TxnDate to today.
+  // Apply a Payment to an Invoice. QBO server defaults TxnDate to today when
+  // not supplied. Per Decision 6: captures the platform-assigned Payment.Id
+  // from the QBO response and returns the full audit-trail shape.
   async applyPaymentToInvoice(
     db: Db,
     companyId: string,
@@ -804,8 +849,11 @@ export const qbo = {
     invoiceId: string,
     amount: number,
     customerId: string,
-  ): Promise<void> {
-    const body = {
+    paymentDate?: string,
+  ): Promise<ReconcilePaymentResult> {
+    // Build request body. TxnDate is optional — QBO server-defaults to today
+    // when omitted.
+    const body: Record<string, unknown> = {
       CustomerRef: { value: customerId },
       TotalAmt: amount,
       Line: [
@@ -815,11 +863,41 @@ export const qbo = {
         },
       ],
     };
-    await qboRequest(db, companyId, contactId, "POST", "/payment", body);
+    if (paymentDate) {
+      body.TxnDate = paymentDate;
+    }
+
+    // QBO create-payment response shape (verified via web research 2026-05-27
+    // and the QBO Online API docs): { Payment: { Id: string, TxnDate: string,
+    // ...sparse other fields }, time: string }. We capture only the fields we
+    // need for the audit-trail return.
+    const res = await qboRequest<{
+      Payment: { Id: string; TxnDate?: string };
+    }>(db, companyId, contactId, "POST", "/payment", body);
+
+    const resolvedDate = res.Payment.TxnDate ?? paymentDate ?? new Date().toISOString().slice(0, 10);
+
     logger.info(
-      { companyId, contactId, invoiceId, amount, customerId },
+      {
+        companyId,
+        contactId,
+        invoiceId,
+        amount,
+        customerId,
+        paymentId: res.Payment.Id,
+        paymentDate: resolvedDate,
+      },
       "QBO Payment applied to Invoice",
     );
+
+    return {
+      platform: "quickbooks",
+      paymentId: res.Payment.Id,
+      invoiceId,
+      amount,
+      customerId,
+      paymentDate: resolvedDate,
+    };
   },
 
   // Find a Customer by email (preferred) or DisplayName, creating one if neither
@@ -1316,6 +1394,8 @@ export const xero = {
   },
 
   // Apply a Payment to an Invoice. Xero requires Date — caller passes YYYY-MM-DD.
+  // Per Decision 6: captures the platform-assigned PaymentID from the Xero
+  // response and returns the full audit-trail shape.
   async applyPaymentToInvoice(
     db: Db,
     companyId: string,
@@ -1323,23 +1403,59 @@ export const xero = {
     invoiceId: string,
     amount: number,
     accountId: string,
-    date: string,
-  ): Promise<void> {
+    paymentDate: string,
+  ): Promise<ReconcilePaymentResult> {
     const body = {
       Payments: [
         {
           Invoice: { InvoiceID: invoiceId },
           Account: { AccountID: accountId },
           Amount: amount,
-          Date: date,
+          Date: paymentDate,
         },
       ],
     };
-    await xeroRequest(db, companyId, contactId, "POST", "/Payments", body);
+
+    // Xero create-payment response shape (verified via web research 2026-05-27
+    // and the Xero Developer API docs): { Payments: Array<{ PaymentID: string,
+    // ...other fields }> }. Plural-key array wrapper matches the request body
+    // convention. We capture only PaymentID for the audit-trail return.
+    const res = await xeroRequest<{
+      Payments: Array<{ PaymentID: string }>;
+    }>(db, companyId, contactId, "POST", "/Payments", body);
+
+    if (!res.Payments || res.Payments.length === 0) {
+      // Defensive: Xero returns an array; if it's empty, the request "succeeded"
+      // at HTTP level but produced no Payment. Treat as upstream malformed
+      // response — propagate so the caller surfaces a 502.
+      throw new Error(
+        `Xero /Payments POST returned no Payments in response (invoiceId=${invoiceId}, amount=${amount})`,
+      );
+    }
+
+    const paymentId = res.Payments[0].PaymentID;
+
     logger.info(
-      { companyId, contactId, invoiceId, amount, accountId, date },
+      {
+        companyId,
+        contactId,
+        invoiceId,
+        amount,
+        accountId,
+        paymentDate,
+        paymentId,
+      },
       "Xero Payment applied to Invoice",
     );
+
+    return {
+      platform: "xero",
+      paymentId,
+      invoiceId,
+      amount,
+      accountId,
+      paymentDate,
+    };
   },
 };
 
@@ -1674,25 +1790,97 @@ export async function updateTransactionCategory(
   };
 }
 
-// Platform-agnostic payment-to-invoice reconciliation. For QBO, entityRef is a
-// CustomerId; for Xero it is the AccountID receiving the payment. Date defaults
-// to today's ISO date (YYYY-MM-DD) when omitted — required by Xero, ignored by QBO.
+// Platform-agnostic payment-to-invoice reconciliation per Decision 6 (locked
+// 2026-05-27, see docs/wip/phase-4c-5-write-endpoints-and-admin-api.md).
+//
+// Q-pay-1: Platform is INFERRED from the accountingConnections lookup for
+// (companyId, contactId), matching the Decision 4/5 dispatcher pattern.
+// Callers do not pass platform.
+//
+// Q-pay-2: The entityRef is split into two typed optional parameters:
+// customerId (QBO) and accountId (Xero). Exactly one must be supplied,
+// and it must match the resolved platform. Service throws
+// PaymentReferenceError otherwise.
+//
+// Q-pay-3: Returns the full ReconcilePaymentResult audit-trail shape
+// with platform-assigned paymentId. Replaces the previous void return.
 export async function reconcilePayment(
   db: Db,
   companyId: string,
   contactId: string | null,
-  platform: "quickbooks" | "xero",
   invoiceId: string,
-  amount: number,
-  entityRef: string,
-  date?: string,
-): Promise<void> {
-  const effectiveDate = date ?? new Date().toISOString().slice(0, 10);
+  amount: number, // cents
+  ref: { customerId?: string; accountId?: string },
+  paymentDate?: string,
+): Promise<ReconcilePaymentResult> {
+  // Step 1: resolve platform from the accountingConnections table for
+  // (companyId, contactId). Matches the lookup pattern at
+  // transaction-lookup.ts:717.
+  const connection = await db
+    .select({ platform: accountingConnections.platform })
+    .from(accountingConnections)
+    .where(
+      and(
+        eq(accountingConnections.companyId, companyId),
+        contactFilter(contactId),
+      ),
+    )
+    .limit(1);
+
+  if (connection.length === 0) {
+    throw new Error(
+      `No accounting connection found for companyId=${companyId} contactId=${contactId}`,
+    );
+  }
+
+  const platform = connection[0].platform;
+  if (platform !== "quickbooks" && platform !== "xero") {
+    throw new Error(`Unsupported platform for reconcilePayment: ${platform}`);
+  }
+
+  // Step 2: validate the ref split. Exactly one of customerId/accountId
+  // must be provided, and it must match the resolved platform.
+  const hasCustomer = typeof ref.customerId === "string" && ref.customerId.length > 0;
+  const hasAccount = typeof ref.accountId === "string" && ref.accountId.length > 0;
+
+  if (!hasCustomer && !hasAccount) {
+    throw new PaymentReferenceError(companyId, contactId, platform, ref, "no_ref_supplied");
+  }
+  if (hasCustomer && hasAccount) {
+    throw new PaymentReferenceError(companyId, contactId, platform, ref, "both_refs_supplied");
+  }
+  if (platform === "quickbooks" && !hasCustomer) {
+    throw new PaymentReferenceError(companyId, contactId, platform, ref, "wrong_ref_for_platform");
+  }
+  if (platform === "xero" && !hasAccount) {
+    throw new PaymentReferenceError(companyId, contactId, platform, ref, "wrong_ref_for_platform");
+  }
+
+  // Step 3: dispatch to the platform-specific implementation. Date defaults
+  // to today's ISO date when caller omitted; both platforms accept the
+  // optional date (QBO server-defaults internally; Xero requires it).
+  const effectiveDate = paymentDate ?? new Date().toISOString().slice(0, 10);
+
   if (platform === "quickbooks") {
-    return qbo.applyPaymentToInvoice(db, companyId, contactId, invoiceId, amount, entityRef);
+    return qbo.applyPaymentToInvoice(
+      db,
+      companyId,
+      contactId,
+      invoiceId,
+      amount,
+      ref.customerId!, // validated above
+      paymentDate, // pass undefined through if caller omitted, so QBO uses its server default
+    );
   }
-  if (platform === "xero") {
-    return xero.applyPaymentToInvoice(db, companyId, contactId, invoiceId, amount, entityRef, effectiveDate);
-  }
-  throw new Error(`Unsupported platform: ${platform}`);
+
+  // platform === "xero"
+  return xero.applyPaymentToInvoice(
+    db,
+    companyId,
+    contactId,
+    invoiceId,
+    amount,
+    ref.accountId!, // validated above
+    effectiveDate, // Xero requires a date
+  );
 }
