@@ -1,5 +1,10 @@
 import type { Db, approvals } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
+import {
+  updateTransactionCategory,
+  TransactionTypeNotCategorizableError,
+} from "./transaction-write.js";
+import { TransactionNotFoundError } from "./transaction-lookup.js";
 
 // Write-approval dispatcher for Phase 4c safety architecture per ADR-003 Q3.
 //
@@ -15,13 +20,17 @@ import { logger } from "../../middleware/logger.js";
 // after updating the approval status. This mirrors how 'hire_agent' approvals
 // trigger agent activation today.
 //
-// IMPORTANT: This module deliberately does NOT execute writes against QBO/Xero
-// in Phase 4c.4. The dispatcher logs the approved-write event and updates
-// the approval payload with "executed" status, but the actual upstream write
-// is performed by Phase 4c.5 when the re-shipped write endpoints exist.
-// In Phase 4c.4, executeApprovedAccountingWrite() functions as a routing/logging
-// stub that records what WOULD be executed; Phase 4c.5 wires it to the real
-// service-layer write functions.
+// PHASE 4c.5 WIRING STATUS (2026-05-27):
+//   - accounting.transaction.category_with_unknown_previous: WIRED to the
+//     Decision 5 dispatcher (updateTransactionCategory). Execute now replays
+//     the original POST /transactions/:txnId/category request from the
+//     payload per ADR-003 Q2 design intent.
+//   - accounting.payment.threshold_exceeded: STILL A STUB. Will be wired
+//     when the POST /payments endpoint is re-implemented (pending Q1/Q2
+//     architectural decisions).
+//   - accounting.invoice.dedupe_ambiguous: STILL A STUB. Will be wired when
+//     the POST /invoices endpoint is re-implemented (pending Q1/Q2).
+//   - accounting.invoice.pricing_mismatch: STILL A STUB. Same as above.
 
 // =============================================================================
 // Approval type constants (dot-namespaced per ADR-003 Q1)
@@ -117,9 +126,28 @@ export type AccountingApprovalPayload =
 export interface ExecuteApprovalResult {
   // Whether the deferred write was actually performed
   executed: boolean;
-  // What the dispatcher did (for audit logging from the approval flow)
-  action: "stub_logged" | "write_executed" | "skip_unknown_type";
-  // Optional: result of the upstream write (Phase 4c.5 will populate this)
+  // What the dispatcher did (for audit logging from the approval flow):
+  //   - "stub_logged": Phase 4c.4 placeholder — execution deferred to
+  //     Phase 4c.5 implementation (will be removed as remaining approval
+  //     types are wired)
+  //   - "write_executed": dispatcher reached the real write function and
+  //     it completed successfully
+  //   - "write_failed_replay": dispatcher tried to execute the write but
+  //     the underlying operation failed in a way that doesn't crash the
+  //     approval flow (e.g., transaction still missing on replay, type
+  //     not categorizable). Caller logs this and surfaces it to the
+  //     approver UI for manual intervention.
+  //   - "skip_unknown_type": the approval type isn't one this dispatcher
+  //     handles (caller should route elsewhere or warn)
+  action:
+    | "stub_logged"
+    | "write_executed"
+    | "write_failed_replay"
+    | "skip_unknown_type";
+  // Optional: result of the upstream write (only set when action ===
+  // "write_executed"). Contains platform, txnType, txnId,
+  // previousAccountRef, newAccountRef for category updates; shape varies
+  // by approval type.
   upstreamResult?: Record<string, unknown>;
   // Human-readable description
   message: string;
@@ -138,9 +166,11 @@ export async function executeApprovedAccountingWrite(
   const type = approval.type;
   const payload = approval.payload as Record<string, unknown>;
 
-  // Stub mode for Phase 4c.4 — Phase 4c.5 will replace each case with the
-  // actual upstream write call via updateTransactionCategory from
-  // services/accounting/transaction-write.ts (Decision 5 dispatcher).
+  // Phase 4c.5 wiring in progress — see module-level header for per-type
+  // wiring status. The transaction-category case is fully wired via the
+  // Decision 5 dispatcher (updateTransactionCategory from
+  // services/accounting/transaction-write.ts); the payment + invoice cases
+  // remain Phase 4c.4 stubs pending Q1/Q2 architectural decisions.
   switch (type) {
     case ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED: {
       logger.info(
@@ -179,21 +209,105 @@ export async function executeApprovedAccountingWrite(
     }
 
     case ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS: {
-      logger.info(
-        {
-          approvalId: approval.id,
-          companyId: approval.companyId,
-          approvalType: type,
-          txnId: payload.txnId,
-          newAccountRef: payload.newAccountRef,
-        },
-        "[Phase 4c.4 stub] Transaction category approval executed — Phase 4c.5 will perform the actual write",
-      );
-      return {
-        executed: false,
-        action: "stub_logged",
-        message: "Transaction category write deferred to Phase 4c.5 implementation",
-      };
+      // Phase 4c.5 Decision 5 wiring (2026-05-27): replay the original
+      // POST /transactions/:txnId/category request using the
+      // updateTransactionCategory dispatcher. Per ADR-003 Q2 design
+      // intent ("payloads must be self-sufficient... the request that
+      // arrived must be re-executable from the payload alone"),
+      // execution = replay.
+      //
+      // Three distinct outcomes:
+      //   1. Success: dispatcher resolved the txn (which it couldn't at
+      //      original-request time) and the write succeeded. This happens
+      //      when Decision 4 coverage was extended between approval
+      //      creation and approval execution, OR when the original failure
+      //      was transient (auth refresh, network blip).
+      //   2. Still not found: TransactionNotFoundError thrown again —
+      //      the txn type is still outside Decision 4 coverage. Manual
+      //      intervention required. Return action: "write_failed_replay".
+      //   3. Type not categorizable: txn now resolves, but to a type in
+      //      Decision 5's excluded list (BillPayment, Payment, etc.).
+      //      Manual intervention required. Return action: "write_failed_replay".
+      //
+      // We do NOT pass hintedType here — the original request didn't have
+      // type info (that's why the approval got created), and we have no
+      // mechanism for the human approver to supply it. Multi-type probe is
+      // the correct fallback.
+      try {
+        const result = await updateTransactionCategory(
+          db,
+          approval.companyId,
+          (payload.contactId as string | null | undefined) ?? null,
+          payload.txnId as string,
+          payload.newAccountRef as string,
+        );
+        logger.info(
+          {
+            approvalId: approval.id,
+            companyId: approval.companyId,
+            approvalType: type,
+            txnId: payload.txnId,
+            platform: result.platform,
+            txnType: result.txnType,
+            previousAccountRef: result.previousAccountRef,
+            newAccountRef: result.newAccountRef,
+          },
+          "Transaction category approval executed — write succeeded on replay",
+        );
+        return {
+          executed: true,
+          action: "write_executed",
+          upstreamResult: {
+            platform: result.platform,
+            txnType: result.txnType,
+            txnId: result.txnId,
+            previousAccountRef: result.previousAccountRef,
+            newAccountRef: result.newAccountRef,
+          },
+          message: `Transaction category updated on platform ${result.platform} for ${result.txnType} ${result.txnId}`,
+        };
+      } catch (err) {
+        if (err instanceof TransactionNotFoundError) {
+          logger.warn(
+            {
+              approvalId: approval.id,
+              companyId: approval.companyId,
+              approvalType: type,
+              txnId: payload.txnId,
+              attemptedPlatform: err.platform,
+              attemptedTypes: err.attemptedTypes,
+            },
+            "Transaction category approval execution failed — transaction still not found on replay",
+          );
+          return {
+            executed: false,
+            action: "write_failed_replay",
+            message: `Transaction ${payload.txnId} still not found on replay. Approval cannot be executed automatically; manual intervention required (the transaction may be a type not yet supported by the dispatcher).`,
+          };
+        }
+        if (err instanceof TransactionTypeNotCategorizableError) {
+          logger.warn(
+            {
+              approvalId: approval.id,
+              companyId: approval.companyId,
+              approvalType: type,
+              txnId: payload.txnId,
+              resolvedPlatform: err.platform,
+              resolvedTxnType: err.txnType,
+            },
+            "Transaction category approval execution failed — resolved type not categorizable",
+          );
+          return {
+            executed: false,
+            action: "write_failed_replay",
+            message: `Transaction ${payload.txnId} resolved to type ${err.platform}.${err.txnType}, which does not support category updates. Manual intervention required.`,
+          };
+        }
+        // Any other error (network failure, auth issue, platform 5xx, etc.)
+        // propagates as-is. The approval flow's outer error handler will
+        // log it. We don't swallow unknown errors silently.
+        throw err;
+      }
     }
 
     default: {

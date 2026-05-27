@@ -1,12 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("./transaction-write.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./transaction-write.js")>();
+  return {
+    ...actual,
+    updateTransactionCategory: vi.fn(),
+  };
+});
+
 import {
   executeApprovedAccountingWrite,
   isAccountingApprovalType,
   ACCOUNTING_APPROVAL_TYPES,
 } from "./write-approvals.js";
+import {
+  updateTransactionCategory,
+  TransactionTypeNotCategorizableError,
+} from "./transaction-write.js";
+import { TransactionNotFoundError } from "./transaction-lookup.js";
 import type { approvals } from "@paperclipai/db";
 
-// Mock DB — dispatcher in Phase 4c.4 doesn't use db at all (stub mode)
+// Mock DB — dispatcher passes db through to updateTransactionCategory; the
+// dispatcher itself is mocked, so the db value never gets exercised.
 const MOCK_DB = {} as never;
 
 function makeApproval(
@@ -52,7 +67,7 @@ describe("isAccountingApprovalType", () => {
 
 describe("executeApprovedAccountingWrite", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it("routes payment.threshold_exceeded to the payment stub", async () => {
@@ -114,7 +129,15 @@ describe("executeApprovedAccountingWrite", () => {
     expect(result.action).toBe("stub_logged");
   });
 
-  it("routes transaction.category_with_unknown_previous to the transaction stub", async () => {
+  it("executes transaction.category_with_unknown_previous on approval — happy path (write succeeds on replay)", async () => {
+    vi.mocked(updateTransactionCategory).mockResolvedValueOnce({
+      platform: "quickbooks",
+      txnType: "Purchase",
+      txnId: "txn-123",
+      previousAccountRef: "60100",
+      newAccountRef: "6000-Rent",
+    });
+
     const approval = makeApproval(
       ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS,
       {
@@ -129,9 +152,107 @@ describe("executeApprovedAccountingWrite", () => {
 
     const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
 
+    expect(result.executed).toBe(true);
+    expect(result.action).toBe("write_executed");
+    expect(result.upstreamResult).toEqual({
+      platform: "quickbooks",
+      txnType: "Purchase",
+      txnId: "txn-123",
+      previousAccountRef: "60100",
+      newAccountRef: "6000-Rent",
+    });
+    expect(result.message).toContain("quickbooks");
+    expect(result.message).toContain("Purchase");
+
+    // Verify the dispatcher was called with payload values (NOT with hintedType)
+    expect(updateTransactionCategory).toHaveBeenCalledWith(
+      MOCK_DB,
+      "company-test", // from approval.companyId
+      "contact-test", // from payload.contactId
+      "txn-123",
+      "6000-Rent",
+    );
+  });
+
+  it("returns write_failed_replay when transaction is still not found on replay", async () => {
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
+      new TransactionNotFoundError(
+        "quickbooks",
+        "txn-123",
+        ["Purchase", "Bill", "JournalEntry", "Deposit", "BillPayment", "Payment", "Invoice"],
+      ),
+    );
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS,
+      {
+        requestType: "POST /api/accounting/v1/transactions/:txnId/category",
+        companyId: "company-test",
+        contactId: "contact-test",
+        txnId: "txn-123",
+        newAccountRef: "6000-Rent",
+        unknownPreviousReason: "transaction_type_unknown",
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
     expect(result.executed).toBe(false);
-    expect(result.action).toBe("stub_logged");
-    expect(result.message).toContain("Phase 4c.5");
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("txn-123");
+    expect(result.message).toContain("still not found");
+    expect(result.upstreamResult).toBeUndefined();
+  });
+
+  it("returns write_failed_replay when resolved type is not categorizable (excluded type)", async () => {
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
+      new TransactionTypeNotCategorizableError(
+        "quickbooks",
+        "BillPayment", // an excluded type per Decision 5
+        "txn-456",
+      ),
+    );
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS,
+      {
+        requestType: "POST /api/accounting/v1/transactions/:txnId/category",
+        companyId: "company-test",
+        contactId: "contact-test",
+        txnId: "txn-456",
+        newAccountRef: "6000-Rent",
+        unknownPreviousReason: "transaction_type_unknown",
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("txn-456");
+    expect(result.message).toContain("BillPayment");
+    expect(result.message).toContain("not support category updates");
+    expect(result.upstreamResult).toBeUndefined();
+  });
+
+  it("propagates unknown errors (e.g., HttpResponseError from platform) instead of swallowing them", async () => {
+    const platformError = new Error("Platform write failed: 503 Service Unavailable");
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(platformError);
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS,
+      {
+        requestType: "POST /api/accounting/v1/transactions/:txnId/category",
+        companyId: "company-test",
+        contactId: "contact-test",
+        txnId: "txn-789",
+        newAccountRef: "6000-Rent",
+        unknownPreviousReason: "platform_lookup_unavailable",
+      },
+    );
+
+    // The error should propagate, not be caught silently
+    await expect(executeApprovedAccountingWrite(MOCK_DB, approval)).rejects.toBe(platformError);
   });
 
   it("returns skip_unknown_type for an unrecognized accounting.* type", async () => {
