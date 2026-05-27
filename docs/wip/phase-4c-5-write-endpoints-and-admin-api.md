@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 Phase 2 foundation shipped — HttpResponseError class + strict dispatcher discriminator)
+**Last updated:** 2026-05-27 Session 4 (Decision 4 Phase 2 — QBO half complete + Xero shared-endpoint revision documented)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -225,17 +225,35 @@ The observation above was acted on as the first Phase 2 piece — before adding 
 - 3 new tests in `transaction-lookup.test.ts` lock the strict discriminator: (1) 404 HttpResponseError continues to next type; (2) non-404 HttpResponseError (e.g., 500) rethrows immediately, NOT silently treated as "wrong type"; (3) non-HttpResponseError errors (network failures, malformed responses) also rethrow.
 - Test baseline: 182 targeted tests passing (179 + 3 new). Full monorepo typecheck clean.
 
+**REVISED (2026-05-27 mid-Session 4): Xero Invoice and Bill are served by the same endpoint:**
+
+Decision 4's original locked scope listed "4 Xero types: BankTransaction, Invoices, Bills, ManualJournals" — anticipating 4 separate fetch handlers in `XERO_TYPE_REGISTRY`. Verification against the Xero Accounting API during Phase 2 type expansion surfaced a structural fact not captured in the original lock:
+
+**Xero treats ACCREC (sales Invoice) and ACCPAY (purchase Bill) as the same resource type, served by the same endpoint (`/Invoices/{InvoiceID}`), with a `Type` field discriminator on the response (`ACCREC` vs `ACCPAY`).** This is unlike QBO, where Invoice and Bill live at separate endpoints (`/invoice/{id}` and `/bill/{id}`) and have structurally different line shapes.
+
+Per Tenet #16 (Locked Decisions Stay Locked), the path for genuine new information is explicit revision, not silent drift. The revised implementation plan:
+
+- One shared handler `fetchXeroInvoiceOrBill` reads `/Invoices/{txnId}` and inspects the `Type` field on the response to return `txnType: "Invoice"` (for ACCREC) or `txnType: "Bill"` (for ACCPAY).
+- The handler is registered under BOTH `"Invoice"` AND `"Bill"` keys in `XERO_TYPE_REGISTRY`. The dispatcher's hinted-type path works correctly because the same handler responds either way; the unhinted-type path tries one (whichever is first in the registry) and succeeds — there is no scenario where the "wrong" type is tried since both keys map to the same handler.
+- ManualJournals remains a separate handler (`fetchXeroManualJournal`) since it uses a structurally different endpoint (`/ManualJournals/{ManualJournalID}`) with `JournalLines` (not `LineItems`).
+
+Net effect: Decision 4 still covers 4 Xero "types" from the caller's perspective (BankTransaction, Invoice, Bill, ManualJournal — all four valid `txnType` values), but the implementation uses 3 handler functions instead of 4. The locked interface contract above is unchanged — `getTransactionById` still returns the appropriate `txnType` discriminator, and the type registry still has keys for all 4 types.
+
+This revision is documented here rather than silently implemented to preserve the audit trail for future readers wondering why `XERO_TYPE_REGISTRY` has 4 entries but only 3 handler functions.
+
 **Mock lifecycle discovery (worth flagging for future test work):**
 
 The strict-catch change initially broke 7 tests. Root cause was NOT the strict semantics themselves — it was `vi.clearAllMocks()` in three `beforeEach` blocks. `clearAllMocks()` clears call history but does NOT drain queued `.mockResolvedValueOnce`/`.mockRejectedValueOnce` implementations. Under the prior loose-catch dispatcher, every queued mock got consumed per test (the loop iterated through all types), so the queues happened to be empty by the next test. Under Phase 2 strict semantics, fewer mocks are consumed per test (strict rethrow short-circuits the loop on the first non-404), so leftover queued mocks leaked forward and corrupted subsequent tests. Fix: `vi.resetAllMocks()` instead of `vi.clearAllMocks()` — drains the queues correctly. Generalizable lesson: when test files use `.mockXxxValueOnce` chains, prefer `resetAllMocks()` over `clearAllMocks()` in `beforeEach`.
 
 **Remaining Decision 4 implementation work (Phase 2+):**
 
-- Structured HTTP error class for qboRequest/xeroRequest (~30 min)
-- QBO types still to add (5): JournalEntry, Deposit, BillPayment, Payment, Invoice (~30-45 min each)
-- Xero types still to add (3): Invoices, Bills, ManualJournals (~30-45 min each)
-- Tests for each new type added incrementally (the test file already established the patterns)
-- Total Phase 2+ effort: ~4-5 hours
+- ~~Structured HTTP error class for qboRequest/xeroRequest (~30 min)~~ — DONE Session 4 (commit `635e4998`)
+- ~~QBO types still to add (5): JournalEntry, Deposit, BillPayment, Payment, Invoice~~ — DONE Session 4 across 5 commits (`8830f206`, `7027c79a`, `2195544a`, `769a39ca`, `bf96d2d3`)
+- **Xero types still to add (per revised plan above):**
+  - `fetchXeroInvoiceOrBill` shared handler, registered under both `"Invoice"` and `"Bill"` keys (~45 min — slightly more complex than QBO due to Type discriminator logic; ~3 tests covering ACCREC path, ACCPAY path, missing-Type fallback)
+  - `fetchXeroManualJournal` separate handler at `/ManualJournals/{id}` (~30 min — straightforward, similar to BankTransaction shape with JournalLines instead of LineItems)
+- Tests for each Xero type added per memory #21 (registry-cardinality coupling — every new type added to XERO_TYPE_REGISTRY requires growing the Xero-side exhaustion test's mock queue and assertions)
+- Remaining effort estimate: ~1.5-2 hours (down from ~3-4 hours estimated after Phase 2 foundation shipped — reflecting that QBO work is done and Xero shared-endpoint pattern reduces the per-type work)
 
 **Out of scope for this decision (deferred to implementation):**
 
