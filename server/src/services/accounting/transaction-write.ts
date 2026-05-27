@@ -464,6 +464,13 @@ const XERO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([
  *   5. Return result with the captured previousAccountRef + the passed-through
  *      newAccountRef.
  *
+ * Optional hintedType: when the caller already knows the transaction type
+ * (e.g., the type was returned by a prior GET /transactions list call), it
+ * is plumbed through to getTransactionById to enable the fast-path single-GET
+ * behavior. Without a hint, the read dispatcher multi-type probes (up to 7
+ * QBO or 4 Xero requests) — still correct but slower. Symmetric with
+ * Decision 4's read-side hinted-type optimization.
+ *
  * Throws:
  *   - TransactionNotFoundError (from getTransactionById) — no platform GET
  *     succeeded. Caller maps to HTTP 202 + approval row creation.
@@ -483,9 +490,21 @@ export async function updateTransactionCategory(
   contactId: string | null,
   txnId: string,
   newAccountRef: string,
+  hintedType?: string,
 ): Promise<UpdateTransactionCategoryResult> {
   // Step 1: read-side lookup. previousAccountRef captured here for audit.
-  const lookup = await getTransactionById(db, companyId, contactId, txnId);
+  // hintedType is plumbed through — if the caller knows the transaction
+  // type, the read dispatcher dispatches directly to the corresponding
+  // fetch handler (single GET request) instead of multi-type probing
+  // (up to 7 requests for QBO or 4 for Xero). Symmetric with Decision 4's
+  // read-side hinted-type optimization.
+  const lookup = await getTransactionById(
+    db,
+    companyId,
+    contactId,
+    txnId,
+    hintedType,
+  );
 
   // Step 2: dispatch to the right platform's write registry.
   const registry =

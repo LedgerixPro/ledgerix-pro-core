@@ -504,41 +504,6 @@ interface XeroBankTransaction {
   Status?: string;
 }
 
-// Full QBO Purchase shape for read-modify-write categorization
-interface QboPurchaseLineDetail {
-  AccountRef?: QboRef;
-  [key: string]: unknown;
-}
-
-interface QboPurchaseLine {
-  Id?: string;
-  DetailType?: string;
-  Amount?: number;
-  AccountBasedExpenseLineDetail?: QboPurchaseLineDetail;
-  [key: string]: unknown;
-}
-
-interface QboPurchaseFull {
-  Id: string;
-  SyncToken: string;
-  Line?: QboPurchaseLine[];
-  [key: string]: unknown;
-}
-
-// Full Xero BankTransaction shape for read-modify-write categorization
-interface XeroBankTransactionLineItem {
-  LineItemID?: string;
-  AccountCode?: string;
-  Description?: string;
-  [key: string]: unknown;
-}
-
-interface XeroBankTransactionFull {
-  BankTransactionID: string;
-  LineItems?: XeroBankTransactionLineItem[];
-  [key: string]: unknown;
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -829,43 +794,6 @@ export const qbo = {
     }));
 
     return [...purchases, ...deposits, ...transfers];
-  },
-
-  // Read-modify-write: fetch the Purchase, swap the first line's expense account,
-  // send it back. Internally handles SyncToken so callers don't have to.
-  async updateTransactionAccount(
-    db: Db,
-    companyId: string,
-    contactId: string | null,
-    transactionId: string,
-    accountId: string,
-  ): Promise<void> {
-    // Phase 4c.5 Decision 4 (Session 3 refactor): the type-specific
-    // GET-by-id lookup is now handled by the unified getTransactionById
-    // dispatcher. We pass hintedType "Purchase" because this function
-    // only operates on QBO Purchase transactions; the dispatcher's
-    // multi-type probe loop is unnecessary here.
-    const lookup = await getTransactionById(
-      db,
-      companyId,
-      contactId,
-      transactionId,
-      "Purchase",
-    );
-    const purchase = lookup.raw as unknown as QboPurchaseFull;
-    const firstLine = purchase.Line?.[0];
-    if (!firstLine) {
-      throw new Error(`QBO Purchase ${transactionId} has no line items to categorize`);
-    }
-    firstLine.AccountBasedExpenseLineDetail = {
-      ...(firstLine.AccountBasedExpenseLineDetail ?? {}),
-      AccountRef: { value: accountId },
-    };
-    await qboRequest(db, companyId, contactId, "POST", "/purchase?operation=update", purchase);
-    logger.info(
-      { companyId, contactId, transactionId, accountId, previousAccountRef: lookup.previousAccountRef },
-      "QBO Purchase line account updated",
-    );
   },
 
   // Apply a Payment to an Invoice. QBO server defaults TxnDate to today.
@@ -1385,38 +1313,6 @@ export const xero = {
 
   async getBankTransactions(db: Db, companyId: string, contactId: string | null, sinceDate: string): Promise<Transaction[]> {
     return xero.getTransactions(db, companyId, contactId, sinceDate);
-  },
-
-  // Read-modify-write: fetch the BankTransaction, swap the first line's AccountCode,
-  // send the full record back. Xero requires the full LineItems array on update.
-  async updateTransactionAccount(
-    db: Db,
-    companyId: string,
-    contactId: string | null,
-    transactionId: string,
-    accountCode: string,
-  ): Promise<void> {
-    // Phase 4c.5 Decision 4 (Session 3 refactor): see the QBO equivalent
-    // above for context. Hinted type "BankTransaction" because this
-    // function only operates on Xero BankTransaction records.
-    const lookup = await getTransactionById(
-      db,
-      companyId,
-      contactId,
-      transactionId,
-      "BankTransaction",
-    );
-    const txn = lookup.raw as unknown as XeroBankTransactionFull;
-    const firstLine = txn.LineItems?.[0];
-    if (!firstLine) {
-      throw new Error(`Xero BankTransaction ${transactionId} has no line items to categorize`);
-    }
-    firstLine.AccountCode = accountCode;
-    await xeroRequest(db, companyId, contactId, "POST", "/BankTransactions", { BankTransactions: [txn] });
-    logger.info(
-      { companyId, contactId, transactionId, accountCode, previousAccountRef: lookup.previousAccountRef },
-      "Xero BankTransaction line account updated",
-    );
   },
 
   // Apply a Payment to an Invoice. Xero requires Date — caller passes YYYY-MM-DD.

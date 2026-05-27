@@ -139,7 +139,8 @@ export async function executeApprovedAccountingWrite(
   const payload = approval.payload as Record<string, unknown>;
 
   // Stub mode for Phase 4c.4 — Phase 4c.5 will replace each case with the
-  // actual upstream write call (qbo.updateTransactionAccount, etc.)
+  // actual upstream write call via updateTransactionCategory from
+  // services/accounting/transaction-write.ts (Decision 5 dispatcher).
   switch (type) {
     case ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED: {
       logger.info(

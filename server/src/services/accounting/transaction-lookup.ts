@@ -686,9 +686,10 @@ const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
  * Look up a transaction by ID across the platform connected for this contact.
  *
  * Optional hintedType short-circuits the multi-type probe loop — callers who
- * already know the type (e.g., the existing updateTransactionAccount handlers)
- * can pass it to avoid wasted API calls. Without a hint, the dispatcher tries
- * each registered type for the platform until one succeeds.
+ * already know the type (e.g., updateTransactionCategory in
+ * transaction-write.ts passing hintedType through) can pass it to avoid
+ * wasted API calls. Without a hint, the dispatcher tries each registered
+ * type for the platform until one succeeds.
  *
  * Throws TransactionNotFoundError if no registered handler returns a result.
  * Callers should route this to the

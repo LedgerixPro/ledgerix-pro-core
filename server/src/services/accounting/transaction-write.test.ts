@@ -1009,3 +1009,89 @@ describe("updateTransactionCategory — Xero Invoice/Bill shared handler", () =>
     expect(xeroRequest).not.toHaveBeenCalled();
   });
 });
+
+describe("updateTransactionCategory — hintedType parameter", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("plumbs hintedType through to getTransactionById when provided", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-hint-1",
+      platform: "quickbooks",
+      txnType: "Purchase",
+      previousAccountRef: "60100",
+      raw: {
+        Id: "txn-hint-1",
+        SyncToken: "0",
+        Line: [
+          {
+            AccountBasedExpenseLineDetail: {
+              AccountRef: { value: "60100" },
+            },
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-hint-1",
+      "60200",
+      "Purchase", // explicit hint
+    );
+
+    // Verify getTransactionById was called with the hint as the 5th positional arg
+    expect(getTransactionById).toHaveBeenCalledTimes(1);
+    expect(getTransactionById).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-hint-1",
+      "Purchase", // <-- the hint
+    );
+  });
+
+  it("calls getTransactionById without hint when hintedType is omitted (backward-compatible)", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-nohint-1",
+      platform: "quickbooks",
+      txnType: "Bill",
+      previousAccountRef: "60100",
+      raw: {
+        Id: "txn-nohint-1",
+        SyncToken: "0",
+        Line: [
+          {
+            AccountBasedExpenseLineDetail: {
+              AccountRef: { value: "60100" },
+            },
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-nohint-1",
+      "60200",
+      // hintedType intentionally omitted
+    );
+
+    // Verify getTransactionById was called WITHOUT a 5th arg (or with undefined)
+    expect(getTransactionById).toHaveBeenCalledTimes(1);
+    expect(getTransactionById).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-nohint-1",
+      undefined, // <-- no hint
+    );
+  });
+});
