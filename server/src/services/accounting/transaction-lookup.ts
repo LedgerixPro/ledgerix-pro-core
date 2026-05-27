@@ -216,6 +216,43 @@ interface XeroBankTransactionFull {
   [key: string]: unknown;
 }
 
+interface XeroInvoiceLineItem {
+  LineItemID?: string;
+  AccountCode?: string;
+  Description?: string;
+  Quantity?: number;
+  UnitAmount?: number;
+  [key: string]: unknown;
+}
+
+interface XeroInvoiceOrBillFull {
+  // Xero serves both ACCREC (sales Invoice) and ACCPAY (purchase Bill) from
+  // the same /Invoices/{id} endpoint with a Type discriminator. See WIP doc
+  // Decision 4 REVISED note (2026-05-27 commit fb13f98c) for the rationale.
+  InvoiceID: string;
+  Type?: "ACCREC" | "ACCPAY" | string;
+  InvoiceNumber?: string;
+  LineItems?: XeroInvoiceLineItem[];
+  [key: string]: unknown;
+}
+
+interface XeroManualJournalLine {
+  // Xero ManualJournalLines wrap a per-line accountCode + signed lineAmount
+  // (positive = debit, negative = credit per Xero convention).
+  LineAmount?: number;
+  AccountCode?: string;
+  Description?: string;
+  [key: string]: unknown;
+}
+
+interface XeroManualJournalFull {
+  ManualJournalID: string;
+  Narration?: string;
+  Status?: string;
+  JournalLines?: XeroManualJournalLine[];
+  [key: string]: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Per-type fetch handlers (private to this module)
 // ---------------------------------------------------------------------------
@@ -528,6 +565,88 @@ async function fetchXeroBankTransaction(
   };
 }
 
+async function fetchXeroInvoiceOrBill(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult> {
+  const response = await xeroRequest<{ Invoices?: XeroInvoiceOrBillFull[] }>(
+    db,
+    companyId,
+    contactId,
+    "GET",
+    `/Invoices/${txnId}`,
+  );
+  const invoice = response.Invoices?.[0];
+  if (!invoice) {
+    throw new Error(`Xero Invoice/Bill ${txnId} response missing Invoices array or first entry`);
+  }
+  // Xero treats ACCREC (sales Invoice) and ACCPAY (purchase Bill) as the same
+  // resource type, served by the same endpoint with a Type field discriminator.
+  // The dispatcher contract requires us to report which one it actually is:
+  //   - Type "ACCREC" → txnType "Invoice"
+  //   - Type "ACCPAY" → txnType "Bill"
+  //   - Anything else → txnType "Invoice" defensively (Invoice is the more
+  //     common case; the Type field has historically been stable so this
+  //     fallback should never trigger in practice)
+  //
+  // See WIP doc Decision 4 REVISED note (commit fb13f98c) for the full
+  // rationale and Tenet #16 invocation.
+  //
+  // previousAccountRef: first LineItem's AccountCode. Like other multi-line
+  // transactions in this dispatcher, this is an approximation — callers
+  // needing per-line account fidelity should consume the raw field.
+  let resolvedTxnType: string;
+  if (invoice.Type === "ACCPAY") {
+    resolvedTxnType = "Bill";
+  } else {
+    resolvedTxnType = "Invoice";
+  }
+  const firstLine = invoice.LineItems?.[0];
+  const previousAccountRef = firstLine?.AccountCode ?? null;
+  return {
+    txnId,
+    platform: "xero",
+    txnType: resolvedTxnType,
+    previousAccountRef,
+    raw: invoice,
+  };
+}
+
+async function fetchXeroManualJournal(
+  db: Db,
+  companyId: string,
+  contactId: string | null,
+  txnId: string,
+): Promise<TransactionLookupResult> {
+  const response = await xeroRequest<{ ManualJournals?: XeroManualJournalFull[] }>(
+    db,
+    companyId,
+    contactId,
+    "GET",
+    `/ManualJournals/${txnId}`,
+  );
+  const journal = response.ManualJournals?.[0];
+  if (!journal) {
+    throw new Error(`Xero ManualJournal ${txnId} response missing ManualJournals array or first entry`);
+  }
+  // ManualJournals are multi-line by nature (matched Debit/Credit pairs).
+  // Like QBO JournalEntry, there is no single canonical "previous account"
+  // for a journal. We capture the FIRST line's AccountCode for consistency
+  // with the other handlers; callers needing per-line account fidelity
+  // should consume the raw field directly.
+  const firstLine = journal.JournalLines?.[0];
+  const previousAccountRef = firstLine?.AccountCode ?? null;
+  return {
+    txnId,
+    platform: "xero",
+    txnType: "ManualJournal",
+    previousAccountRef,
+    raw: journal,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Type registry — per platform, ordered by frequency-of-use intuition
 // (Purchase / BankTransaction are most common in agent recategorization).
@@ -553,7 +672,10 @@ const QBO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
 
 const XERO_TYPE_REGISTRY: ReadonlyMap<string, FetchHandler> = new Map([
   ["BankTransaction", fetchXeroBankTransaction],
-  // Future: Invoice, Bill, ManualJournal
+  ["Invoice", fetchXeroInvoiceOrBill],
+  ["Bill", fetchXeroInvoiceOrBill],
+  ["ManualJournal", fetchXeroManualJournal],
+  // Xero type coverage complete — 3 handler functions covering 4 type keys.
 ]);
 
 // ---------------------------------------------------------------------------

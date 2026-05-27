@@ -584,6 +584,190 @@ describe("getTransactionById — hinted-type fast path", () => {
     expect(qboRequest).not.toHaveBeenCalled();
   });
 
+  it("fetchXeroInvoiceOrBill returns txnType='Invoice' when Type='ACCREC'", async () => {
+    const db = mockDbWithPlatform("xero");
+    vi.mocked(xeroRequest).mockResolvedValueOnce({
+      Invoices: [
+        {
+          InvoiceID: "txn-XINV-1",
+          Type: "ACCREC",
+          InvoiceNumber: "INV-001",
+          LineItems: [
+            {
+              LineItemID: "li-1",
+              AccountCode: "200",
+              Description: "Consulting",
+              Quantity: 1,
+              UnitAmount: 500.0,
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-XINV-1",
+      "Invoice",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-XINV-1",
+      platform: "xero",
+      txnType: "Invoice", // ACCREC → Invoice
+      previousAccountRef: "200",
+      raw: expect.objectContaining({ InvoiceID: "txn-XINV-1" }),
+    });
+    expect(xeroRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/Invoices/txn-XINV-1",
+    );
+  });
+
+  it("fetchXeroInvoiceOrBill returns txnType='Bill' when Type='ACCPAY'", async () => {
+    const db = mockDbWithPlatform("xero");
+    vi.mocked(xeroRequest).mockResolvedValueOnce({
+      Invoices: [
+        {
+          InvoiceID: "txn-XBILL-1",
+          Type: "ACCPAY",
+          InvoiceNumber: "BILL-001",
+          LineItems: [
+            {
+              LineItemID: "li-1",
+              AccountCode: "400",
+              Description: "Office supplies",
+              Quantity: 1,
+              UnitAmount: 100.0,
+            },
+          ],
+        },
+      ],
+    });
+
+    // Note: hintedType is "Bill" — but the SAME handler serves both keys.
+    // We verify here that the response's Type field, not the hint, drives
+    // the txnType output.
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-XBILL-1",
+      "Bill",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-XBILL-1",
+      platform: "xero",
+      txnType: "Bill", // ACCPAY → Bill
+      previousAccountRef: "400",
+      raw: expect.objectContaining({ InvoiceID: "txn-XBILL-1" }),
+    });
+    // Same endpoint as ACCREC — verifies the shared-endpoint behavior
+    expect(xeroRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/Invoices/txn-XBILL-1",
+    );
+  });
+
+  it("fetchXeroInvoiceOrBill defaults to txnType='Invoice' when Type is missing or unknown", async () => {
+    const db = mockDbWithPlatform("xero");
+    vi.mocked(xeroRequest).mockResolvedValueOnce({
+      Invoices: [
+        {
+          InvoiceID: "txn-XINV-2",
+          // Type intentionally absent
+          InvoiceNumber: "INV-002",
+          LineItems: [
+            { LineItemID: "li-1", AccountCode: "200", Description: "..." },
+          ],
+        },
+      ],
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-XINV-2",
+      "Invoice",
+    );
+
+    expect(result.txnType).toBe("Invoice"); // defensive default
+    expect(result.previousAccountRef).toBe("200");
+  });
+
+  it("dispatches directly to fetchXeroManualJournal when hintedType='ManualJournal'", async () => {
+    const db = mockDbWithPlatform("xero");
+    vi.mocked(xeroRequest).mockResolvedValueOnce({
+      ManualJournals: [
+        {
+          ManualJournalID: "txn-XMJ-1",
+          Narration: "Reclassify office supplies",
+          Status: "POSTED",
+          JournalLines: [
+            { AccountCode: "200", LineAmount: 100.0, Description: "Debit" },
+            { AccountCode: "400", LineAmount: -100.0, Description: "Credit" },
+          ],
+        },
+      ],
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-XMJ-1",
+      "ManualJournal",
+    );
+
+    expect(result).toEqual({
+      txnId: "txn-XMJ-1",
+      platform: "xero",
+      txnType: "ManualJournal",
+      previousAccountRef: "200", // first JournalLine AccountCode
+      raw: expect.objectContaining({ ManualJournalID: "txn-XMJ-1" }),
+    });
+    expect(xeroRequest).toHaveBeenCalledWith(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "GET",
+      "/ManualJournals/txn-XMJ-1",
+    );
+  });
+
+  it("fetchXeroManualJournal returns null previousAccountRef when JournalLines is empty", async () => {
+    const db = mockDbWithPlatform("xero");
+    vi.mocked(xeroRequest).mockResolvedValueOnce({
+      ManualJournals: [
+        {
+          ManualJournalID: "txn-XMJ-2",
+          Narration: "Empty journal (pathological)",
+          // JournalLines absent
+        },
+      ],
+    });
+
+    const result = await getTransactionById(
+      db,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-XMJ-2",
+      "ManualJournal",
+    );
+
+    expect(result.previousAccountRef).toBeNull();
+  });
+
   it("throws clear error when hintedType is unknown for the platform", async () => {
     const db = mockDbWithPlatform("quickbooks");
 
