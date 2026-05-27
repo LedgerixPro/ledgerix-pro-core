@@ -5,6 +5,14 @@ import {
   TransactionTypeNotCategorizableError,
 } from "./transaction-write.js";
 import { TransactionNotFoundError } from "./transaction-lookup.js";
+import {
+  reconcilePayment,
+  PaymentReferenceError,
+} from "./index.js";
+import {
+  resolveEntityRefByPlatform,
+  EntityRefResolutionError,
+} from "./payments-helpers.js";
 
 // Write-approval dispatcher for Phase 4c safety architecture per ADR-003 Q3.
 //
@@ -22,14 +30,19 @@ import { TransactionNotFoundError } from "./transaction-lookup.js";
 //
 // PHASE 4c.5 WIRING STATUS (2026-05-27):
 //   - accounting.transaction.category_with_unknown_previous: WIRED to the
-//     Decision 5 dispatcher (updateTransactionCategory). Execute now replays
+//     Decision 5 dispatcher (updateTransactionCategory). Execute replays
 //     the original POST /transactions/:txnId/category request from the
 //     payload per ADR-003 Q2 design intent.
-//   - accounting.payment.threshold_exceeded: STILL A STUB. Will be wired
-//     when the POST /payments endpoint is re-implemented (pending Q1/Q2
-//     architectural decisions).
-//   - accounting.invoice.dedupe_ambiguous: STILL A STUB. Will be wired when
-//     the POST /invoices endpoint is re-implemented (pending Q1/Q2).
+//   - accounting.payment.threshold_exceeded: WIRED to the Decision 6
+//     dispatcher (reconcilePayment) via the resolveEntityRefByPlatform
+//     translation helper (Piece F). Execute replays the original
+//     POST /api/accounting/v1/payments request from the payload. Three
+//     outcomes parallel to Piece B: success → write_executed; entity ref
+//     resolution failure or payment reference validation failure →
+//     write_failed_replay; unknown errors propagate.
+//   - accounting.invoice.dedupe_ambiguous: STILL A STUB. Will be wired
+//     when the POST /invoices endpoint is re-implemented (Invoice
+//     endpoint design pending — Q1/Q2 prerequisites now satisfied).
 //   - accounting.invoice.pricing_mismatch: STILL A STUB. Same as above.
 
 // =============================================================================
@@ -167,27 +180,174 @@ export async function executeApprovedAccountingWrite(
   const payload = approval.payload as Record<string, unknown>;
 
   // Phase 4c.5 wiring in progress — see module-level header for per-type
-  // wiring status. The transaction-category case is fully wired via the
-  // Decision 5 dispatcher (updateTransactionCategory from
-  // services/accounting/transaction-write.ts); the payment + invoice cases
-  // remain Phase 4c.4 stubs pending Q1/Q2 architectural decisions.
+  // wiring status. The transaction-category case (Decision 5) and the
+  // payment-threshold case (Decision 6) are both fully wired. The invoice
+  // cases (dedupe_ambiguous + pricing_mismatch) remain Phase 4c.4 stubs
+  // pending the Invoice endpoint design + implementation.
   switch (type) {
     case ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED: {
-      logger.info(
-        {
-          approvalId: approval.id,
-          companyId: approval.companyId,
-          approvalType: type,
-          invoiceId: payload.invoiceId,
-          amount: payload.amount,
-        },
-        "[Phase 4c.4 stub] Payment approval executed — Phase 4c.5 will perform the actual write",
-      );
-      return {
-        executed: false,
-        action: "stub_logged",
-        message: "Payment write deferred to Phase 4c.5 implementation",
-      };
+      // Phase 4c.5 Decision 6 Piece E wiring (2026-05-27): replay the
+      // original POST /api/accounting/v1/payments request using the
+      // reconcilePayment dispatcher (Piece D) via the
+      // resolveEntityRefByPlatform translation helper (Piece F).
+      //
+      // Per ADR-003 Q2 design intent ("payloads must be self-sufficient...
+      // the request that arrived must be re-executable from the payload
+      // alone"), execution = replay. Same pattern as Piece B's
+      // TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS wiring (commit 001d547f).
+      //
+      // Three outcomes parallel to Piece B:
+      //   1. Success: dispatcher succeeded; return action: "write_executed"
+      //      with upstreamResult containing the ReconcilePaymentResult
+      //      audit-trail data.
+      //   2. Payment-specific failure (EntityRefResolutionError or
+      //      PaymentReferenceError): the payload's entityRef cannot be
+      //      validly mapped to a service call for the current connection
+      //      state. Return action: "write_failed_replay" with a message
+      //      surfacing the reason — manual intervention required.
+      //   3. Unknown errors propagate (HttpResponseError from QBO/Xero,
+      //      network failures, etc.). The approval flow's outer error
+      //      handler captures them. We do NOT swallow unknown errors.
+      //
+      // The payload's entityRef is REQUIRED for replay — if the route
+      // handler created an approval row without entityRef populated, the
+      // replay cannot proceed. This guard is defensive: in practice the
+      // route handler (Piece G) MUST populate entityRef in the payload
+      // because it's the only way to identify which customer/account the
+      // payment applies to.
+      const rawEntityRef = payload.entityRef as string | undefined;
+      if (!rawEntityRef || typeof rawEntityRef !== "string" || rawEntityRef.length === 0) {
+        logger.warn(
+          {
+            approvalId: approval.id,
+            companyId: approval.companyId,
+            approvalType: type,
+          },
+          "Payment approval execution failed — payload missing entityRef",
+        );
+        return {
+          executed: false,
+          action: "write_failed_replay",
+          message:
+            `Payment approval payload is missing entityRef. Replay cannot proceed; ` +
+            `manual intervention required (the original request may have been malformed).`,
+        };
+      }
+
+      const contactId = (payload.contactId as string | null | undefined) ?? null;
+      const invoiceId = payload.invoiceId as string;
+      const amount = payload.amount as number;
+      const paymentDate = payload.paymentDate as string | undefined;
+
+      try {
+        // Step 1: resolve entityRef → split ref via the Piece F helper.
+        // This performs the platform lookup and the QBO-vs-Xero translation
+        // in one atomic step. Identical translation logic to the route
+        // handler (Piece G) — both call sites use the same resolver.
+        const resolved = await resolveEntityRefByPlatform(
+          db,
+          approval.companyId,
+          contactId,
+          rawEntityRef,
+        );
+
+        // Step 2: replay the payment via reconcilePayment with the resolved
+        // split ref. reconcilePayment performs its own platform lookup
+        // internally (redundant with the resolver's lookup but defensive —
+        // both produce the same result for the same input). Future
+        // optimization: pass the resolved platform through to skip the
+        // second lookup; for now, correctness over micro-optimization.
+        const writeResult = await reconcilePayment(
+          db,
+          approval.companyId,
+          contactId,
+          invoiceId,
+          amount,
+          resolved.ref,
+          paymentDate,
+        );
+
+        logger.info(
+          {
+            approvalId: approval.id,
+            companyId: approval.companyId,
+            approvalType: type,
+            invoiceId,
+            amount,
+            platform: writeResult.platform,
+            paymentId: writeResult.paymentId,
+          },
+          "Payment approval executed — write succeeded on replay",
+        );
+
+        return {
+          executed: true,
+          action: "write_executed",
+          upstreamResult: {
+            platform: writeResult.platform,
+            paymentId: writeResult.paymentId,
+            invoiceId: writeResult.invoiceId,
+            amount: writeResult.amount,
+            customerId: writeResult.customerId,
+            accountId: writeResult.accountId,
+            paymentDate: writeResult.paymentDate,
+          },
+          message:
+            `Payment ${writeResult.paymentId} applied on platform ${writeResult.platform} ` +
+            `for invoice ${writeResult.invoiceId} (amount: ${writeResult.amount} cents)`,
+        };
+      } catch (err) {
+        if (err instanceof EntityRefResolutionError) {
+          logger.warn(
+            {
+              approvalId: approval.id,
+              companyId: approval.companyId,
+              approvalType: type,
+              invoiceId,
+              amount,
+              entityRefReason: err.reason,
+              resolvedPlatform: err.resolvedPlatform,
+            },
+            "Payment approval execution failed — entity ref resolution failed",
+          );
+          return {
+            executed: false,
+            action: "write_failed_replay",
+            message:
+              `Payment approval cannot be executed: entity ref resolution failed ` +
+              `(reason: ${err.reason}). The accounting connection may have changed since ` +
+              `the approval was created. Manual intervention required.`,
+          };
+        }
+
+        if (err instanceof PaymentReferenceError) {
+          logger.warn(
+            {
+              approvalId: approval.id,
+              companyId: approval.companyId,
+              approvalType: type,
+              invoiceId,
+              amount,
+              paymentRefReason: err.reason,
+              resolvedPlatform: err.platform,
+            },
+            "Payment approval execution failed — payment reference validation failed",
+          );
+          return {
+            executed: false,
+            action: "write_failed_replay",
+            message:
+              `Payment approval cannot be executed: payment reference invalid for platform ` +
+              `${err.platform} (reason: ${err.reason}). Manual intervention required.`,
+          };
+        }
+
+        // Any other error (HttpResponseError, network failure, platform 5xx,
+        // etc.) propagates as-is. The approval flow's outer error handler
+        // will log it. We don't swallow unknown errors silently — matches
+        // Piece B's pattern.
+        throw err;
+      }
     }
 
     case ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS:

@@ -8,6 +8,22 @@ vi.mock("./transaction-write.js", async (importOriginal) => {
   };
 });
 
+vi.mock("./index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./index.js")>();
+  return {
+    ...actual,
+    reconcilePayment: vi.fn(),
+  };
+});
+
+vi.mock("./payments-helpers.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./payments-helpers.js")>();
+  return {
+    ...actual,
+    resolveEntityRefByPlatform: vi.fn(),
+  };
+});
+
 import {
   executeApprovedAccountingWrite,
   isAccountingApprovalType,
@@ -18,6 +34,11 @@ import {
   TransactionTypeNotCategorizableError,
 } from "./transaction-write.js";
 import { TransactionNotFoundError } from "./transaction-lookup.js";
+import { reconcilePayment, PaymentReferenceError } from "./index.js";
+import {
+  resolveEntityRefByPlatform,
+  EntityRefResolutionError,
+} from "./payments-helpers.js";
 import type { approvals } from "@paperclipai/db";
 
 // Mock DB — dispatcher passes db through to updateTransactionCategory; the
@@ -68,26 +89,6 @@ describe("isAccountingApprovalType", () => {
 describe("executeApprovedAccountingWrite", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-  });
-
-  it("routes payment.threshold_exceeded to the payment stub", async () => {
-    const approval = makeApproval(
-      ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
-      {
-        requestType: "POST /api/accounting/v1/payments",
-        companyId: "company-test",
-        contactId: "contact-test",
-        invoiceId: "inv-1",
-        amount: 1500000,
-        thresholdAmount: 1000000,
-      },
-    );
-
-    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
-
-    expect(result.executed).toBe(false);
-    expect(result.action).toBe("stub_logged");
-    expect(result.message).toContain("Phase 4c.5");
   });
 
   it("routes invoice.dedupe_ambiguous to the invoice stub", async () => {
@@ -289,5 +290,195 @@ describe("ACCOUNTING_APPROVAL_TYPES constants", () => {
 
   it("contains exactly 4 types", () => {
     expect(Object.keys(ACCOUNTING_APPROVAL_TYPES)).toHaveLength(4);
+  });
+});
+
+describe("executeApprovedAccountingWrite — accounting.payment.threshold_exceeded (Piece E)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("executes payment approval on replay — happy path (write succeeds)", async () => {
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "quickbooks",
+      ref: { customerId: "cust-payment-1" },
+    });
+    vi.mocked(reconcilePayment).mockResolvedValueOnce({
+      platform: "quickbooks",
+      paymentId: "qbo-pay-789",
+      invoiceId: "inv-payment-1",
+      amount: 1500000,
+      customerId: "cust-payment-1",
+      accountId: undefined,
+      paymentDate: "2026-05-27",
+    });
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
+      {
+        requestType: "POST /api/accounting/v1/payments",
+        companyId: "company-test",
+        contactId: "contact-test",
+        invoiceId: "inv-payment-1",
+        amount: 1500000,
+        entityRef: "cust-payment-1",
+        paymentDate: "2026-05-27",
+        thresholdAmount: 1000000,
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(true);
+    expect(result.action).toBe("write_executed");
+    expect(result.upstreamResult).toEqual({
+      platform: "quickbooks",
+      paymentId: "qbo-pay-789",
+      invoiceId: "inv-payment-1",
+      amount: 1500000,
+      customerId: "cust-payment-1",
+      accountId: undefined,
+      paymentDate: "2026-05-27",
+    });
+    expect(result.message).toContain("qbo-pay-789");
+    expect(result.message).toContain("quickbooks");
+
+    // Verify the resolver + dispatcher were called with payload values
+    expect(resolveEntityRefByPlatform).toHaveBeenCalledWith(
+      MOCK_DB,
+      "company-test",
+      "contact-test",
+      "cust-payment-1",
+    );
+    expect(reconcilePayment).toHaveBeenCalledWith(
+      MOCK_DB,
+      "company-test",
+      "contact-test",
+      "inv-payment-1",
+      1500000,
+      { customerId: "cust-payment-1" },
+      "2026-05-27",
+    );
+  });
+
+  it("returns write_failed_replay when payload is missing entityRef", async () => {
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
+      {
+        requestType: "POST /api/accounting/v1/payments",
+        companyId: "company-test",
+        contactId: "contact-test",
+        invoiceId: "inv-payment-2",
+        amount: 1500000,
+        // entityRef intentionally omitted
+        thresholdAmount: 1000000,
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("missing entityRef");
+
+    // Verify neither resolver nor dispatcher was called
+    expect(resolveEntityRefByPlatform).not.toHaveBeenCalled();
+    expect(reconcilePayment).not.toHaveBeenCalled();
+  });
+
+  it("returns write_failed_replay when resolveEntityRefByPlatform throws EntityRefResolutionError", async () => {
+    vi.mocked(resolveEntityRefByPlatform).mockRejectedValueOnce(
+      new EntityRefResolutionError(
+        "company-test",
+        "contact-test",
+        "no_connection_found",
+      ),
+    );
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
+      {
+        requestType: "POST /api/accounting/v1/payments",
+        companyId: "company-test",
+        contactId: "contact-test",
+        invoiceId: "inv-payment-3",
+        amount: 1500000,
+        entityRef: "cust-payment-3",
+        thresholdAmount: 1000000,
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("entity ref resolution failed");
+    expect(result.message).toContain("no_connection_found");
+
+    // reconcilePayment must NOT have been called since the resolver failed first
+    expect(reconcilePayment).not.toHaveBeenCalled();
+  });
+
+  it("returns write_failed_replay when reconcilePayment throws PaymentReferenceError", async () => {
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "quickbooks",
+      ref: { customerId: "cust-payment-4" },
+    });
+    vi.mocked(reconcilePayment).mockRejectedValueOnce(
+      new PaymentReferenceError(
+        "company-test",
+        "contact-test",
+        "quickbooks",
+        { customerId: "cust-payment-4" },
+        "wrong_ref_for_platform",
+      ),
+    );
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
+      {
+        requestType: "POST /api/accounting/v1/payments",
+        companyId: "company-test",
+        contactId: "contact-test",
+        invoiceId: "inv-payment-4",
+        amount: 1500000,
+        entityRef: "cust-payment-4",
+        thresholdAmount: 1000000,
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("payment reference invalid");
+    expect(result.message).toContain("quickbooks");
+    expect(result.message).toContain("wrong_ref_for_platform");
+  });
+
+  it("propagates unknown errors (e.g., HttpResponseError from platform) instead of swallowing them", async () => {
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "xero",
+      ref: { accountId: "acct-payment-5" },
+    });
+    const platformError = new Error("Xero Payment failed: 503 Service Unavailable");
+    vi.mocked(reconcilePayment).mockRejectedValueOnce(platformError);
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.PAYMENT_THRESHOLD_EXCEEDED,
+      {
+        requestType: "POST /api/accounting/v1/payments",
+        companyId: "company-test",
+        contactId: "contact-test",
+        invoiceId: "inv-payment-5",
+        amount: 1500000,
+        entityRef: "acct-payment-5",
+        thresholdAmount: 1000000,
+      },
+    );
+
+    await expect(
+      executeApprovedAccountingWrite(MOCK_DB, approval),
+    ).rejects.toBe(platformError);
   });
 });
