@@ -14,7 +14,16 @@ vi.mock("./transaction-lookup.js", async (importOriginal) => {
   };
 });
 
+vi.mock("./qbo-client.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./qbo-client.js")>();
+  return {
+    ...actual,
+    qboRequest: vi.fn(),
+  };
+});
+
 import { getTransactionById } from "./transaction-lookup.js";
+import { qboRequest } from "./qbo-client.js";
 import {
   updateTransactionCategory,
   TransactionTypeNotCategorizableError,
@@ -138,5 +147,150 @@ describe("TransactionTypeNotCategorizableError", () => {
     expect(err.message).toContain("quickbooks.BillPayment");
     expect(err.message).toContain("txn-bp-1");
     expect(err.message).toContain("Decision 5");
+  });
+});
+
+describe("updateTransactionCategory — QBO Purchase handler", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("dispatches to QBO Purchase handler when lookup returns Purchase type", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-pur-1",
+      platform: "quickbooks",
+      txnType: "Purchase",
+      previousAccountRef: "60100", // existing expense account
+      raw: {
+        Id: "txn-pur-1",
+        SyncToken: "0",
+        Line: [
+          {
+            DetailType: "AccountBasedExpenseLineDetail",
+            AccountBasedExpenseLineDetail: {
+              AccountRef: { value: "60100" },
+            },
+            Amount: 100.0,
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    const result = await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-pur-1",
+      "60200", // new expense account
+    );
+
+    // Result shape verification
+    expect(result).toEqual({
+      platform: "quickbooks",
+      txnType: "Purchase",
+      txnId: "txn-pur-1",
+      previousAccountRef: "60100",
+      newAccountRef: "60200",
+    });
+
+    // Verify qboRequest was called with the right URL + mutated body
+    expect(qboRequest).toHaveBeenCalledTimes(1);
+    expect(qboRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/purchase?operation=update",
+      expect.objectContaining({
+        Id: "txn-pur-1",
+        Line: expect.arrayContaining([
+          expect.objectContaining({
+            AccountBasedExpenseLineDetail: expect.objectContaining({
+              AccountRef: { value: "60200" }, // mutated to new account
+            }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("preserves non-AccountRef fields when mutating AccountBasedExpenseLineDetail", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-pur-2",
+      platform: "quickbooks",
+      txnType: "Purchase",
+      previousAccountRef: "60100",
+      raw: {
+        Id: "txn-pur-2",
+        SyncToken: "0",
+        Line: [
+          {
+            DetailType: "AccountBasedExpenseLineDetail",
+            AccountBasedExpenseLineDetail: {
+              AccountRef: { value: "60100" },
+              ClassRef: { value: "class-5" }, // additional field that must survive
+              TaxCodeRef: { value: "NON" },
+            },
+            Amount: 100.0,
+          },
+        ],
+      } as any,
+    });
+    vi.mocked(qboRequest).mockResolvedValueOnce({} as any);
+
+    await updateTransactionCategory(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "txn-pur-2",
+      "60200",
+    );
+
+    // Verify ClassRef and TaxCodeRef survived the mutation
+    expect(qboRequest).toHaveBeenCalledWith(
+      MOCK_DB,
+      COMPANY_ID,
+      CONTACT_ID,
+      "POST",
+      "/purchase?operation=update",
+      expect.objectContaining({
+        Line: expect.arrayContaining([
+          expect.objectContaining({
+            AccountBasedExpenseLineDetail: expect.objectContaining({
+              AccountRef: { value: "60200" },
+              ClassRef: { value: "class-5" },
+              TaxCodeRef: { value: "NON" },
+            }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("throws if QBO Purchase has no line items", async () => {
+    vi.mocked(getTransactionById).mockResolvedValueOnce({
+      txnId: "txn-pur-3",
+      platform: "quickbooks",
+      txnType: "Purchase",
+      previousAccountRef: null,
+      raw: {
+        Id: "txn-pur-3",
+        SyncToken: "0",
+        Line: [], // empty Line array — pathological case
+      } as any,
+    });
+
+    await expect(
+      updateTransactionCategory(
+        MOCK_DB,
+        COMPANY_ID,
+        CONTACT_ID,
+        "txn-pur-3",
+        "60200",
+      ),
+    ).rejects.toThrow("QBO Purchase txn-pur-3 has no line items to categorize");
+    // Verify qboRequest was NOT called (handler threw before posting)
+    expect(qboRequest).not.toHaveBeenCalled();
   });
 });

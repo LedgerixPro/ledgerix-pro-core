@@ -21,6 +21,7 @@
 
 import type { Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
+import { qboRequest } from "./qbo-client.js";
 import {
   getTransactionById,
   type TransactionLookupResult,
@@ -85,9 +86,75 @@ export type WriteHandler = (
 // Each handler ships in its own commit; this foundation commit registers none.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Per-type write handlers
+// ---------------------------------------------------------------------------
+
+// Minimal type for mutation — mirrors the QboPurchaseFull shape used by the
+// read-side handler. We only need to safely access Line[0] and mutate its
+// AccountBasedExpenseLineDetail.AccountRef. Defined locally rather than
+// imported from transaction-lookup.ts because that module keeps its full
+// type definitions internal.
+interface QboPurchaseLineForWrite {
+  AccountBasedExpenseLineDetail?: {
+    AccountRef?: { value?: string };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+interface QboPurchaseRawForWrite {
+  Id: string;
+  SyncToken: string;
+  Line?: QboPurchaseLineForWrite[];
+  [key: string]: unknown;
+}
+
+/**
+ * QBO Purchase write handler. Mutates the first line's
+ * AccountBasedExpenseLineDetail.AccountRef and POSTs the full transaction
+ * back to /purchase?operation=update.
+ *
+ * QBO update semantics: sparse updates aren't supported — must POST the
+ * entire transaction object back. The lookup.raw field from getTransactionById
+ * contains exactly that object, which makes the mutate-and-resend pattern
+ * straightforward.
+ *
+ * Multi-line caveat: only the first line's AccountRef is updated. This is
+ * consistent with the read-side previousAccountRef capture (also first line).
+ * Callers needing per-line write fidelity would need a different API surface.
+ */
+const updateQboPurchaseAccount: WriteHandler = async (
+  db,
+  companyId,
+  contactId,
+  lookup,
+  newAccountRef,
+) => {
+  const purchase = lookup.raw as unknown as QboPurchaseRawForWrite;
+  const firstLine = purchase.Line?.[0];
+  if (!firstLine) {
+    throw new Error(
+      `QBO Purchase ${lookup.txnId} has no line items to categorize`,
+    );
+  }
+  firstLine.AccountBasedExpenseLineDetail = {
+    ...(firstLine.AccountBasedExpenseLineDetail ?? {}),
+    AccountRef: { value: newAccountRef },
+  };
+  await qboRequest(
+    db,
+    companyId,
+    contactId,
+    "POST",
+    "/purchase?operation=update",
+    purchase,
+  );
+};
+
 const QBO_WRITE_REGISTRY: ReadonlyMap<string, WriteHandler> = new Map([
-  // Decision 5 IN-scope handlers will register here:
-  // ["Purchase", updateQboPurchaseAccount],
+  ["Purchase", updateQboPurchaseAccount],
+  // Decision 5 IN-scope handlers still to add:
   // ["Bill", updateQboBillAccount],
   // ["Deposit", updateQboDepositAccount],
 ]);
