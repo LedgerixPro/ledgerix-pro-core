@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-24
-**Last updated:** 2026-05-27 Session 4 (Decision 4 + Decision 5 FEATURE-COMPLETE + POST /category endpoint SHIPPED + Q1 + Q2 LOCKED AND IMPLEMENTED + Decision 6 FEATURE-COMPLETE — POST /payments endpoint SHIPPED end-to-end)
+**Last updated:** 2026-05-28 Session 5 (Decision 7 — POST /invoices — DESIGN LOCKED; Q-inv-1/2/3 + sub-decisions locked; implementation Pieces H/I/J/K defined; not yet implemented)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -657,6 +657,182 @@ All 4 pieces of the Decision 6 arc are now shipped end-to-end. Implementation ar
 
 **Decision 6 unblocks Phase 4c.5 endpoint roadmap:** POST /payments is the second fully-functional Phase 4c.5 write endpoint after POST /transactions/:txnId/category (Piece C). POST /invoices remains the third — architecturally unblocked from Q1 + Q2 prerequisites (both implemented), but still requires its own design work (request body schema, setup-fee-vs-recurring discriminator, etc.). The two remaining `executeApprovedAccountingWrite` stubs (`accounting.invoice.dedupe_ambiguous` + `accounting.invoice.pricing_mismatch`) await the Invoice endpoint design.
 
+### Decision 7: POST /invoices scope (DESIGN LOCK — 2026-05-28 Session 5)
+
+The third and final Phase 4c.5 write endpoint. Creates a monthly service invoice in **Ledgerix Pro's own QBO** (not client books). Used exclusively by the Billing & Invoicing agent. This is the highest-risk write endpoint in Phase 4c.5: it creates a new financial record (vs. mutating one), and it sits behind **two** safety gates (dedupe + pricing), not one. Per the Trust Tenet, the EA §2B.4 v1.0 language ("Service tier doesn't match expected pricing: No automatic validation. The billing agent is responsible.") is **superseded** — endpoint-enforced pricing validation replaces agent-trust. An EA REVISED note records this.
+
+Decision 7 follows the Decision 6 shape: lock the contract first, implement as discrete Pieces, share a single helper between the route handler and the approval-replay path.
+
+#### Pre-implementation findings (Tenet #7 verification — 2026-05-28)
+
+All confirmed against code before locking:
+
+1. **`findOrCreateCustomer` already performs dedupe detection.** It returns a 5-value `action` discriminant: `found_by_email` / `found_by_name_exact` / `created_new` (all auto-proceed) and `ambiguous_name_only` / `ambiguous_email_match_different_name` (both HITL-required), the latter two carrying a `matchDetails` object (submittedName/submittedEmail/storedName/storedEmail). The route does NOT reimplement dedupe — it reads `action` and gates on the two ambiguous values. Signature: `findOrCreateCustomer(db, companyId, contactId, name, email)`.
+2. **`createInvoice` takes `lineItems: Array<{description, amount}>` and `dueDate` directly; it computes its own total and resolves the QBO Item ref internally.** It has NO `serviceTier` or pricing parameter. Therefore pricing validation MUST happen in the route, BEFORE the `createInvoice` call. Signature: `createInvoice(db, companyId, contactId, customerRef, lineItems, dueDate)`.
+3. **Two distinct contactId semantics exist.** `findOrCreateCustomer` and `createInvoice` take `contactId: string | null` as the **QBO books-connection key** — and per EA §2B.4 this is `null` for Ledgerix Pro's own-QBO global-connection pattern. But `charter.ts` (`isCharterForInvoicing(db, companyId, ghlContactId)`) and the pricing lookup key on the **GHL contactId** identifying *which client to bill*. These are different identifiers. The payload's `BaseAccountingPayload.contactId` (required `string`) is the **GHL contactId**; the QBO write calls pass `contactId: null`. This is the central seam of the design (parallel to Decision 6's Q-pay-2 overloaded-entityRef split).
+4. **The two approval payloads are already locked (Phase 4c.4, committed).** `InvoiceDedupeAmbiguousPayload` and `InvoicePricingMismatchPayload` are fully specified with `dedupeDecision` / `pricingDecision` sub-objects. Decision 7 wires to them — it does not redefine them. Any change to the payloads would require an ADR-003 Amendment.
+5. **`getExpectedPriceCents` and `getSetupFeeCents` exist (Q1/Q2 implemented).** `getExpectedPriceCents(...)` returns the recurring expected price keyed by tier + isCharter; `getSetupFeeCents(...)` returns the one-time setup fee keyed by tier (no isCharter dimension per Q2). `isCharterForInvoicing` defaults to `false` for any client without a charter row (charter.ts header line 67).
+
+#### Existing payload contracts (Phase 4c.4) — the constraints Decision 7 honors
+
+```ts
+interface BaseAccountingPayload {
+  companyId: string;
+  contactId: string;        // GHL contactId — the client being billed (NOT the QBO books key)
+  reason?: string;
+  idempotencyKey?: string;
+}
+
+interface InvoiceDedupeAmbiguousPayload extends BaseAccountingPayload {
+  requestType: "POST /api/accounting/v1/invoices";
+  customerName: string;
+  customerEmail: string;
+  serviceTier: "Foundation" | "Growth Engine" | "Scale-Up";
+  billingPeriod: { start: string; end: string };
+  lineItems: Array<{ description: string; amount: number }>;
+  dueDate?: string;
+  dedupeDecision: {
+    matchedCustomerId: string;
+    matchType: "name_only" | "email_only_different_name";
+    confidence: number;
+  };
+}
+
+interface InvoicePricingMismatchPayload extends BaseAccountingPayload {
+  requestType: "POST /api/accounting/v1/invoices";
+  customerName: string;
+  customerEmail: string;
+  serviceTier: "Foundation" | "Growth Engine" | "Scale-Up";
+  billingPeriod: { start: string; end: string };
+  lineItems: Array<{ description: string; amount: number }>;
+  dueDate?: string;
+  pricingDecision: {
+    sentAmountCents: number;
+    expectedAmountCents: number;
+    isCharter: boolean;
+    deltaCents: number;
+    deltaPercent: number;
+  };
+}
+```
+
+Both payloads omit a `billingMode` field. The design must therefore carry the recurring-vs-setup distinction WITHOUT amending the payload — see Q-inv-1.
+
+---
+
+#### Q-inv-1: Recurring-vs-setup discriminator (LOCKED — explicit `billingMode` in request body; payload-derivable from serviceTier+amount, not stored)
+
+**Decision:** The request body carries an explicit discriminator `billingMode: "recurring" | "setup"` (required). The route uses it to choose which pricing function to validate against:
+- `billingMode: "recurring"` → expected = `getExpectedPriceCents(tier, isCharter)`, where `isCharter = await isCharterForInvoicing(db, companyId, ghlContactId)`.
+- `billingMode: "setup"` → expected = `getSetupFeeCents(tier)`. The `isCharter` lookup is SKIPPED (setup fees don't vary by charter per Q2); `pricingDecision.isCharter` is recorded as `false` for audit consistency.
+
+The locked approval payloads have NO `billingMode` field and will NOT be amended. To keep replay deterministic, storing `billingMode` inside the existing free-text `reason` field is REJECTED (fragile parsing). Instead — see sub-decision Q-inv-1-α.
+
+**Sub-decision Q-inv-1-α (LOCKED):** Because the payload cannot carry `billingMode` and replay must be deterministic, the dedupe and pricing approval paths only ever need to RE-CREATE the invoice (not re-validate pricing — the human already approved the amount by approving the row). Therefore replay does NOT need `billingMode`: it calls `findOrCreateCustomer` + `createInvoice` directly with the payload's `lineItems`/`dueDate`, bypassing the pricing gate entirely (the approval IS the human override of that gate). `billingMode` is a route-time-only concern. This eliminates the need to persist it. Confirmed consistent with ADR-003 Q2 ("re-executable from the payload alone") — the executable unit is the invoice creation, not the validation.
+
+**Rationale:** Explicit beats inferred at the API boundary (the agent knows whether it's billing monthly service or onboarding setup; making it state that is clearer than inferring from amount). Skipping the charter lookup for setup mode avoids a needless DB read and reflects Q2's business semantics. Keeping `billingMode` out of the payload respects the locked Phase 4c.4 contract and the trust-tenet principle that an approved row is a human override — replay re-creates, it does not re-judge.
+
+**Rejected:**
+- Infer mode from amount alone (no body field). Cons: ambiguous when setup and recurring prices coincide; hides intent.
+- Add `billingMode` to both payloads via ADR-003 Amendment. Cons: larger blast radius; unnecessary once Q-inv-1-α establishes replay doesn't need it.
+- Two separate endpoints (`/invoices/recurring` + `/invoices/setup`). Cons: same rejection as Q2 Option C — setup fees ARE invoices structurally; doubles API/test/doc surface.
+
+#### Q-inv-2: Dedupe gate seam (LOCKED — route reads `findOrCreateCustomer.action`; shared resolver between route and replay)
+
+**Decision:** The route calls `findOrCreateCustomer(db, companyId, /* QBO books key */ null, customerName, customerEmail)`. It branches on `action`:
+- `found_by_email` / `found_by_name_exact` / `created_new` → proceed to pricing gate (Q-inv-3) using the returned `customerId`.
+- `ambiguous_name_only` → create approval `accounting.invoice.dedupe_ambiguous` with `dedupeDecision.matchType: "name_only"`.
+- `ambiguous_email_match_different_name` → create approval with `dedupeDecision.matchType: "email_only_different_name"`.
+
+The `matchType` enum values in the payload (`name_only` / `email_only_different_name`) map directly from the two `action` values. `matchedCustomerId` = the `customerId` the function returned (it returns the matched id even in ambiguous cases). The dedupe gate runs BEFORE the pricing gate — a customer we can't unambiguously resolve is escalated before we reason about price.
+
+**Sub-decision Q-inv-2-α (LOCKED — `confidence` value):** `findOrCreateCustomer` does NOT compute a numeric confidence score. Rather than invent a scorer, `confidence` is a FIXED value derived from `matchType`: `email_only_different_name` → `0.5`; `name_only` → `0.3`. Reasoning: an email match with a name conflict is a stronger signal of "same entity, data drift" than a bare name match with an email conflict, so it gets the higher value. These are documented as heuristic placeholders, honest about being non-computed. If a real scorer is later added to `findOrCreateCustomer`, the route passes it through instead — interface-compatible extension, no payload change.
+
+**Sub-decision Q-inv-2-β (LOCKED — replay path):** On approval of a `dedupe_ambiguous` row, the human has decided the matched customer IS correct. Replay calls `createInvoice(db, companyId, null, dedupeDecision.matchedCustomerId, lineItems, dueDate ?? <Net-15 default>)` directly — it does NOT re-run `findOrCreateCustomer` (that would just re-detect the ambiguity). The approval encodes the resolution: use `matchedCustomerId`.
+
+**Rationale:** Reuses existing, tested dedupe detection rather than duplicating it. The match-type mapping is 1:1 and total. Running dedupe before pricing means the cheaper/safer escalation happens first. Replay-uses-matchedCustomerId is the literal meaning of approving the row.
+
+**Rejected:**
+- Route reimplements its own dedupe query. Cons: duplicates `findOrCreateCustomer`; two code paths drift.
+- Replay re-runs `findOrCreateCustomer`. Cons: re-detects the same ambiguity, creating an approval loop.
+
+#### Q-inv-3: Pricing gate seam (LOCKED — route compares line-item total to expected; tolerance + mismatch payload)
+
+**Decision:** After the dedupe gate resolves to a concrete `customerId`, the route computes `sentAmountCents = sum(lineItems[].amount)` (converted to cents) and compares against `expectedAmountCents` (from Q-inv-1's mode-appropriate pricing function). A new shared helper `evaluateInvoicePricing` (parallel to Decision 6's `evaluatePaymentThreshold`) returns whether the amounts match within tolerance plus the audit fields.
+- **Match (within tolerance)** → proceed to `createInvoice`; return 201.
+- **Mismatch (outside tolerance)** → create approval `accounting.invoice.pricing_mismatch` with the full `pricingDecision` sub-object (`sentAmountCents`, `expectedAmountCents`, `isCharter`, `deltaCents`, `deltaPercent`); return 202.
+
+**Sub-decision Q-inv-3-α (LOCKED — tolerance):** Tolerance is **exact match (zero tolerance), in cents**. Any non-zero `deltaCents` escalates. Reasoning: this is Ledgerix Pro billing its OWN clients a KNOWN price from our OWN pricing tables — there is no rounding or FX ambiguity to absorb. The Trust Tenet favors the conservative path; a $1 discrepancy on our own invoice is worth a human glance. `deltaPercent` is still recorded for the approver's context but is not part of the gate condition.
+
+**Sub-decision Q-inv-3-β (LOCKED — replay path):** On approval of a `pricing_mismatch` row, the human has accepted the sent amount. Replay calls `createInvoice` with the payload's `lineItems` (the sent amounts) directly, bypassing the pricing comparison. The approval IS the override (per Q-inv-1-α).
+
+**Sub-decision Q-inv-3-γ (LOCKED — helper location):** `evaluateInvoicePricing` + the customer-resolution wrapper live in a new file `invoices-helpers.ts` (parallel to `payments-helpers.ts`), NOT in `index.ts` or `pricing.ts`. Keeps `pricing.ts` as the canonical price-lookup module and `index.ts` from growing. The shared helper is used by BOTH the route and (for the pricing fields) the replay audit path.
+
+**Rationale:** Pricing comparison cannot live in `createInvoice` (Finding 2 — it has no pricing param), so the route is the only correct place. Zero-tolerance is defensible precisely because we own both sides of the number. Mirroring `payments-helpers.ts` keeps the codebase symmetric.
+
+**Rejected:**
+- Percentage tolerance (e.g., ±2%). Cons: invents slack where none is warranted on our own known prices.
+- Validate pricing inside `createInvoice`. Cons: would require changing a tested service signature and conflates record-creation with policy.
+
+---
+
+#### Locked endpoint contract
+
+```
+POST /api/accounting/v1/invoices
+Query:   companyId (always Ledgerix Pro's UUID), contactId (GHL contactId of client to bill)
+Headers: idempotency-key? (optional; ADR-003 Q5 via withIdempotency)
+Body: {
+  customerName: string,
+  customerEmail: string,
+  serviceTier: "Foundation" | "Growth Engine" | "Scale-Up",
+  billingMode: "recurring" | "setup",            // Q-inv-1 discriminator
+  billingPeriod: { start: string; end: string }, // ISO dates
+  lineItems: Array<{ description: string; amount: number }>,
+  dueDate?: string,                              // ISO date; defaults Net-15
+  reason?: string
+}
+
+Responses:
+  201 Created      { status: "success", data: { invoiceId, invoiceNumber, customerId, totalAmount, dueDate, status }, meta }
+  202 Accepted     { status: "pending_approval", data: { approvalId, approvalType, reason }, meta }
+                     — approvalType is accounting.invoice.dedupe_ambiguous (Q-inv-2) OR accounting.invoice.pricing_mismatch (Q-inv-3)
+  400 Bad Request  — validation errors (missing/invalid body fields, unknown serviceTier, empty lineItems, future-or-invalid dueDate)
+
+Identifier seam (Finding 3):
+  - GHL contactId  → pricing + charter lookups + payload.contactId + audit actor context
+  - QBO books key  → ALWAYS null in findOrCreateCustomer/createInvoice calls (Ledgerix Pro own-QBO global connection)
+
+Gate order: validate body → dedupe gate (Q-inv-2) → pricing gate (Q-inv-3) → createInvoice → 201.
+FK separation: requestedByUserId for board actors, requestedByAgentId for agent actors (Piece C/G pattern).
+```
+
+#### Wiring scope — four Pieces (parallel to Decision 6's D/E/F/G)
+
+1. **Piece H (Helpers)** — New `invoices-helpers.ts`: `evaluateInvoicePricing(sentAmountCents, expectedAmountCents)` → `{ matches: boolean; deltaCents; deltaPercent }` (zero-tolerance per Q-inv-3-α); plus a small `confidenceForMatchType(matchType)` mapper (Q-inv-2-α). Unit tests for match/mismatch/delta math + the two confidence values.
+2. **Piece I (Approval-replay wiring)** — Replace the two Phase 4c.4 stubs in `executeApprovedAccountingWrite`: `accounting.invoice.dedupe_ambiguous` → `createInvoice(..., matchedCustomerId, ...)` (Q-inv-2-β); `accounting.invoice.pricing_mismatch` → `createInvoice(..., resolved customerId, ...)` (Q-inv-3-β). Both pass QBO key `null`. Outcomes parallel to Pieces B/E: success → `write_executed`; upstream failure → `write_failed_replay`; unknown → propagate. This brings the dispatcher to 4-of-4 wired.
+3. **Piece J (no service refactor needed)** — Unlike Decision 6's Piece D, `findOrCreateCustomer` and `createInvoice` already have correct signatures and return shapes (Finding 1+2). Piece J is therefore a NO-OP placeholder kept for numbering symmetry; any minor adjustment (e.g., surfacing `customerId` from the create path in the success envelope) is folded into Piece K. **Flag:** confirm at implementation time that no signature change sneaks in — if one does, it gets its own commit, not a silent fold.
+4. **Piece K (Route)** — `POST /api/accounting/v1/invoices`: body validation, `assertCompanyAccess`, `withIdempotency` wrapping, dedupe gate → pricing gate → `createInvoice`, three response paths (201 / 202×2 / 400), FK actor separation, GHL-vs-null contactId seam.
+
+#### Out of scope for Decision 7 (deferred)
+
+- **Onboarding/cancellation workflow wiring of charter status** (already tracked under Q1's "What is NOT implemented yet"). The Invoice endpoint READS charter status via `isCharterForInvoicing`; it does not write it.
+- **Production seed of `setup_fee_pricing`** (tracked under Q2). The endpoint will return `SetupFeeNotFoundError` → 400/500 until prod is seeded; that's an operational step, not Decision 7 code.
+- **A computed customer-match confidence scorer** — Q-inv-2-α uses fixed heuristic values; a real scorer is a future enhancement.
+- **Multi-tier / proration / partial-period invoices** — single tier, single billing period per call for v1.
+
+#### EA REVISED note required
+
+EA §2B.4 (API Spec v1.0) states pricing gets "no automatic validation — the billing agent is responsible." Decision 7 supersedes this with endpoint-enforced zero-tolerance pricing validation + dedupe escalation. A REVISED note (Tenet #16) records the supersession when Decision 7 ships.
+
+#### Estimated effort
+
+~3-4 hours across Pieces H/I/K (J is a no-op). Less than Decision 6 because the service layer needs no refactor (Finding 1+2) and the dedupe detection already exists. Test trajectory target: 308 → ~330 (+~22: helper math, 2 confidence values, 2 replay paths × outcomes, route happy-path + both 202 gates + 400 validation + FK separation).
+
+#### Decision 7 closes Phase 4c.5's endpoint roadmap
+
+POST /invoices is the third and final write endpoint. On ship: 8-of-8 Phase 4 endpoints production-ready; 4-of-4 `executeApprovedAccountingWrite` stubs wired. Phase 4c.5 becomes ready_to_merge_to_adr (pending Q5 multi-line journal semantics, which gates no endpoint).
+
 ## Architecture Decisions Pending
 
 ### ~~Q1: Charter status storage mechanism (ADR-003 Amendment 1 Gap 1)~~ — LOCKED + IMPLEMENTED 2026-05-27 Session 4 (Option B)
@@ -1048,3 +1224,25 @@ This WIP doc must be read at the start of every Phase 4c.5 session before any wo
 - `write_thresholds`: 2 active rows, canonical, verified (post-cleanup)
 - `activity_log`: 4 admin-operation entries (2 pricing seeds, 2 thresholds seeds — original + buggy re-run for each). Permanent audit trail.
 - Phase 4c.5 bootstrap complete; null-identity defect documented; fix is the next IMMEDIATE work item.
+
+### Session 5 — 2026-05-28
+
+**Goal:** Design and lock POST /invoices (the third and final Phase 4c.5 write endpoint) per the lock-then-implement discipline established by Decisions 5 and 6.
+
+**What happened:**
+- Re-read CLAUDE.md operating principles + all tracked docs (WIP, PHASE-4-PROGRESS, EA v3.4, Brief v1.4, TODO) at session start. Confirmed EA is v3.4 (a "v3.6" reference was a misremember — verified the uploaded truth docs are byte-identical to the Project copies and the local header reads v3.4).
+- Tenet #7 verification BEFORE locking: read write-approvals.ts (the two invoice payloads are already locked from Phase 4c.4), findOrCreateCustomer + createInvoice (service signatures), and the pricing/charter service signatures. Three findings drove the design: (1) findOrCreateCustomer already does dedupe detection via its 5-value action discriminant; (2) createInvoice has no pricing param, so pricing validation must live in the route; (3) two distinct contactId semantics — GHL contactId for pricing/charter/payload/audit vs. QBO books key which is always null for Ledgerix Pro's own QBO.
+
+**What was decided (locked):**
+- Decision 7 locked under Option A (one decision, three sub-decisions Q-inv-1/2/3, single commit) — see Architecture Decisions Made.
+- Q-inv-1: explicit billingMode discriminator in the request body; payload needs no billingMode field because an approved row is a human override and replay re-creates rather than re-validates (Q-inv-1-α).
+- Q-inv-2: dedupe gate reuses findOrCreateCustomer.action; fixed heuristic confidence values 0.5/0.3 (Q-inv-2-α, honestly flagged as non-computed); replay uses matchedCustomerId (Q-inv-2-β).
+- Q-inv-3: pricing gate compares line-item total to expected; zero-tolerance exact-cents match (Q-inv-3-α) because Ledgerix Pro owns both sides of the number; helper in new invoices-helpers.ts (Q-inv-3-γ).
+
+**What's NOT done:** No code. Decision 7 is a DESIGN LOCK only. Implementation is Pieces H/I/J/K (J is a no-op — service layer already correct). EA §2B.4 REVISED note deferred to ship time.
+
+**State at session end:**
+- Codebase HEAD: unchanged from session start (fc80911b) plus this docs commit.
+- 308 tests passing (no code touched).
+- Phase 4c.5: Decisions 4/5/6 feature-complete + shipped; Decision 7 design-locked, implementation pending. 2 of 4 approval stubs wired (the 2 invoice stubs get wired in Piece I).
+- Next session: implement Piece H (invoices-helpers.ts + tests).
