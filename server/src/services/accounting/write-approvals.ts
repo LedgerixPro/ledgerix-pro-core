@@ -6,6 +6,7 @@ import {
 } from "./transaction-write.js";
 import { TransactionNotFoundError } from "./transaction-lookup.js";
 import {
+  qbo,
   reconcilePayment,
   PaymentReferenceError,
 } from "./index.js";
@@ -350,22 +351,256 @@ export async function executeApprovedAccountingWrite(
       }
     }
 
-    case ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS:
+    case ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS: {
+      // Phase 4c.5 Decision 7 Piece I wiring (2026-05-28): replay the
+      // original POST /api/accounting/v1/invoices request using
+      // qbo.createInvoice directly. Per Q-inv-2-β, the approval row
+      // already encodes the resolution — dedupeDecision.matchedCustomerId
+      // is the customer the human confirmed. Replay does NOT re-run
+      // findOrCreateCustomer (that would re-detect the same ambiguity
+      // and loop). Per Finding 3 (Tenet #7 verification), the QBO books
+      // key is null (Ledgerix Pro own-QBO global connection); the GHL
+      // contactId is audit context only and is NOT passed to QBO.
+      const matchedCustomerId = (payload.dedupeDecision as { matchedCustomerId?: string } | undefined)?.matchedCustomerId;
+      const lineItems = payload.lineItems as Array<{ description: string; amount: number }> | undefined;
+      const ghlContactId = (payload.contactId as string | null | undefined) ?? null;
+      const dueDate = payload.dueDate as string | undefined;
+
+      if (!matchedCustomerId || typeof matchedCustomerId !== "string" || matchedCustomerId.length === 0) {
+        logger.warn(
+          { approvalId: approval.id, companyId: approval.companyId, approvalType: type },
+          "Invoice dedupe approval execution failed — payload missing dedupeDecision.matchedCustomerId",
+        );
+        return {
+          executed: false,
+          action: "write_failed_replay",
+          message:
+            `Invoice dedupe approval payload is missing dedupeDecision.matchedCustomerId. ` +
+            `Replay cannot proceed; manual intervention required (the original request may have been malformed).`,
+        };
+      }
+      if (!Array.isArray(lineItems) || lineItems.length === 0) {
+        logger.warn(
+          { approvalId: approval.id, companyId: approval.companyId, approvalType: type },
+          "Invoice dedupe approval execution failed — payload missing or empty lineItems",
+        );
+        return {
+          executed: false,
+          action: "write_failed_replay",
+          message:
+            `Invoice dedupe approval payload is missing or has empty lineItems. ` +
+            `Replay cannot proceed; manual intervention required.`,
+        };
+      }
+
+      // Net-15 default per Decision 7 (no helper exists in the codebase;
+      // inline computation reviewed and approved 2026-05-28).
+      const resolvedDueDate =
+        dueDate ??
+        new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+      try {
+        const writeResult = await qbo.createInvoice(
+          db,
+          approval.companyId,
+          null, // QBO books key — Ledgerix Pro own-QBO global connection per Finding 3
+          matchedCustomerId,
+          lineItems,
+          resolvedDueDate,
+        );
+
+        logger.info(
+          {
+            approvalId: approval.id,
+            companyId: approval.companyId,
+            approvalType: type,
+            ghlContactId,
+            invoiceId: writeResult.invoiceId,
+            customerRef: matchedCustomerId,
+            totalAmt: writeResult.totalAmt,
+          },
+          "Invoice dedupe approval executed — write succeeded on replay",
+        );
+
+        return {
+          executed: true,
+          action: "write_executed",
+          upstreamResult: {
+            invoiceId: writeResult.invoiceId,
+            invoiceNumber: writeResult.invoiceNumber,
+            totalAmt: writeResult.totalAmt,
+            dueDate: writeResult.dueDate,
+            customerRef: matchedCustomerId,
+          },
+          message:
+            `Invoice ${writeResult.invoiceId} created on QBO for customerRef ${matchedCustomerId} ` +
+            `(total: ${writeResult.totalAmt} cents, dueDate: ${writeResult.dueDate})`,
+        };
+      } catch (err) {
+        // No write_failed_replay conversion here: createInvoice exposes no
+        // typed domain-error class. Unlike the soft-failure paths above
+        // (missing-field guards), an error reaching this catch is a
+        // genuine infrastructure/upstream failure (QBO 5xx, missing income
+        // account, network) that the operator must see loudly — not a
+        // routine HITL escalation. Propagate it; the approval-flow caller
+        // handles it as a real error.
+        throw err;
+      }
+    }
+
     case ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH: {
-      logger.info(
-        {
-          approvalId: approval.id,
-          companyId: approval.companyId,
-          approvalType: type,
-          customerName: payload.customerName,
-        },
-        "[Phase 4c.4 stub] Invoice approval executed — Phase 4c.5 will perform the actual write",
-      );
-      return {
-        executed: false,
-        action: "stub_logged",
-        message: "Invoice write deferred to Phase 4c.5 implementation",
-      };
+      // Phase 4c.5 Decision 7 Piece I wiring (2026-05-28), per REVISED
+      // Q-inv-3-β (commit 7ac02b90 — Option A): the
+      // InvoicePricingMismatchPayload carries customerName + customerEmail
+      // but NOT a resolved customerId (unlike InvoiceDedupeAmbiguousPayload).
+      // The locked Phase 4c.4 payload contract is not amended. Replay
+      // re-resolves the customer via qbo.findOrCreateCustomer before
+      // calling qbo.createInvoice.
+      //
+      // Ambiguous-on-replay edge case (locked conservative behavior):
+      // if findOrCreateCustomer returns one of the two ambiguous actions,
+      // the customer-dedupe state drifted between original approval and
+      // replay. The human's pricing approval does NOT authorize resolving
+      // a fresh dedupe ambiguity → return write_failed_replay and require
+      // a manual re-submit which triggers the dedupe gate fresh.
+      const customerName = payload.customerName as string | undefined;
+      const customerEmail = payload.customerEmail as string | undefined;
+      const lineItems = payload.lineItems as Array<{ description: string; amount: number }> | undefined;
+      const ghlContactId = (payload.contactId as string | null | undefined) ?? null;
+      const dueDate = payload.dueDate as string | undefined;
+
+      if (!customerName || typeof customerName !== "string" || customerName.length === 0) {
+        logger.warn(
+          { approvalId: approval.id, companyId: approval.companyId, approvalType: type },
+          "Invoice pricing-mismatch approval execution failed — payload missing customerName",
+        );
+        return {
+          executed: false,
+          action: "write_failed_replay",
+          message:
+            `Invoice pricing-mismatch approval payload is missing customerName. ` +
+            `Replay cannot proceed; manual intervention required (the original request may have been malformed).`,
+        };
+      }
+      if (!customerEmail || typeof customerEmail !== "string" || customerEmail.length === 0) {
+        logger.warn(
+          { approvalId: approval.id, companyId: approval.companyId, approvalType: type },
+          "Invoice pricing-mismatch approval execution failed — payload missing customerEmail",
+        );
+        return {
+          executed: false,
+          action: "write_failed_replay",
+          message:
+            `Invoice pricing-mismatch approval payload is missing customerEmail. ` +
+            `Replay cannot proceed; manual intervention required.`,
+        };
+      }
+      if (!Array.isArray(lineItems) || lineItems.length === 0) {
+        logger.warn(
+          { approvalId: approval.id, companyId: approval.companyId, approvalType: type },
+          "Invoice pricing-mismatch approval execution failed — payload missing or empty lineItems",
+        );
+        return {
+          executed: false,
+          action: "write_failed_replay",
+          message:
+            `Invoice pricing-mismatch approval payload is missing or has empty lineItems. ` +
+            `Replay cannot proceed; manual intervention required.`,
+        };
+      }
+
+      const resolvedDueDate =
+        dueDate ??
+        new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+      try {
+        // Step 1: re-resolve customer (REVISED Q-inv-3-β Option A).
+        const resolved = await qbo.findOrCreateCustomer(
+          db,
+          approval.companyId,
+          null, // QBO books key
+          customerName,
+          customerEmail,
+        );
+
+        // Step 2: branch on action — ambiguous-on-replay → escalate.
+        if (
+          resolved.action === "ambiguous_name_only" ||
+          resolved.action === "ambiguous_email_match_different_name"
+        ) {
+          logger.warn(
+            {
+              approvalId: approval.id,
+              companyId: approval.companyId,
+              approvalType: type,
+              ghlContactId,
+              customerResolveAction: resolved.action,
+            },
+            "Invoice pricing-mismatch approval execution failed — customer dedupe state drifted on replay",
+          );
+          return {
+            executed: false,
+            action: "write_failed_replay",
+            message:
+              `Invoice pricing-mismatch approval cannot be executed: customer-dedupe state drifted ` +
+              `between original approval and replay (findOrCreateCustomer returned ${resolved.action}). ` +
+              `The pricing approval does not authorize resolving a fresh dedupe ambiguity. ` +
+              `Manual intervention required: re-submit the original request, which will trigger ` +
+              `the dedupe gate fresh.`,
+          };
+        }
+
+        // Step 3: unambiguous resolution → create invoice with resolved id.
+        const writeResult = await qbo.createInvoice(
+          db,
+          approval.companyId,
+          null,
+          resolved.customerId,
+          lineItems,
+          resolvedDueDate,
+        );
+
+        logger.info(
+          {
+            approvalId: approval.id,
+            companyId: approval.companyId,
+            approvalType: type,
+            ghlContactId,
+            invoiceId: writeResult.invoiceId,
+            customerRef: resolved.customerId,
+            customerResolveAction: resolved.action,
+            totalAmt: writeResult.totalAmt,
+          },
+          "Invoice pricing-mismatch approval executed — write succeeded on replay",
+        );
+
+        return {
+          executed: true,
+          action: "write_executed",
+          upstreamResult: {
+            invoiceId: writeResult.invoiceId,
+            invoiceNumber: writeResult.invoiceNumber,
+            totalAmt: writeResult.totalAmt,
+            dueDate: writeResult.dueDate,
+            customerRef: resolved.customerId,
+            customerResolveAction: resolved.action,
+          },
+          message:
+            `Invoice ${writeResult.invoiceId} created on QBO for customerRef ${resolved.customerId} ` +
+            `(resolved via ${resolved.action}, total: ${writeResult.totalAmt} cents, ` +
+            `dueDate: ${writeResult.dueDate})`,
+        };
+      } catch (err) {
+        // No write_failed_replay conversion here: createInvoice and
+        // findOrCreateCustomer expose no typed domain-error class. Unlike
+        // the soft-failure paths above (missing-field guards +
+        // ambiguous-on-replay drift), an error reaching this catch is a
+        // genuine infrastructure/upstream failure (QBO 5xx, missing income
+        // account, network) that the operator must see loudly — not a
+        // routine HITL escalation. Propagate it; the approval-flow caller
+        // handles it as a real error.
+        throw err;
+      }
     }
 
     case ACCOUNTING_APPROVAL_TYPES.TRANSACTION_CATEGORY_UNKNOWN_PREVIOUS: {

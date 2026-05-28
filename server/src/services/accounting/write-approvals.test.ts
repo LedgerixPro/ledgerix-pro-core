@@ -13,6 +13,14 @@ vi.mock("./index.js", async (importOriginal) => {
   return {
     ...actual,
     reconcilePayment: vi.fn(),
+    // Piece I: extend the qbo namespace mock with spies for createInvoice +
+    // findOrCreateCustomer. Spreading actual.qbo preserves any other
+    // qbo.* methods consumed elsewhere in the dispatcher.
+    qbo: {
+      ...actual.qbo,
+      createInvoice: vi.fn(),
+      findOrCreateCustomer: vi.fn(),
+    },
   };
 });
 
@@ -34,7 +42,7 @@ import {
   TransactionTypeNotCategorizableError,
 } from "./transaction-write.js";
 import { TransactionNotFoundError } from "./transaction-lookup.js";
-import { reconcilePayment, PaymentReferenceError } from "./index.js";
+import { qbo, reconcilePayment, PaymentReferenceError } from "./index.js";
 import {
   resolveEntityRefByPlatform,
   EntityRefResolutionError,
@@ -91,44 +99,6 @@ describe("executeApprovedAccountingWrite", () => {
     vi.resetAllMocks();
   });
 
-  it("routes invoice.dedupe_ambiguous to the invoice stub", async () => {
-    const approval = makeApproval(
-      ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS,
-      {
-        requestType: "POST /api/accounting/v1/invoices",
-        companyId: "company-test",
-        contactId: "contact-test",
-        customerName: "Test Co",
-        customerEmail: "test@example.com",
-        serviceTier: "Foundation",
-      },
-    );
-
-    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
-
-    expect(result.executed).toBe(false);
-    expect(result.action).toBe("stub_logged");
-    expect(result.message).toContain("Phase 4c.5");
-  });
-
-  it("routes invoice.pricing_mismatch to the invoice stub", async () => {
-    const approval = makeApproval(
-      ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
-      {
-        requestType: "POST /api/accounting/v1/invoices",
-        companyId: "company-test",
-        contactId: "contact-test",
-        customerName: "Test Co",
-        customerEmail: "test@example.com",
-        serviceTier: "Growth Engine",
-      },
-    );
-
-    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
-
-    expect(result.executed).toBe(false);
-    expect(result.action).toBe("stub_logged");
-  });
 
   it("executes transaction.category_with_unknown_previous on approval — happy path (write succeeds on replay)", async () => {
     vi.mocked(updateTransactionCategory).mockResolvedValueOnce({
@@ -480,5 +450,369 @@ describe("executeApprovedAccountingWrite — accounting.payment.threshold_exceed
     await expect(
       executeApprovedAccountingWrite(MOCK_DB, approval),
     ).rejects.toBe(platformError);
+  });
+});
+
+describe("executeApprovedAccountingWrite — accounting.invoice.dedupe_ambiguous (Piece I)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("executes dedupe approval on replay — happy path (createInvoice with matchedCustomerId, no findOrCreateCustomer call)", async () => {
+    vi.mocked(qbo.createInvoice).mockResolvedValueOnce({
+      invoiceId: "qbo-inv-100",
+      invoiceNumber: "INV-1001",
+      totalAmt: 59900,
+      dueDate: "2026-06-12",
+    });
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "ACME Corp",
+        customerEmail: "billing@acme.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 59900 }],
+        dueDate: "2026-06-12",
+        dedupeDecision: {
+          matchedCustomerId: "cust-resolved-1",
+          matchType: "name_only",
+          confidence: 0.3,
+        },
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(true);
+    expect(result.action).toBe("write_executed");
+    expect(result.upstreamResult).toEqual({
+      invoiceId: "qbo-inv-100",
+      invoiceNumber: "INV-1001",
+      totalAmt: 59900,
+      dueDate: "2026-06-12",
+      customerRef: "cust-resolved-1",
+    });
+    expect(result.message).toContain("qbo-inv-100");
+    expect(result.message).toContain("cust-resolved-1");
+
+    // Verify createInvoice called with QBO books key null + matchedCustomerId
+    expect(qbo.createInvoice).toHaveBeenCalledTimes(1);
+    expect(qbo.createInvoice).toHaveBeenCalledWith(
+      MOCK_DB,
+      "company-test",
+      null, // QBO books key, NOT the GHL contactId
+      "cust-resolved-1",
+      [{ description: "Foundation tier — May 2026", amount: 59900 }],
+      "2026-06-12",
+    );
+
+    // Q-inv-2-β: dedupe replay does NOT re-run findOrCreateCustomer
+    expect(qbo.findOrCreateCustomer).not.toHaveBeenCalled();
+  });
+
+  it("returns write_failed_replay when payload is missing dedupeDecision.matchedCustomerId", async () => {
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "ACME Corp",
+        customerEmail: "billing@acme.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 59900 }],
+        // dedupeDecision intentionally omitted
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("matchedCustomerId");
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("propagates unknown errors from createInvoice (HttpResponseError-style)", async () => {
+    const platformError = new Error("QBO Invoice create failed: 502 Bad Gateway");
+    vi.mocked(qbo.createInvoice).mockRejectedValueOnce(platformError);
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "ACME Corp",
+        customerEmail: "billing@acme.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 59900 }],
+        dueDate: "2026-06-12",
+        dedupeDecision: {
+          matchedCustomerId: "cust-resolved-1",
+          matchType: "name_only",
+          confidence: 0.3,
+        },
+      },
+    );
+
+    await expect(
+      executeApprovedAccountingWrite(MOCK_DB, approval),
+    ).rejects.toBe(platformError);
+  });
+});
+
+describe("executeApprovedAccountingWrite — accounting.invoice.pricing_mismatch (Piece I)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("re-resolves customer (found_by_email) and creates invoice — happy path", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-found-by-email-1",
+      action: "found_by_email",
+    });
+    vi.mocked(qbo.createInvoice).mockResolvedValueOnce({
+      invoiceId: "qbo-inv-200",
+      invoiceNumber: "INV-2001",
+      totalAmt: 60000,
+      dueDate: "2026-06-12",
+    });
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "ACME Corp",
+        customerEmail: "billing@acme.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — overridden", amount: 60000 }],
+        dueDate: "2026-06-12",
+        pricingDecision: {
+          sentAmountCents: 60000,
+          expectedAmountCents: 59900,
+          isCharter: false,
+          deltaCents: 100,
+          deltaPercent: 0.17,
+        },
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(true);
+    expect(result.action).toBe("write_executed");
+    expect(result.upstreamResult).toEqual({
+      invoiceId: "qbo-inv-200",
+      invoiceNumber: "INV-2001",
+      totalAmt: 60000,
+      dueDate: "2026-06-12",
+      customerRef: "cust-found-by-email-1",
+      customerResolveAction: "found_by_email",
+    });
+    expect(result.message).toContain("qbo-inv-200");
+    expect(result.message).toContain("found_by_email");
+
+    // REVISED Q-inv-3-β: findOrCreateCustomer WAS called (customer re-resolved)
+    expect(qbo.findOrCreateCustomer).toHaveBeenCalledTimes(1);
+    expect(qbo.findOrCreateCustomer).toHaveBeenCalledWith(
+      MOCK_DB,
+      "company-test",
+      null, // QBO books key
+      "ACME Corp",
+      "billing@acme.example",
+    );
+    // Then createInvoice with the resolved id
+    expect(qbo.createInvoice).toHaveBeenCalledWith(
+      MOCK_DB,
+      "company-test",
+      null,
+      "cust-found-by-email-1",
+      [{ description: "Foundation tier — overridden", amount: 60000 }],
+      "2026-06-12",
+    );
+  });
+
+  it("re-resolves customer (created_new) and creates invoice", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-new-1",
+      action: "created_new",
+    });
+    vi.mocked(qbo.createInvoice).mockResolvedValueOnce({
+      invoiceId: "qbo-inv-201",
+      invoiceNumber: "INV-2002",
+      totalAmt: 60000,
+      dueDate: "2026-06-12",
+    });
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "New Client LLC",
+        customerEmail: "billing@newclient.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 60000 }],
+        dueDate: "2026-06-12",
+        pricingDecision: {
+          sentAmountCents: 60000,
+          expectedAmountCents: 59900,
+          isCharter: false,
+          deltaCents: 100,
+          deltaPercent: 0.17,
+        },
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(true);
+    expect(result.action).toBe("write_executed");
+    expect((result.upstreamResult as Record<string, unknown>).customerResolveAction).toBe("created_new");
+  });
+
+  it("returns write_failed_replay when re-resolve returns ambiguous (load-bearing drift test, Q-inv-3-β)", async () => {
+    // The locked conservative path per REVISED Q-inv-3-β (commit 7ac02b90):
+    // if findOrCreateCustomer surfaces a fresh dedupe ambiguity on replay,
+    // the pricing approval does NOT authorize resolving it. Escalate, do
+    // NOT call createInvoice.
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-ambig-1",
+      action: "ambiguous_name_only",
+      matchDetails: {
+        submittedName: "ACME Corp",
+        submittedEmail: "billing@acme.example",
+        storedName: "ACME Corp",
+        storedEmail: "different@acme.example",
+      },
+    });
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "ACME Corp",
+        customerEmail: "billing@acme.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 60000 }],
+        dueDate: "2026-06-12",
+        pricingDecision: {
+          sentAmountCents: 60000,
+          expectedAmountCents: 59900,
+          isCharter: false,
+          deltaCents: 100,
+          deltaPercent: 0.17,
+        },
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("ambiguous_name_only");
+    expect(result.message).toContain("drifted");
+    expect(result.message).toContain("re-submit");
+
+    // Load-bearing: createInvoice MUST NOT be called when dedupe state drifted
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("propagates unknown errors from createInvoice (after successful resolve)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-found-1",
+      action: "found_by_email",
+    });
+    const platformError = new Error("QBO Invoice create failed: 503 Service Unavailable");
+    vi.mocked(qbo.createInvoice).mockRejectedValueOnce(platformError);
+
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "ACME Corp",
+        customerEmail: "billing@acme.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 60000 }],
+        dueDate: "2026-06-12",
+        pricingDecision: {
+          sentAmountCents: 60000,
+          expectedAmountCents: 59900,
+          isCharter: false,
+          deltaCents: 100,
+          deltaPercent: 0.17,
+        },
+      },
+    );
+
+    await expect(
+      executeApprovedAccountingWrite(MOCK_DB, approval),
+    ).rejects.toBe(platformError);
+  });
+
+  it("returns write_failed_replay when payload is missing customerName", async () => {
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        // customerName intentionally omitted
+        customerEmail: "billing@acme.example",
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 60000 }],
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("customerName");
+    expect(qbo.findOrCreateCustomer).not.toHaveBeenCalled();
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("returns write_failed_replay when payload is missing customerEmail", async () => {
+    const approval = makeApproval(
+      ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+      {
+        requestType: "POST /api/accounting/v1/invoices",
+        companyId: "company-test",
+        contactId: "ghl-contact-test",
+        customerName: "ACME Corp",
+        // customerEmail intentionally omitted
+        serviceTier: "Foundation",
+        billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+        lineItems: [{ description: "Foundation tier — May 2026", amount: 60000 }],
+      },
+    );
+
+    const result = await executeApprovedAccountingWrite(MOCK_DB, approval);
+
+    expect(result.executed).toBe(false);
+    expect(result.action).toBe("write_failed_replay");
+    expect(result.message).toContain("customerEmail");
+    expect(qbo.findOrCreateCustomer).not.toHaveBeenCalled();
   });
 });
