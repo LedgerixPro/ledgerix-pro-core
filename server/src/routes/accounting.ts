@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { HttpError, badRequest } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
-import { getAccounts, getBills, getInvoices, getNewTransactions, getReports, reconcilePayment, PaymentReferenceError, type SupportedReportType } from "../services/accounting/index.js";
+import { getAccounts, getBills, getInvoices, getNewTransactions, getReports, qbo, reconcilePayment, PaymentReferenceError, type SupportedReportType } from "../services/accounting/index.js";
 import {
   updateTransactionCategory,
   TransactionTypeNotCategorizableError,
@@ -14,9 +14,25 @@ import {
   evaluatePaymentThreshold,
   EntityRefResolutionError,
 } from "../services/accounting/payments-helpers.js";
+import {
+  evaluateInvoicePricing,
+  confidenceForMatchType,
+} from "../services/accounting/invoices-helpers.js";
+import {
+  getExpectedPriceCents,
+  getSetupFeeCents,
+  PricingNotFoundError,
+  SetupFeeNotFoundError,
+  type ServiceTier,
+} from "../services/accounting/pricing.js";
+import { isCharterForInvoicing } from "../services/accounting/charter.js";
 import { approvalService } from "../services/approvals.js";
 import { withIdempotency } from "../services/idempotency.js";
-import { ACCOUNTING_APPROVAL_TYPES } from "../services/accounting/write-approvals.js";
+import {
+  ACCOUNTING_APPROVAL_TYPES,
+  type InvoiceDedupeAmbiguousPayload,
+  type InvoicePricingMismatchPayload,
+} from "../services/accounting/write-approvals.js";
 
 const MAX_TRANSACTIONS = 5000;
 const MAX_BILLS = 5000;
@@ -903,6 +919,447 @@ export function accountingRoutes(db: Db) {
         latencyMs: Date.now() - startedAt,
       },
       "accounting.payments.post",
+    );
+
+    // ---- Response with idempotencyReplay flag ----
+    const finalBody = {
+      ...result.body,
+      meta: {
+        ...(result.body.meta as Record<string, unknown>),
+        idempotencyReplay: result.replayed,
+      },
+    };
+    res.status(result.status).json(finalBody);
+  });
+
+  // ==========================================================================
+  // POST /accounting/v1/invoices — Decision 7 (DESIGN LOCKED 2026-05-28
+  // Session 5; REVISED Q-inv-3-β 2026-05-28 commit 7ac02b90). Piece K.
+  //
+  // Gate order (locked): validate body → assertCompanyAccess → withIdempotency
+  // wrap → dedupe gate (Q-inv-2) → pricing gate (Q-inv-3) → createInvoice → 201.
+  //
+  // Money convention (locked, see Piece K STEP 1 finding 4):
+  //   - Request body lineItems[].amount: DOLLARS (matches qbo.createInvoice
+  //     wire format and the already-shipped Piece I replay path).
+  //   - All pricing-decision / audit fields suffixed *Cents: CENTS
+  //     (sentAmountCents, expectedAmountCents, deltaCents).
+  //   - Conversion is per-item rounded then summed:
+  //       sentAmountCents = lineItems.reduce(
+  //         (acc, li) => acc + Math.round(li.amount * 100), 0)
+  //     NOT Math.round(sum * 100). Per-item rounding eliminates JS
+  //     float-add accumulation error (0.1 + 0.2 ≠ 0.3) that under the
+  //     locked exact-zero-tolerance comparison (Q-inv-3-α) would
+  //     spuriously escalate valid multi-line invoices to HITL.
+  //   - Original dollar-amount lineItems pass UNCHANGED to qbo.createInvoice.
+  // ==========================================================================
+  router.post("/accounting/v1/invoices", async (req, res) => {
+    const startedAt = Date.now();
+
+    // ---- Body validation ----
+    const body = req.body as {
+      companyId?: unknown;
+      contactId?: unknown;
+      customerName?: unknown;
+      customerEmail?: unknown;
+      serviceTier?: unknown;
+      billingMode?: unknown;
+      billingPeriod?: unknown;
+      lineItems?: unknown;
+      dueDate?: unknown;
+      reason?: unknown;
+    };
+    if (!body || typeof body !== "object") {
+      throw badRequest("Request body required", {
+        code: "missing_body",
+      });
+    }
+    if (typeof body.companyId !== "string" || body.companyId.length === 0) {
+      throw badRequest("Invalid companyId", {
+        code: "invalid_parameter",
+        parameter: "companyId",
+      });
+    }
+    if (typeof body.contactId !== "string" || body.contactId.length === 0 || body.contactId.length > 100) {
+      throw badRequest("Invalid contactId", {
+        code: "invalid_parameter",
+        parameter: "contactId",
+      });
+    }
+    if (typeof body.customerName !== "string" || body.customerName.length === 0 || body.customerName.length > 200) {
+      throw badRequest("Invalid customerName", {
+        code: "invalid_parameter",
+        parameter: "customerName",
+      });
+    }
+    if (typeof body.customerEmail !== "string" || body.customerEmail.length === 0 || body.customerEmail.length > 200) {
+      throw badRequest("Invalid customerEmail", {
+        code: "invalid_parameter",
+        parameter: "customerEmail",
+      });
+    }
+    const ALLOWED_TIERS: ServiceTier[] = ["Foundation", "Growth Engine", "Scale-Up"];
+    if (typeof body.serviceTier !== "string" || !ALLOWED_TIERS.includes(body.serviceTier as ServiceTier)) {
+      throw badRequest("Invalid serviceTier (must be 'Foundation' | 'Growth Engine' | 'Scale-Up')", {
+        code: "invalid_parameter",
+        parameter: "serviceTier",
+      });
+    }
+    if (body.billingMode !== "recurring" && body.billingMode !== "setup") {
+      throw badRequest("Invalid billingMode (must be 'recurring' | 'setup')", {
+        code: "invalid_parameter",
+        parameter: "billingMode",
+      });
+    }
+    const billingPeriod = body.billingPeriod as { start?: unknown; end?: unknown } | undefined;
+    if (
+      !billingPeriod ||
+      typeof billingPeriod !== "object" ||
+      typeof billingPeriod.start !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(billingPeriod.start) ||
+      typeof billingPeriod.end !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(billingPeriod.end)
+    ) {
+      throw badRequest("Invalid billingPeriod (must be { start: YYYY-MM-DD, end: YYYY-MM-DD })", {
+        code: "invalid_parameter",
+        parameter: "billingPeriod",
+      });
+    }
+    if (!Array.isArray(body.lineItems) || body.lineItems.length === 0) {
+      throw badRequest("Invalid lineItems (must be non-empty array)", {
+        code: "invalid_parameter",
+        parameter: "lineItems",
+      });
+    }
+    for (let i = 0; i < body.lineItems.length; i++) {
+      const li = body.lineItems[i] as { description?: unknown; amount?: unknown };
+      if (
+        !li ||
+        typeof li !== "object" ||
+        typeof li.description !== "string" ||
+        li.description.length === 0 ||
+        li.description.length > 500 ||
+        typeof li.amount !== "number" ||
+        !Number.isFinite(li.amount) ||
+        li.amount <= 0
+      ) {
+        throw badRequest(`Invalid lineItems[${i}] (each item must be { description: non-empty string, amount: positive number in dollars })`, {
+          code: "invalid_parameter",
+          parameter: `lineItems[${i}]`,
+        });
+      }
+    }
+    if (body.dueDate !== undefined) {
+      if (typeof body.dueDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(body.dueDate)) {
+        throw badRequest("Invalid dueDate (must be YYYY-MM-DD)", {
+          code: "invalid_parameter",
+          parameter: "dueDate",
+        });
+      }
+      // Reject past dueDate (today UTC midnight or later is allowed).
+      const todayUtcMidnight = new Date();
+      todayUtcMidnight.setUTCHours(0, 0, 0, 0);
+      const dueDateUtc = new Date(`${body.dueDate}T00:00:00Z`);
+      if (Number.isNaN(dueDateUtc.getTime()) || dueDateUtc.getTime() < todayUtcMidnight.getTime()) {
+        throw badRequest("Invalid dueDate (must not be in the past)", {
+          code: "invalid_parameter",
+          parameter: "dueDate",
+        });
+      }
+    }
+    if (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 500)) {
+      throw badRequest("Invalid reason", {
+        code: "invalid_parameter",
+        parameter: "reason",
+      });
+    }
+
+    const companyId = body.companyId;
+    const contactId = body.contactId; // GHL contactId — used for pricing/charter lookups + payload.contactId + audit. NOT passed to QBO (Finding 3, locked).
+    const customerName = body.customerName;
+    const customerEmail = body.customerEmail;
+    const serviceTier = body.serviceTier as ServiceTier;
+    const billingMode = body.billingMode as "recurring" | "setup";
+    // Validated lineItems: dollars per the locked money convention (JSDoc above).
+    const lineItems = body.lineItems as Array<{ description: string; amount: number }>;
+    const dueDate = body.dueDate as string | undefined;
+    const reason = body.reason as string | undefined;
+    const billingPeriodTyped = { start: billingPeriod.start as string, end: billingPeriod.end as string };
+
+    // ---- Auth ----
+    assertCompanyAccess(req, companyId);
+
+    // ---- Actor context for logging (FK-safe separation handled at approval-creation point) ----
+    const actorId =
+      req.actor.type === "agent"
+        ? req.actor.agentId ?? null
+        : req.actor.type === "board"
+          ? req.actor.userId ?? null
+          : null;
+
+    // ---- Idempotency wrapping (ADR-003 Q5, Piece C/G pattern) ----
+    const idempotencyKey = req.header("idempotency-key") ?? null;
+
+    // Net-15 default per Decision 7 (no helper in codebase; inline form
+    // reviewed and approved Session 5; matches Piece I replay convention).
+    const resolvedDueDate =
+      dueDate ??
+      new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const result = await withIdempotency<{
+      status: "success" | "pending_approval";
+      data: Record<string, unknown>;
+      meta: Record<string, unknown>;
+    }>(
+      db,
+      {
+        companyId,
+        key: idempotencyKey,
+        requestBody: body,
+      },
+      async () => {
+        // ---- Step 1: Dedupe gate (Q-inv-2) ----
+        // Per Finding 3 (Tenet #7 verification): findOrCreateCustomer
+        // takes the QBO BOOKS key (always null for Ledgerix Pro's own-QBO
+        // global connection). The GHL contactId is NOT passed.
+        const resolved = await qbo.findOrCreateCustomer(
+          db,
+          companyId,
+          null, // QBO books key
+          customerName,
+          customerEmail,
+        );
+
+        if (
+          resolved.action === "ambiguous_name_only" ||
+          resolved.action === "ambiguous_email_match_different_name"
+        ) {
+          const matchType =
+            resolved.action === "ambiguous_name_only"
+              ? "name_only"
+              : "email_only_different_name";
+          // Type-check the payload literal against the locked interface,
+          // then cast to Record<string, unknown> for approvalService.create
+          // (matches Piece G pattern — interface as compile-time contract,
+          // Record on the wire).
+          const dedupePayload: InvoiceDedupeAmbiguousPayload = {
+            requestType: "POST /api/accounting/v1/invoices",
+            companyId,
+            contactId, // GHL contactId per Finding 3
+            customerName,
+            customerEmail,
+            serviceTier,
+            billingPeriod: billingPeriodTyped,
+            lineItems,
+            dueDate: dueDate ?? undefined,
+            reason: reason ?? undefined,
+            idempotencyKey: idempotencyKey ?? undefined,
+            dedupeDecision: {
+              matchedCustomerId: resolved.customerId,
+              matchType,
+              confidence: confidenceForMatchType(matchType),
+            },
+          };
+          const approval = await approvalService(db).create(companyId, {
+            type: ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS,
+            status: "pending",
+            requestedByUserId:
+              req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+            requestedByAgentId:
+              req.actor.type === "agent" ? (req.actor.agentId ?? null) : null,
+            payload: dedupePayload as unknown as Record<string, unknown>,
+          });
+
+          return {
+            status: 202,
+            body: {
+              status: "pending_approval" as const,
+              data: {
+                approvalId: approval.id,
+                approvalType: ACCOUNTING_APPROVAL_TYPES.INVOICE_DEDUPE_AMBIGUOUS,
+                reason:
+                  `Customer dedupe ambiguous (${matchType}): matched existing ` +
+                  `customer ${resolved.customerId}, but identity could not be ` +
+                  `confirmed unambiguously. Approval required.`,
+              },
+              meta: {
+                performedAt: new Date().toISOString(),
+                latencyMs: Date.now() - startedAt,
+              },
+            },
+          };
+        }
+
+        // Dedupe resolved to a concrete customerId — proceed to pricing gate.
+        const resolvedCustomerId = resolved.customerId;
+
+        // ---- Step 2: Pricing gate (Q-inv-3) ----
+        // Compute expected from the appropriate pricing function per Q-inv-1
+        // billingMode. Recurring uses isCharter; setup does not (Q2 + Q-inv-1).
+        let expectedAmountCents: number;
+        let isCharter: boolean;
+        try {
+          if (billingMode === "recurring") {
+            isCharter = await isCharterForInvoicing(db, companyId, contactId);
+            const expected = await getExpectedPriceCents(
+              db,
+              serviceTier,
+              isCharter,
+              contactId,
+            );
+            expectedAmountCents = expected.amountCents;
+          } else {
+            // billingMode === "setup"
+            isCharter = false; // Q-inv-1 + Q2: setup fees don't vary by charter
+            const expected = await getSetupFeeCents(db, serviceTier);
+            expectedAmountCents = expected.amountCents;
+          }
+        } catch (err) {
+          // PricingNotFoundError / SetupFeeNotFoundError → 500 server-config
+          // error (prod-seed-deferred state per Q2). NOT a user-correctable
+          // 400 — the caller can't fix server-side seeding gaps.
+          if (err instanceof PricingNotFoundError) {
+            throw new HttpError(
+              500,
+              `Recurring pricing not configured for tier '${serviceTier}' isCharter=${isCharter!}. ` +
+                `This is a server-side seeding gap; contact the operator.`,
+              {
+                code: "pricing_not_configured",
+                serviceTier,
+                isCharter: isCharter!,
+              },
+            );
+          }
+          if (err instanceof SetupFeeNotFoundError) {
+            throw new HttpError(
+              500,
+              `Setup fee not configured for tier '${serviceTier}'. ` +
+                `This is a server-side seeding gap; contact the operator.`,
+              {
+                code: "setup_fee_not_configured",
+                serviceTier,
+              },
+            );
+          }
+          throw err;
+        }
+
+        // Per-item rounding before summing (load-bearing for the locked
+        // zero-tolerance comparison — see JSDoc at top of this handler).
+        const sentAmountCents = lineItems.reduce(
+          (acc, li) => acc + Math.round(li.amount * 100),
+          0,
+        );
+
+        const pricingEvaluation = evaluateInvoicePricing(
+          sentAmountCents,
+          expectedAmountCents,
+        );
+
+        if (!pricingEvaluation.matches) {
+          // 202 path: pricing mismatch → create approval, return.
+          const pricingPayload: InvoicePricingMismatchPayload = {
+            requestType: "POST /api/accounting/v1/invoices",
+            companyId,
+            contactId, // GHL contactId per Finding 3
+            customerName,
+            customerEmail,
+            serviceTier,
+            billingPeriod: billingPeriodTyped,
+            lineItems,
+            dueDate: dueDate ?? undefined,
+            reason: reason ?? undefined,
+            idempotencyKey: idempotencyKey ?? undefined,
+            pricingDecision: {
+              sentAmountCents,
+              expectedAmountCents,
+              isCharter,
+              deltaCents: pricingEvaluation.deltaCents,
+              deltaPercent: pricingEvaluation.deltaPercent,
+            },
+          };
+          const approval = await approvalService(db).create(companyId, {
+            type: ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+            status: "pending",
+            requestedByUserId:
+              req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+            requestedByAgentId:
+              req.actor.type === "agent" ? (req.actor.agentId ?? null) : null,
+            payload: pricingPayload as unknown as Record<string, unknown>,
+          });
+
+          return {
+            status: 202,
+            body: {
+              status: "pending_approval" as const,
+              data: {
+                approvalId: approval.id,
+                approvalType: ACCOUNTING_APPROVAL_TYPES.INVOICE_PRICING_MISMATCH,
+                reason:
+                  `Pricing mismatch: sent ${sentAmountCents} cents, expected ` +
+                  `${expectedAmountCents} cents (delta: ${pricingEvaluation.deltaCents} cents, ` +
+                  `${pricingEvaluation.deltaPercent}%). Approval required.`,
+              },
+              meta: {
+                performedAt: new Date().toISOString(),
+                latencyMs: Date.now() - startedAt,
+              },
+            },
+          };
+        }
+
+        // ---- Step 3: Both gates passed → create invoice ----
+        // Original dollar-amount lineItems pass UNCHANGED to qbo.createInvoice
+        // (matches existing wire format; see top-of-handler JSDoc).
+        const writeResult = await qbo.createInvoice(
+          db,
+          companyId,
+          null, // QBO books key
+          resolvedCustomerId,
+          lineItems,
+          resolvedDueDate,
+        );
+
+        return {
+          status: 201,
+          body: {
+            status: "success" as const,
+            data: {
+              invoiceId: writeResult.invoiceId,
+              invoiceNumber: writeResult.invoiceNumber,
+              customerId: resolvedCustomerId,
+              totalAmount: writeResult.totalAmt,
+              dueDate: writeResult.dueDate,
+              status: "created",
+            },
+            meta: {
+              performedAt: new Date().toISOString(),
+              latencyMs: Date.now() - startedAt,
+            },
+          },
+        };
+      },
+    );
+
+    // ---- Logger info ----
+    logger.info(
+      {
+        actorType: req.actor.type,
+        actorId,
+        companyId,
+        contactId,
+        customerName,
+        customerEmail,
+        serviceTier,
+        billingMode,
+        endpoint: "POST /api/accounting/v1/invoices",
+        outcomeStatus: result.body.status,
+        httpStatus: result.status,
+        replayed: result.replayed,
+        idempotencyKeyPresent: idempotencyKey !== null,
+        latencyMs: Date.now() - startedAt,
+      },
+      "accounting.invoices.post",
     );
 
     // ---- Response with idempotencyReplay flag ----

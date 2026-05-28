@@ -2295,3 +2295,500 @@ describe("POST /api/accounting/v1/payments", () => {
     expect(reconcilePayment).not.toHaveBeenCalled();
   });
 });
+
+// ============================================================================
+// POST /api/accounting/v1/invoices (Decision 7 Piece K)
+// ============================================================================
+
+// Re-declare the accounting/index.js mock to include qbo (namespace stub with
+// createInvoice + findOrCreateCustomer for Piece K) PLUS all prior mocked
+// functions (vitest hoist-last-wins). Same pattern Piece G used to extend
+// the mock with reconcilePayment.
+vi.mock("../services/accounting/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/index.js")>();
+  return {
+    ...actual,
+    getNewTransactions: vi.fn(),
+    getBills: vi.fn(),
+    getInvoices: vi.fn(),
+    getAccounts: vi.fn(),
+    getReports: vi.fn(),
+    reconcilePayment: vi.fn(),
+    qbo: {
+      ...actual.qbo,
+      findOrCreateCustomer: vi.fn(),
+      createInvoice: vi.fn(),
+    },
+  };
+});
+
+vi.mock("../services/accounting/pricing.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/pricing.js")>();
+  return {
+    ...actual,
+    getExpectedPriceCents: vi.fn(),
+    getSetupFeeCents: vi.fn(),
+  };
+});
+
+vi.mock("../services/accounting/charter.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/accounting/charter.js")>();
+  return {
+    ...actual,
+    isCharterForInvoicing: vi.fn(),
+  };
+});
+
+import { qbo } from "../services/accounting/index.js";
+import {
+  getExpectedPriceCents,
+  getSetupFeeCents,
+} from "../services/accounting/pricing.js";
+import { isCharterForInvoicing } from "../services/accounting/charter.js";
+
+describe("POST /api/accounting/v1/invoices", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // Default pass-through withIdempotency (no idempotency key → run work + replayed: false)
+    vi.mocked(withIdempotency).mockImplementation(async (_db, _opts, work) => {
+      const r = await work();
+      return { ...r, replayed: false };
+    });
+  });
+
+  // Minimal valid recurring body — many tests start from this and tweak.
+  const validRecurringBody = () => ({
+    companyId: POST_COMPANY_ID,
+    contactId: "ghl-contact-test",
+    customerName: "ACME Corp",
+    customerEmail: "billing@acme.example",
+    serviceTier: "Foundation",
+    billingMode: "recurring",
+    billingPeriod: { start: "2026-05-01", end: "2026-05-31" },
+    lineItems: [{ description: "Foundation tier — May 2026", amount: 299 }], // $299 = 29900¢
+    dueDate: "2099-06-15", // future
+  });
+
+  it("returns 201 on happy path — both gates pass (recurring, isCharter=false)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-1",
+      action: "found_by_email",
+    });
+    vi.mocked(isCharterForInvoicing).mockResolvedValueOnce(false);
+    vi.mocked(getExpectedPriceCents).mockResolvedValueOnce({
+      amountCents: 29900,
+      source: "tier_standard",
+      priceRecordId: "tier-uuid-1",
+    });
+    vi.mocked(qbo.createInvoice).mockResolvedValueOnce({
+      invoiceId: "qbo-inv-1",
+      invoiceNumber: "INV-1001",
+      totalAmt: 299,
+      dueDate: "2099-06-15",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe("success");
+    expect(res.body.data).toEqual({
+      invoiceId: "qbo-inv-1",
+      invoiceNumber: "INV-1001",
+      customerId: "cust-1",
+      totalAmount: 299,
+      dueDate: "2099-06-15",
+      status: "created",
+    });
+    expect(res.body.meta.idempotencyReplay).toBe(false);
+
+    // Verify gate sequencing
+    expect(qbo.findOrCreateCustomer).toHaveBeenCalledWith(
+      fakeDb,
+      POST_COMPANY_ID,
+      null, // QBO books key
+      "ACME Corp",
+      "billing@acme.example",
+    );
+    expect(isCharterForInvoicing).toHaveBeenCalledWith(fakeDb, POST_COMPANY_ID, "ghl-contact-test");
+    expect(getExpectedPriceCents).toHaveBeenCalledWith(fakeDb, "Foundation", false, "ghl-contact-test");
+    expect(getSetupFeeCents).not.toHaveBeenCalled(); // recurring mode skips setup-fee lookup
+    expect(qbo.createInvoice).toHaveBeenCalledWith(
+      fakeDb,
+      POST_COMPANY_ID,
+      null,
+      "cust-1",
+      [{ description: "Foundation tier — May 2026", amount: 299 }], // dollars unchanged to QBO
+      "2099-06-15",
+    );
+  });
+
+  it("returns 201 on setup-mode happy path — getSetupFeeCents used, isCharterForInvoicing NOT called (Q-inv-1)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-2",
+      action: "created_new",
+    });
+    vi.mocked(getSetupFeeCents).mockResolvedValueOnce({
+      amountCents: 24900,
+      priceRecordId: "setup-uuid-1",
+    });
+    vi.mocked(qbo.createInvoice).mockResolvedValueOnce({
+      invoiceId: "qbo-inv-2",
+      invoiceNumber: "INV-1002",
+      totalAmt: 249,
+      dueDate: "2099-06-15",
+    });
+
+    const body = { ...validRecurringBody(), billingMode: "setup", lineItems: [{ description: "Foundation setup fee", amount: 249 }] };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.invoiceId).toBe("qbo-inv-2");
+
+    // setup mode: getSetupFeeCents USED; isCharterForInvoicing + getExpectedPriceCents NOT called
+    expect(getSetupFeeCents).toHaveBeenCalledWith(fakeDb, "Foundation");
+    expect(isCharterForInvoicing).not.toHaveBeenCalled();
+    expect(getExpectedPriceCents).not.toHaveBeenCalled();
+  });
+
+  it("returns 202 on dedupe ambiguous (ambiguous_name_only → matchType 'name_only', confidence 0.3)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-ambig-name",
+      action: "ambiguous_name_only",
+      matchDetails: { submittedName: "ACME", submittedEmail: "x@y.z", storedName: "ACME", storedEmail: "other@y.z" },
+    });
+    const fakeApproval = { id: "approval-dedupe-1" };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(202);
+    expect(res.body.status).toBe("pending_approval");
+    expect(res.body.data.approvalId).toBe("approval-dedupe-1");
+    expect(res.body.data.approvalType).toBe("accounting.invoice.dedupe_ambiguous");
+
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const [, createPayload] = createMock.mock.calls[0];
+    expect(createPayload.type).toBe("accounting.invoice.dedupe_ambiguous");
+    expect(createPayload.requestedByUserId).toBe("test-user");
+    expect(createPayload.requestedByAgentId).toBeNull();
+    expect(createPayload.payload.dedupeDecision).toEqual({
+      matchedCustomerId: "cust-ambig-name",
+      matchType: "name_only",
+      confidence: 0.3,
+    });
+
+    // Pricing gate NOT reached
+    expect(isCharterForInvoicing).not.toHaveBeenCalled();
+    expect(getExpectedPriceCents).not.toHaveBeenCalled();
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("returns 202 on dedupe ambiguous (ambiguous_email_match_different_name → matchType 'email_only_different_name', confidence 0.5)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-ambig-email",
+      action: "ambiguous_email_match_different_name",
+    });
+    const fakeApproval = { id: "approval-dedupe-2" };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(202);
+    const [, createPayload] = createMock.mock.calls[0];
+    expect(createPayload.payload.dedupeDecision).toEqual({
+      matchedCustomerId: "cust-ambig-email",
+      matchType: "email_only_different_name",
+      confidence: 0.5,
+    });
+  });
+
+  it("returns 202 on pricing mismatch — only after dedupe resolves; pricingDecision fields populated", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-resolved-1",
+      action: "found_by_email",
+    });
+    vi.mocked(isCharterForInvoicing).mockResolvedValueOnce(true);
+    vi.mocked(getExpectedPriceCents).mockResolvedValueOnce({
+      amountCents: 19900, // Charter Foundation
+      source: "tier_charter",
+      priceRecordId: "tier-uuid-2",
+    });
+    const fakeApproval = { id: "approval-pricing-1" };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    // Sent $299 ($29900¢) vs expected $199 ($19900¢) → delta +10000¢
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(202);
+    expect(res.body.data.approvalType).toBe("accounting.invoice.pricing_mismatch");
+    expect(res.body.data.reason).toContain("29900 cents");
+    expect(res.body.data.reason).toContain("19900 cents");
+
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const [, createPayload] = createMock.mock.calls[0];
+    expect(createPayload.type).toBe("accounting.invoice.pricing_mismatch");
+    expect(createPayload.payload.pricingDecision).toEqual({
+      sentAmountCents: 29900,
+      expectedAmountCents: 19900,
+      isCharter: true,
+      deltaCents: 10000,
+      deltaPercent: 50.25, // (10000 / 19900) * 100, rounded to 2 dp
+    });
+
+    // createInvoice NOT reached — pricing escalates to HITL
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("returns 202 on pricing mismatch in setup mode (isCharter recorded as false per Q-inv-1)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-1",
+      action: "found_by_email",
+    });
+    vi.mocked(getSetupFeeCents).mockResolvedValueOnce({
+      amountCents: 24900,
+      priceRecordId: "setup-uuid-1",
+    });
+    const fakeApproval = { id: "approval-setup-mismatch-1" };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    const body = { ...validRecurringBody(), billingMode: "setup", lineItems: [{ description: "Foundation setup — override", amount: 299 }] };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+
+    expect(res.status).toBe(202);
+    const [, createPayload] = createMock.mock.calls[0];
+    expect(createPayload.payload.pricingDecision.isCharter).toBe(false);
+    expect(isCharterForInvoicing).not.toHaveBeenCalled();
+  });
+
+  it("rounds per-item before summing (LOAD-BEARING regression test for the locked rounding order, Q-inv-3-α)", async () => {
+    // Dataset: two items at $2.675 each. The two rounding orders genuinely
+    // diverge here (verified via node REPL pre-test):
+    //
+    //   PER-ITEM (locked contract):
+    //     Math.round(2.675 * 100) + Math.round(2.675 * 100)
+    //     = Math.round(267.5)      + Math.round(267.5)
+    //     = 268                    + 268
+    //     = 536 cents
+    //
+    //   PRE-ROUND (regression to Math.round(sum * 100)):
+    //     Math.round((2.675 + 2.675) * 100)
+    //     = Math.round(5.35 * 100)
+    //     = Math.round(535)
+    //     = 535 cents
+    //
+    //   Δ = +1 cent
+    //
+    // We set the mocked getExpectedPriceCents to return 536 cents — the
+    // per-item-rounded sum, the correct one. If the handler regressed to
+    // pre-round summing, sentAmountCents would compute as 535, the locked
+    // exact-zero-tolerance comparison (Q-inv-3-α) would flag a -1¢ delta,
+    // and the route would return 202 (pricing_mismatch) instead of 201.
+    // This test therefore genuinely fails on a rounding-order regression.
+    //
+    // The $2.675 dataset is deliberately artificial (sub-cent precision)
+    // to exercise the rounding ORDER, which is the contract under test.
+    // Real-world Ledgerix Pro invoices use whole-dollar or clean
+    // two-decimal amounts where the orders typically coincide — but the
+    // locked contract is per-item rounding regardless, so we lock it here
+    // against silent refactoring.
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-1",
+      action: "found_by_email",
+    });
+    vi.mocked(isCharterForInvoicing).mockResolvedValueOnce(false);
+    vi.mocked(getExpectedPriceCents).mockResolvedValueOnce({
+      amountCents: 536, // EXACTLY the per-item-rounded sum (268 + 268)
+      source: "tier_standard",
+      priceRecordId: "tier-uuid-rounding",
+    });
+    vi.mocked(qbo.createInvoice).mockResolvedValueOnce({
+      invoiceId: "qbo-inv-rounding",
+      invoiceNumber: "INV-RND",
+      totalAmt: 5.35,
+      dueDate: "2099-06-15",
+    });
+
+    const body = {
+      ...validRecurringBody(),
+      lineItems: [
+        { description: "Foundation surcharge — part A", amount: 2.675 },
+        { description: "Foundation surcharge — part B", amount: 2.675 },
+      ],
+    };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+
+    // Per-item rounding makes sentAmountCents = 536 = expectedAmountCents → match → 201.
+    // A pre-round-sum regression would compute 535 ≠ 536 → spurious 202.
+    expect(res.status).toBe(201);
+    expect(res.body.status).toBe("success");
+  });
+
+  it("returns 400 when companyId is missing", async () => {
+    const body = { ...validRecurringBody(), companyId: undefined } as any;
+    delete body.companyId;
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid companyId");
+    expect(res.body.details).toMatchObject({ code: "invalid_parameter", parameter: "companyId" });
+    expect(qbo.findOrCreateCustomer).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 on unknown serviceTier", async () => {
+    const body = { ...validRecurringBody(), serviceTier: "Enterprise" };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid serviceTier");
+    expect(res.body.details.parameter).toBe("serviceTier");
+  });
+
+  it("returns 400 on unknown billingMode", async () => {
+    const body = { ...validRecurringBody(), billingMode: "annual" };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid billingMode");
+    expect(res.body.details.parameter).toBe("billingMode");
+  });
+
+  it("returns 400 on empty lineItems", async () => {
+    const body = { ...validRecurringBody(), lineItems: [] };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("Invalid lineItems");
+    expect(res.body.details.parameter).toBe("lineItems");
+  });
+
+  it("returns 400 on per-line-item validation (zero amount)", async () => {
+    const body = { ...validRecurringBody(), lineItems: [{ description: "free", amount: 0 }] };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.details.parameter).toBe("lineItems[0]");
+  });
+
+  it("returns 400 on past dueDate", async () => {
+    const body = { ...validRecurringBody(), dueDate: "2020-01-01" };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("must not be in the past");
+    expect(res.body.details.parameter).toBe("dueDate");
+  });
+
+  it("uses requestedByAgentId (not requestedByUserId) when actor is an agent and dedupe is ambiguous", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-ambig",
+      action: "ambiguous_name_only",
+    });
+    const fakeApproval = { id: "approval-agent-1" };
+    const createMock = vi.fn().mockResolvedValueOnce(fakeApproval);
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    const agentActor: ActorOverride = {
+      type: "agent",
+      agentId: "agent-billing-1",
+      companyId: POST_COMPANY_ID,
+      source: "agent_key",
+    };
+    const app = buildTestApp(agentActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(202);
+    const [, createPayload] = createMock.mock.calls[0];
+    expect(createPayload.requestedByUserId).toBeNull();
+    expect(createPayload.requestedByAgentId).toBe("agent-billing-1");
+  });
+
+  it("returns idempotencyReplay: true when withIdempotency reports a replay", async () => {
+    vi.mocked(withIdempotency).mockResolvedValueOnce({
+      status: 201,
+      body: {
+        status: "success",
+        data: {
+          invoiceId: "qbo-inv-cached",
+          invoiceNumber: "INV-CACHED",
+          customerId: "cust-cached",
+          totalAmount: 299,
+          dueDate: "2099-06-15",
+          status: "created",
+        },
+        meta: { performedAt: "2026-05-28T10:00:00.000Z", latencyMs: 15 },
+      },
+      replayed: true,
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/invoices")
+      .set("Idempotency-Key", "test-invoice-idem-1")
+      .send(validRecurringBody());
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.invoiceId).toBe("qbo-inv-cached");
+    expect(res.body.meta.idempotencyReplay).toBe(true);
+
+    // Inner work NOT invoked
+    expect(qbo.findOrCreateCustomer).not.toHaveBeenCalled();
+    expect(isCharterForInvoicing).not.toHaveBeenCalled();
+    expect(getExpectedPriceCents).not.toHaveBeenCalled();
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 with pricing_not_configured code when getExpectedPriceCents throws PricingNotFoundError", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-1",
+      action: "found_by_email",
+    });
+    vi.mocked(isCharterForInvoicing).mockResolvedValueOnce(false);
+    const { PricingNotFoundError } = await vi.importActual<typeof import("../services/accounting/pricing.js")>(
+      "../services/accounting/pricing.js",
+    );
+    vi.mocked(getExpectedPriceCents).mockRejectedValueOnce(
+      new PricingNotFoundError("Foundation", false),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("Recurring pricing not configured");
+    expect(res.body.details.code).toBe("pricing_not_configured");
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 with setup_fee_not_configured code when getSetupFeeCents throws SetupFeeNotFoundError", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-1",
+      action: "found_by_email",
+    });
+    const { SetupFeeNotFoundError } = await vi.importActual<typeof import("../services/accounting/pricing.js")>(
+      "../services/accounting/pricing.js",
+    );
+    vi.mocked(getSetupFeeCents).mockRejectedValueOnce(
+      new SetupFeeNotFoundError("Foundation"),
+    );
+
+    const body = { ...validRecurringBody(), billingMode: "setup", lineItems: [{ description: "setup", amount: 249 }] };
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(body);
+
+    expect(res.status).toBe(500);
+    expect(res.body.error).toContain("Setup fee not configured");
+    expect(res.body.details.code).toBe("setup_fee_not_configured");
+    expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+});
