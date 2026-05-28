@@ -154,7 +154,7 @@ Priority-ordered build list. Updated: 2026-05-27.
 
 ### Phase 4 success criteria (lock from ADR-003)
 
-- All write endpoints atop the safety layer (approvals + pricing + dedupe + thresholds) before any real client traffic.
+- ~~All write endpoints atop the safety layer (approvals + pricing + dedupe + thresholds) before any real client traffic.~~ — **SATISFIED Session 5 (2026-05-28).** All 3 write endpoints (category, payments, invoices) ship behind the Phase 4c safety layer — approvals + pricing + dedupe + thresholds. Decision 7 (POST /invoices) was the last, shipped end-to-end commit `9366445d`.
 - `getTransactionById` covers all 11 transaction types across QBO + Xero so write endpoints can capture `previousAccountRef` for audit trails.
 - ~~Q1 + Q2 resolved before Invoice endpoint ships.~~ — **SATISFIED Session 4 (2026-05-27).** Both LOCKED + IMPLEMENTED. Q1 via `client_charter_status` table + `charter.ts` service module (commit `5b4856bb`). Q2 via `setup_fee_pricing` table + `getSetupFeeCents` + admin seed extension to combined response shape (commit `83b80a72`). Invoice endpoint now architecturally unblocked; design work pending — see P4c.5-15.
 - Test coverage discipline: integration tests against embedded Postgres for any SQL-level work (lesson from Defect 1).

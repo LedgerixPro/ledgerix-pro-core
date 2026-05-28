@@ -1,8 +1,8 @@
 # WIP: Phase 4c.5 — Re-ship Write Endpoints Atop Safety Layer + Admin API Foundation
 
-**Status:** in_progress
+**Status:** ready_to_merge_to_adr
 **Started:** 2026-05-24
-**Last updated:** 2026-05-28 Session 5 (Decision 7 — POST /invoices — DESIGN LOCKED; Q-inv-1/2/3 + sub-decisions locked; implementation Pieces H/I/J/K defined; not yet implemented)
+**Last updated:** 2026-05-28 Session 5 (Decision 7 — POST /invoices — FEATURE-COMPLETE end-to-end, commit 9366445d; all 3 Phase 4c.5 write endpoints shipped; 4-of-4 approval-replay stubs wired; status flipped to ready_to_merge_to_adr — ADR-004 migration deferred pending Q5)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -838,6 +838,27 @@ EA §2B.4 (API Spec v1.0) states pricing gets "no automatic validation — the b
 #### Decision 7 closes Phase 4c.5's endpoint roadmap
 
 POST /invoices is the third and final write endpoint. On ship: 8-of-8 Phase 4 endpoints production-ready; 4-of-4 `executeApprovedAccountingWrite` stubs wired. Phase 4c.5 becomes ready_to_merge_to_adr (pending Q5 multi-line journal semantics, which gates no endpoint).
+
+#### Decision 7 FEATURE-COMPLETE (2026-05-28 Session 5)
+
+Shipped end-to-end across the implementation arc:
+
+| Commit | What shipped |
+|--------|--------------|
+| `a328db6f` | Decision 7 DESIGN LOCK (Q-inv-1/2/3 + sub-decisions) |
+| `7ac02b90` | Q-inv-3-β REVISED — pricing_mismatch replay re-resolves customer (Option A) |
+| `287bb180` | Piece H — invoices-helpers.ts (evaluateInvoicePricing + confidenceForMatchType); +8 tests (308→316) |
+| `441c8643` | Piece I — wired both invoice approval-replay stubs; executeApprovedAccountingWrite now 4-of-4; +7 net (316→323) |
+| `9366445d` | Piece K — POST /api/accounting/v1/invoices route; Decision 7 FEATURE-COMPLETE; +17 tests (323→340) |
+| `ac58de83` | EA closeout (§2B.4 REVISED + 8-of-8 endpoint roster) |
+| `6fb3831c` | PHASE-4-PROGRESS Session 5 arc entry |
+| `bcc225a8` | TODO P4c.5-15 flipped complete |
+
+Piece J was a no-op (verified at design lock: findOrCreateCustomer + createInvoice already had correct signatures — no service refactor needed, unlike Decision 6's Piece D).
+
+End-to-end paths operational: (1) HTTP route POST /api/accounting/v1/invoices with three response paths (201 success / 202 dedupe_ambiguous / 202 pricing_mismatch / 400 validation / 500 unseeded-pricing); (2) approval-replay via executeApprovedAccountingWrite for both invoice approval types. Test baseline 308 → 340 (+32 across the arc).
+
+**Phase 4c.5 endpoint roadmap CLOSED.** 8 of 8 Phase 4 endpoints production-ready. 4 of 4 executeApprovedAccountingWrite approval-replay stubs wired. Only Q5 (multi-line journal write semantics) remains pending in Phase 4c.5 — it gates no endpoint. The WIP doc stays alive (status ready_to_merge_to_adr) as the home for Q5; the ADR-004 migration is deferred to a future session so ADR-004 can capture the complete Phase 4c.5 story (Decisions 4–7 + Q1/Q2 + Q5) at once rather than shipping incomplete and being amended when Q5 locks.
 
 ## Architecture Decisions Pending
 
