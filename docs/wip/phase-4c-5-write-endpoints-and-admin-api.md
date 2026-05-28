@@ -2,7 +2,7 @@
 
 **Status:** ready_to_merge_to_adr
 **Started:** 2026-05-24
-**Last updated:** 2026-05-28 Session 5 (Decision 7 — POST /invoices — FEATURE-COMPLETE end-to-end, commit 9366445d; all 3 Phase 4c.5 write endpoints shipped; 4-of-4 approval-replay stubs wired; status flipped to ready_to_merge_to_adr — ADR-004 migration deferred pending Q5)
+**Last updated:** 2026-05-28 Session 5 (Q5 LOCKED — multi-line journal write semantics deliberately excluded per Option C; reopen when a specific use case surfaces. All Phase 4c.5 architectural decisions now locked; status stays ready_to_merge_to_adr — ADR-004 migration is the next architectural step.)
 **Owner:** Scott Hansbury
 **Related ADRs:**
 - ADR-001 (Pattern B Full API endpoints)
@@ -992,7 +992,50 @@ Q2-α-i is the contract for POST /api/admin/pricing/seed going forward. The chan
 
 Resolved 2026-05-26 as Decision 4 (Option A — full coverage). See Architecture Decisions Made above.
 
-(Q4 and Q5 resolved Session 1 — see Decisions 2 and 3 above.)
+### ~~Q5: Multi-line journal write semantics~~ — LOCKED + DELIBERATELY EXCLUDED 2026-05-28 Session 5 (Option C)
+
+**Decision: Option C — Q5 stays out of scope. The Decision 5 exclusion of QBO `JournalEntry` and Xero `ManualJournal` from the write dispatcher is locked as DELIBERATE, not aspirational. Q5 reopens when a specific use case surfaces with concrete requirements.**
+
+**Background.** Decision 5 (write-side dispatcher, 2026-05-27) excluded QBO `JournalEntry` and Xero `ManualJournal` from `updateTransactionCategory`, throwing `TransactionTypeNotCategorizableError` for both. The original deferral language ("multi-line journal write semantics deferred to Q5") implied a future design lock. Q5 was referenced across Decisions 5, 6, and 7 as "pending — gates no endpoint" but never had its own pending-decision section drafted; the deferral was always presumed, never argued.
+
+**Pre-lock findings (Tenet #7 verification — 2026-05-28):**
+
+1. **Read-side already handles both types.** `fetchQboJournalEntry` (transaction-lookup.ts:318) and `fetchXeroManualJournal` (transaction-lookup.ts:617) are in production, registered in the read dispatcher under `JournalEntry` and `ManualJournal` registry keys. The asymmetry (readable, not writable) is observable today.
+2. **Platform shapes differ structurally.** QBO `JournalEntry.Line[].JournalEntryLineDetail.PostingType` is `"Debit" | "Credit"` — debit/credit is type-tagged. Xero `ManualJournalLine.LineAmount` is signed (positive = debit, negative = credit per Xero convention). Any balance-preservation helper would need platform-specific representations, not a unified abstraction. The cost of a write design is higher than it appears.
+3. **No existing code creates journals.** Grep against `server/src/services/accounting/index.ts` for `JournalEntry` and `ManualJournal` returns only the two existing comments describing the exclusion. No agent prompt, no service function, no script, no route creates journal entries today. The agents that READ journals (Senior Bookkeeper, Reporter per EA Section 4) use them for analysis, not mutation.
+
+**Three interpretations were considered:**
+
+- **Interpretation 1 — Narrow category-update with offsetting line update.** An agent recategorizes one line; the offsetting line updates correspondingly to preserve balance. Smallest blast radius, closes the read/write asymmetry. Rejected because (a) it requires solving the "which line offsets which" problem (caller-asserted vs auto-detected) without a use case to inform the answer; (b) it adds two new platform-specific write handlers for a use case nothing in code points to.
+- **Interpretation 2 — Multi-line journal create/replace.** Agents write arbitrary balanced journals (month-end adjustments, accruals, depreciation). Most powerful interpretation. Rejected because (a) creating arbitrary financial entries is the highest-risk write category in the system; (b) no documented use case in code or agent prompts; (c) the Trust Tenet's "no partial-spec compliance on safety-critical writes" makes designing speculatively expensive — a correct design needs real use-case constraints we don't have.
+- **Interpretation 3 (CHOSEN) — Lock the exclusion as deliberate; reopen on real use case.** Honest about what's known: no use case, no design.
+
+**Rationale for Option C:**
+
+1. **Zero use-case evidence.** Three independent code searches found nothing that creates journals: no service function, no agent prompt, no script. Designing speculative semantics for a use case that doesn't exist is the premature-abstraction failure mode the codebase has consistently avoided (see Decision 7 Piece J — no service refactor where none was needed; see ADR-001 Pattern B Full's incremental endpoint-by-endpoint shipping rather than upfront breadth).
+2. **The safety surface is large and the Trust Tenet is firm.** Multi-line journal writes are how arbitrary book adjustments get made; getting the semantics wrong corrupts the books in ways downstream reconciliation may not catch. A correct locked design requires real constraints; speculation is the wrong starting point.
+3. **The original Phase 4c.5 framing — "Q5 gates no endpoint" — turns out to be the whole story.** There is no endpoint to gate because there is no use case to design for. Phase 4c.5's endpoint roadmap is the actual deliverable; Q5 is the architectural completeness check, and the honest answer is that completeness doesn't require new write semantics.
+
+**Locked behavior (current state — preserved):**
+
+- `getTransactionById` continues to fetch QBO `JournalEntry` and Xero `ManualJournal` (read-side asymmetry is intentional — analysis is safe, mutation is not).
+- `updateTransactionCategory` continues to throw `TransactionTypeNotCategorizableError` for both types — this error path is now LOCKED as the permanent v1 behavior, not a stub.
+- No `POST /api/accounting/v1/journals` endpoint exists, is planned, or is referenced in the EA endpoint roster.
+- Rare adjusting entries (month-end, depreciation, accruals) are performed manually by a human operator in QBO/Xero, not via the API.
+
+**Reopen criteria (the door is deliberately left open):**
+
+Q5 reopens when ALL of the following are documented:
+
+1. **A specific agent use case.** Named agent (e.g., "Senior Bookkeeper needs to post monthly depreciation"), specific operation (create new / update existing / replace lines), concrete frequency estimate.
+2. **A real-world example transaction.** An actual journal entry the agent would write, with line-by-line debit/credit detail, so the design has concrete data to constrain it.
+3. **A safety-gate sketch.** Which Phase 4c safety checks apply (threshold? approval-by-default? per-account whitelist?), informed by the use case's risk profile.
+
+When all three exist, reopen Q5 with a new pending-decision section in this WIP doc (or, if Phase 4c.5 has migrated to ADR-004, in a new WIP doc explicitly scoped to journal-write semantics).
+
+**What this lock means for Phase 4c.5 closure:**
+
+All Phase 4c.5 architectural decisions are now resolved: Decisions 4, 5, 6, 7 FEATURE-COMPLETE; Q1, Q2 LOCKED + IMPLEMENTED; Q3 resolved as Decision 4; Q4 resolved during Decision 6; Q5 LOCKED as deliberately excluded. The WIP doc status (ready_to_merge_to_adr) is now genuinely accurate — the migration to ADR-004 is the only remaining architectural step, and ADR-004 can capture the complete Phase 4c.5 story (Decisions 4–7 + Q1/Q2 + Q5 exclusion) at once.
 
 ## Defects Discovered
 
@@ -1274,3 +1317,28 @@ This WIP doc must be read at the start of every Phase 4c.5 session before any wo
 - 308 tests passing (no code touched).
 - Phase 4c.5: Decisions 4/5/6 feature-complete + shipped; Decision 7 design-locked, implementation pending. 2 of 4 approval stubs wired (the 2 invoice stubs get wired in Piece I).
 - Next session: implement Piece H (invoices-helpers.ts + tests).
+
+### Session 5 (continued) — 2026-05-28 (Q5 LOCKED + Decision 7 final closeout)
+
+**Continuation goal:** Close Phase 4c.5 architecturally after Decision 7 FEATURE-COMPLETE, by either resolving or locking Q5 (the last pending architectural decision).
+
+**What happened:**
+- Decision 7 closeout shipped across all four truth docs (commits ac58de83 EA, 6fb3831c PHASE-4-PROGRESS, bcc225a8 TODO, 0523275c WIP→ready_to_merge_to_adr + TODO success criterion SATISFIED).
+- Q5 framing audit via Tenet #7 verification: read-side handlers for both journal types already shipped (production); Decision 5 exclusion confirmed; **critically, no existing code creates journals** — no service function, no agent prompt, no script. Q5 had been referenced as "pending" across Decisions 5/6/7 but had never had its own pending-decision section drafted.
+- Three interpretations considered (narrow line-update with offsetting / multi-line create-or-replace / lock the exclusion). Without use-case evidence in code, the speculative-design interpretations carried real safety risk and no concrete constraints to design against.
+
+**What was decided (locked):**
+- Q5 LOCKED as Option C — multi-line journal write semantics deliberately excluded, NOT a future stub. Decision 5's `TransactionTypeNotCategorizableError` for QBO JournalEntry + Xero ManualJournal is now PERMANENT v1 behavior, not aspirational. Door explicitly left open: Q5 reopens when a specific use case surfaces with (a) named agent + concrete operation, (b) a real-world example journal entry, (c) a safety-gate sketch. Honest exclusion beats speculative design (Trust Tenet conservative path; ADR-001 incremental shipping pattern).
+
+**What's NOT done (and remains tracked):**
+- **ADR-004 migration** — the WIP-doc retirement step. WIP doc status stays `ready_to_merge_to_adr`; ADR-004 can now capture the complete Phase 4c.5 story at once. Deferred to next session.
+- **Q1 onboarding/cancellation workflow wiring** — still in "What is NOT implemented yet" under Q1.
+- **Q2 production seed of `setup_fee_pricing`** — operational step.
+- **Billing & Invoicing agent reconciliation** — agent prompt + tool registration may not yet reflect Decision 7's request body (billingMode etc.) and safety-gate responses. Downstream-blocked by Q2 prod seed.
+
+**State at session end (full Session 5):**
+- Codebase HEAD: master @ 0523275c (this commit will be +1).
+- 340 accounting tests passing; typecheck clean.
+- Phase 4c.5: ALL decisions (4, 5, 6, 7, Q1, Q2, Q3, Q4, Q5) resolved. 8-of-8 Phase 4 endpoints production-ready. 4-of-4 executeApprovedAccountingWrite approval-replay stubs wired.
+- WIP doc status: `ready_to_merge_to_adr` (now genuinely accurate — no pending architectural items remain).
+- Next session: ADR-004 migration, or one of the deferred operational items above (Scott's call).
