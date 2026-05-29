@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 (decision trail recorded; no code yet)
+**Last updated:** 2026-05-29 — 6c-code design decisions P1/Q1/R1 locked
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (Pattern B Full — Phase 6 requirements, line 34 + line 77). Strategic Plan "Phase 6b" (== our 6c). ADR-005 (Phase 5, just completed — preceding arc).
 **Estimated remaining work:** Large — multi-arc (6c → 6a-0 → 6a-rest → 6b). Estimate refined per sub-phase.
@@ -38,13 +38,19 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
 - **Decision D — Audit-survival approach = Option 2 (archive-before-delete).** Locked 2026-05-29. Rejected Option 1 (break the FK + denormalize identity, accumulate audit in operational DB) and Option 3 (soft-delete entities). Reasoning: Option 2 matches the retention policy as written; Option 1 was an expedient workaround justified only by an urgency that no longer exists.
 - **Decision E — 6c approach = Option 3 (code/infra split).** Locked 2026-05-29. Build the archival layer (writer, format, encryption, legal-hold, lifecycle) as CODE targeting the existing `StorageService` abstraction now — runs on local-disk in dev/test, S3 in prod, exactly as the codebase already abstracts storage. Track bucket provisioning + prod config as a SEPARATE 6c-infra deliverable (Scott's real-world vendor/cost decision), which does NOT block 6c-code. Rejected Option 2 (provision bucket first — blocks code on procurement, contrary to how the system abstracts storage).
 
+### 6c-code design decisions (locked 2026-05-29)
+
+- **Decision P — Archival format & granularity (P1):** Per-tenant, per-time-window JSONL objects. Key structure follows the existing StorageService convention (`{companyId}/audit/{year}/{month}/...`); each line is one activity_log row WITH DENORMALIZED IDENTITY (company name + agent name as they were at the time of the action) so the record stands alone and is legible after the live company/agent entity is deleted. Rejected: per-row objects (millions of tiny objects, operationally/cost prohibitive); single rolling per-tenant object (append requires rewriting the whole object — fights immutability and any future Object Lock). Denormalized identity is non-negotiable for the litigation use case. Locked.
+- **Decision Q — Encryption approach (Q1, app-level):** Encrypt the JSONL buffer with AES-256-GCM before putFile, mirroring the proven secrets pattern (`server/src/secrets/local-encrypted-provider.ts`: random IV per object, scheme-tagged, keyed by a master key). Chosen over S3 server-side encryption (SSE) because app-level is STORAGE-BACKEND-INDEPENDENT — the archive is encrypted identically on local-disk (dev/test) and S3 (prod), so the real encryption path is exercised in dev and doesn't depend on per-bucket SSE config. GCM's auth tag also gives tamper-DETECTION on the archive (a down-payment on 6b integrity).
+  - **CRITICAL CAVEAT — KEY SURVIVABILITY IS LOAD-BEARING (added to 6c-infra pending):** App-level encryption means the master key is required to decrypt archives for the full 7 years. A lost key = unrecoverable archives = no producible evidence in litigation — the exact failure the whole arc exists to prevent. Therefore 7-year master-key management/escrow is a MANDATORY 6c-infra obligation, NOT optional. Q1 is correct ONLY if key survivability is guaranteed. (Q3 — app-level + SSE belt-and-suspenders — was considered and deferred; SSE does not mitigate app-level-key loss anyway, so the real mitigation is key escrow, tracked below.)
+  Rejected: Q2 (SSE only — backend-dependent, plaintext in app, weaker tamper story). Locked (with the key-management obligation).
+- **Decision R — Legal-hold mechanism (R1, app-level registry):** A DB table (e.g. `legal_holds`: tenant/companyId, reason, placedAt, placedBy, liftedAt) that the archival lifecycle/destruction logic consults — an archive under an active hold is never destroyed regardless of 7-year age. Chosen over S3 Object Lock (R2) because the existing S3 provider does NOT expose Object Lock/Retention/Legal Hold (only put/get/head/delete), so R2 would require extending the provider AND depend on un-built bucket config; and because the destruction decision is app-level anyway, so the hold check belongs beside it as a simple, testable, backend-independent DB lookup. Legal hold is a business state ('this tenant is under subpoena/IRS audit/dispute'), naturally a DB record. Rejected: R2 (S3 Object Lock — couples to un-built infra); R3 (defer hold entirely — the destruction logic should be born hold-aware). Locked.
+
 ## Architecture Decisions Pending
 
-- **6c-code encryption design:** S3 server-side encryption vs. app-level encryption (master key). To be scoped before 6c-code implementation.
-- **6c-code legal-hold mechanism design:** how a tenant's archive is marked hold-exempt from the 7-year destruction clock. To be scoped.
-- **6c-code archival format:** per-tenant vs per-window object granularity; JSONL vs other; what identity is denormalized into the archive so it's legible after the live entity is gone. To be scoped.
 - **6a-0 FK/cascade resolution detail** (depends on 6c existing): exact mechanism for archive-then-cascade. To be scoped at 6a-0.
 - **6c-infra:** which durable store (AWS S3/Glacier, Cloudflare R2, etc.), cost, Railway config. SCOTT'S real-world decision.
+- **6c-infra: 7-year master-key management / escrow** — MANDATORY consequence of Decision Q1 (app-level encryption). A lost key makes all archives unrecoverable. Mechanism TBD (key escrow, rotation strategy, recovery procedure). Scott's real-world decision; gates the PROD archival path's trustworthiness, not the dev/test build.
 
 ## Work Done (cumulative)
 
@@ -52,7 +58,7 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
 
 ## Next Steps (in order)
 
-1. Scope 6c-code design decisions (archival format, encryption, legal-hold) — present as options with tradeoffs, lock before code.
+1. ✅ DECISIONS LOCKED (P1/Q1/R1): 6c-code design (per-tenant JSONL + denormalized identity, app-level AES-256-GCM, app-level legal_holds registry).
 2. Implement 6c-code archival layer against `StorageService` (local-disk dev/test backend).
 3. 6c-infra: provision durable bucket + Railway config (Scott).
 4. 6a-0: archive-before-delete hook in `companies.remove()`/`agents.remove()`.
@@ -71,6 +77,10 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
 - **REJECTED: Break the `activity_log` FK + denormalize (audit-survival Option 1).** Reason: expedient workaround; leaves audit in wrong tier accumulating; justified only by an urgency that the no-clients-until-complete principle removes.
 - **REJECTED: Soft-delete entities (audit-survival Option 3).** Reason: doesn't solve retention; bloats all tables; archive status already exists for the non-destructive case.
 - **REJECTED: Provision bucket before building 6c-code (6c Option 2).** Reason: blocks code on procurement; contrary to the system's storage-abstraction pattern.
+- **REJECTED: Per-row or single-rolling-object archive format (Decision P alternatives).** Reasons: per-row = millions of tiny objects; single-rolling = rewrite-to-append fights immutability.
+- **REJECTED: SSE-only encryption (Decision Q2).** Reason: backend-dependent, plaintext in app, weaker tamper story; and SSE doesn't mitigate app-level master-key loss.
+- **REJECTED: S3 Object Lock for legal hold (Decision R2).** Reason: existing S3 provider doesn't expose it; couples legal-hold to un-built bucket config; destruction logic is app-level anyway.
+- **REJECTED: Defer legal-hold entirely (Decision R3).** Reason: destruction logic should be born hold-aware.
 
 ## Session Log
 
@@ -81,3 +91,4 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
 - Scott reframed the phase around the actual business need (definitive 7-year per-tenant litigation defense), twice going back to the business constraint — which changed the answer both times (→ Option 5; → 6c-first reorder).
 - Locked: Option 5 framing; 6a/6b/6c decomposition reordered to 6c-first; Option 2 (archive-before-delete) design; Option 3 (code/infra split) for 6c.
 - State: decision trail recorded; no code yet. Next entry point = scope 6c-code design decisions (format, encryption, legal-hold).
+- Locked 6c-code design P1/Q1/R1 (per-tenant date-windowed JSONL with denormalized identity; app-level AES-256-GCM mirroring the secrets module; app-level legal_holds registry). Flagged Q1's key-survivability risk: app-level encryption makes 7-year master-key escrow a MANDATORY 6c-infra obligation (lost key = unrecoverable evidence). Confirmed via read that the existing StorageService is already per-tenant/date-partitioned/sha256, and the S3 provider does NOT expose Object Lock (closing the R2 fork). Next: implement 6c-code against StorageService with local-disk dev/test backend.
