@@ -849,6 +849,36 @@ The prior Session Log entries are preserved unedited as historical record of wha
 
 54. *this commit* — rescope 4c.5 closeout test claim to accounting-targeted; log agent-runtime full-suite contention as tech debt (hash see `git log`).
 
+### 2026-05-29 — Phase 5: Agent Endpoint Allowlist shipped
+
+Phase 5 of the ADR-001 Pattern B Full arc. Pre-implementation code read surfaced that most agent-key infrastructure already existed in the Paperclip platform: `agent_api_keys` table; `actorMiddleware` Bearer-token auth resolving and attaching `req.actor`; `principal_permission_grants` table with `(companyId, principalType, principalId, permissionKey)` unique index; `accessService(db).hasPermission`; typed `PERMISSION_KEYS` const + `z.enum(PERMISSION_KEYS)` validator. Phase 5 was therefore **adoption + a thin enforcement layer**, not net-new infrastructure construction. Result: per-agent endpoint allowlist now enforced on the two agent-facing accounting write routes; ADR-001 requirements #30 (per-agent DB keys authenticate every call) and #32 (per-agent endpoint allowlists; non-allowlisted calls rejected) satisfied for Phase 4 endpoints.
+
+**Decision-lock trail (WIP-doc commits, recorded before code per Tenet #16):** `8fe2f7d8` (Phase 5 WIP doc stood up, A1/B1/C1/D1 locked), `f319b99c` (E1/F1/G1/H1 locked), `45b13a6d` (I1/J1/K1 locked), `2a44cfdf` (L1-revised locked). Twelve decisions A–L organized into three groups (A–D allowlist scope; E–H middleware factory; I–L route mount). Canonical record in ADR-005.
+
+**Two load-bearing facts (preserved explicitly in ADR-005 § Load-bearing nuances):**
+- **(Decision G)** The permission gate is an OUTER-WRAPPER extension of the locked accounting gate order — the inner `validate → assertCompanyAccess → withIdempotency` sequence inside the handler is preserved intact. EMPIRICALLY PROVEN by the 403-before-400 K1 ordering test on both gated routes: an ungranted-agent request with an invalid body returns 403, not 400 — confirming the permission gate fires before body validation. Adding an outer wrapper while preserving the locked inner order is an EXTENSION, not a reordering.
+- **(Decision I1)** The `/accounting/v1/invoices` route is INTENTIONALLY ungated pending agent-exposure of the invoice flow (consumer-agent identity deferred, ADR-001 Phase 5+ downstream — carried forward in ADR-005 § Open Items). The `accounting:create_invoice` key is DEFINED in PERMISSION_KEYS but no agent receives the grant until the invoice flow is exposed. DO NOT add the invoices gate without first exposing the flow.
+
+**Test delta:**
+- `accounting.test.ts`: 92 → 96 tests (+4 net K1 integration tests across both gated routes covering ungranted-agent 403-before-400 ordering proof + non-agent pass-through asserting `hasPermission` not called; 2 pre-existing agent write-route tests updated per L1-revised to mock `hasPermission → true`).
+- `require-agent-permission.test.ts`: +6 net new unit tests covering agent-with-grant pass-through, agent-without-grant 403 with `permissionKey` in error message, board pass-through, none pass-through, agent missing agentId/companyId defensive branches.
+- All targeted runs green; server typecheck clean.
+
+**Canonical decisions:** [ADR-005](adr/ADR-005-phase-5-agent-endpoint-allowlist.md). WIP doc archived (closeout step 4).
+
+**Remaining ADR-001 arc (NOT done):**
+- **Phase 6** — audit log table, middleware, query capabilities. Phase 5 enforces the allowlist; Phase 6 will record the call. Audit middleware can sit alongside `requireAgentPermission` in `server/src/middleware/`.
+- **Phase 7** — rate limiting, versioning strategy, agent onboarding process.
+- **Phase 8** — migration of 4 existing scripts to endpoint-based agent flows. The allowlist gates the destination; Phase 8 migrates the source.
+
+**Commits shipped (Phase 5 implementation + canonical record):**
+
+55. `a745fd23` — Step 1: added `accounting:write_category`, `accounting:create_payment`, `accounting:create_invoice` to PERMISSION_KEYS (`packages/shared/src/constants.ts`); the exhaustive `Record<PermissionKey, string>` label map in `ui/src/pages/CompanyAccess.tsx` was extended to match (compile-time confirmation the keys are load-bearing). All 20 packages typecheck clean.
+56. `90ba922a` — Step 2: `requireAgentPermission(db, permissionKey)` middleware factory + 6 unit tests (`server/src/middleware/require-agent-permission.ts` + `.test.ts`). Not yet mounted. Async errors propagate via Express 5 auto-catch (server pins `express ^5.1.0`); no try/catch wrapper.
+57. `91772d7d` — Step 3: mounted factory inline on category + payments routes (`accountingRoutes(db)` in `server/src/routes/accounting.ts`); +4 K1 integration tests; updated 2 pre-existing agent write-route tests per L1-revised. Invoices route intentionally ungated (I1).
+58. `ee1cc0b4` — ADR-005 canonical Phase 5 decisions (A–L); ADR-001 line 77 extended with implementation pointer.
+59. *this commit* — PHASE-4-PROGRESS Phase 5 summary (hash see `git log`).
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
