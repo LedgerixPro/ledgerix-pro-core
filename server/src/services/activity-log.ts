@@ -64,6 +64,13 @@ export interface LogActivityInput {
   entityType: string;
   entityId: string;
   agentId?: string | null;
+  // Point-in-time identity per Phase 6 Decision S / Decision T (REVISED).
+  // Supplied by the accounting write paths (litigation-defense-of-books
+  // surface — low volume, callers do the resolve). Omitted → stored null.
+  // logActivity does NOT look these up: NO added query on the hot path
+  // (the general 142-site surface stores null snapshots).
+  companyNameSnapshot?: string | null;
+  agentNameSnapshot?: string | null;
   runId?: string | null;
   details?: Record<string, unknown> | null;
   // Outcome of the action. Defaults to "success" if omitted, preserving
@@ -90,6 +97,8 @@ export async function logActivity(db: Db, input: LogActivityInput): Promise<{ id
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
+    companyNameSnapshot: input.companyNameSnapshot ?? null,
+    agentNameSnapshot: input.agentNameSnapshot ?? null,
     runId: input.runId ?? null,
     details: redactedDetails,
     status,
