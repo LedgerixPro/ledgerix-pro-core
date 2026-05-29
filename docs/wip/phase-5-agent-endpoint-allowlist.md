@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — step-3 decisions I1/J1/K1 locked
+**Last updated:** 2026-05-29 — Decision L (L1-revised) locked; route-mount scope corrected
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (`docs/adr/ADR-001-pattern-b-full-api-endpoints.md`) — locks the Phase 5 requirements; ADR-004 (`docs/adr/ADR-004-phase-4c-5-write-endpoint-implementation.md`) — the write endpoints being gated.
 **Estimated remaining work:** ~3–5 hours (estimate may shrink — most key/auth infrastructure already exists; see Context).
@@ -44,6 +44,22 @@ If this didn't get done: agents would have key-authenticated access with NO per-
 - **Decision J — Insertion mechanism (Option J1):** Inline per-route middleware arg: `router.post(path, requireAgentPermission(db, key), handler)` on each gated route. Reasoning: two routes, two one-line additions, each visible at the route declaration (matches Decision B1). A wrapper helper for two call sites is premature abstraction. Locked.
 - **Decision K — Integration-test shape (Option K1):** Per gated route, three assertions: (a) agent-WITHOUT-grant → 403, handler never runs; (b) agent-WITH-grant → reaches handler; (c) non-agent actor (board/local) → unaffected (Decision C pass-through on the real route). **Critical ordering assertion (proves Decision G):** the agent-without-grant request MUST send a body that would ALSO fail body-validation, and assert the response is 403 (permission gate) NOT 400 (validation) — proving the permission gate is genuinely the OUTERMOST gate, firing before the locked inner `validate→assertCompanyAccess→withIdempotency` sequence. Reasoning: integration tests prove the gate fires on the real route in the real chain (distinct from the unit tests' isolated-logic claim); the 403-before-400 assertion is what actually verifies the Decision G gate-order extension rather than merely asserting the gate's presence. Locked.
 
+### Decision L — Route-mount test composition (locked 2026-05-29, L1-revised)
+
+**Decision: L1 — vi.mock the access service; mount the REAL requireAgentPermission middleware on the gated write routes.**
+
+The integration tests (accounting.test.ts) build the app with `fakeDb = {} as Db` and mock the accounting service layer; routes never touch a real DB. But `requireAgentPermission(db, key)` calls `accessService(db).hasPermission(...)`, which runs a real Drizzle query — it would explode on the empty fakeDb. L1 resolves this by adding `vi.mock` for the access service in the test file and controlling `hasPermission`'s return per test. Decision C's pass-through means non-agent actors (board/none) short-circuit BEFORE `accessService(db)` is ever constructed, so board/none tests on these routes never touch the fake db through the gate.
+
+**REQUIRED SCOPE CORRECTION (verify-step finding 2026-05-29):** L1 is NOT a zero-existing-test-change mount. A grep confirmed TWO pre-existing agent-actor tests sit on the gated write routes and expect the request to REACH the handler:
+- accounting.test.ts:1820 — `describe("POST .../transactions/:txnId/category")` → `it("uses requestedByAgentId ... when actor is an agent")`
+- accounting.test.ts:2139 — `describe("POST .../payments")` → `it("uses requestedByAgentId ... when actor is an agent and threshold is exceeded")`
+
+After the gate mounts, these two tests hit `hasPermission`. They MUST be updated to mock `hasPermission → true` (granted agent) so the request still reaches the handler as the tests intend. This is required to avoid regressing green tests — it is deliberate, not collateral. Post-change, 'agent reaches handler' on these routes requires a granted mock; the ungranted-agent 403 path is covered by the new K1 tests.
+
+The read-route agent tests (GET transactions/bills/invoices/accounts/reports auth-and-authz blocks) are UNGATED (Decision I1) and untouched.
+
+Rejected: L2 (dependency-inject accessService into accountingRoutes — changes the locked route-assembly signature, over-engineered); L3 (hand-stub the Drizzle chain in fakeDb — brittle, tests the mock not real behavior). Locked.
+
 ## Architecture Decisions Pending
 
 None blocking. (The `accounting:create_invoice` agent-exposure dependency is tracked under ADR-001 Phase 5+ downstream, not as a Phase 5 blocker — the key is defined here regardless.)
@@ -59,7 +75,7 @@ None blocking. (The `accounting:create_invoice` agent-exposure dependency is tra
 
 1. ✅ DONE (a745fd23): Add the three accounting permission keys to `PERMISSION_KEYS` in `packages/shared/src/constants.ts` (propagates to `PermissionKey` type + Zod validator automatically). Verify build/typecheck after.
 2. ✅ DONE (90ba922a): ✅ DECISIONS LOCKED (E1/F1/G1/H1): Write the `requireAgentPermission(db, permissionKey)` middleware factory in server/src/middleware/. Reads `req.actor`; if `type !== "agent"` pass through (Decision C); else call `accessService(db).hasPermission(companyId, "agent", agentId, permissionKey)` and throw Forbidden on miss (Decision F). Implementation entry point: first read routes/authz.ts to confirm the Forbidden error class to reuse.
-3. ✅ DECISIONS LOCKED (I1/J1/K1): Mount `requireAgentPermission(db, key)` as inline per-route middleware on the category + payments routes (NOT invoices — Decision I1). Add integration tests per K1 including the 403-before-400 ordering assertion that proves the Decision G outermost-gate placement.
+3. ✅ DECISIONS LOCKED (I1/J1/K1): Mount `requireAgentPermission(db, key)` as inline per-route middleware on the category + payments routes (NOT invoices — Decision I1). Add integration tests per K1 including the 403-before-400 ordering assertion that proves the Decision G outermost-gate placement. — L1-revised: mount real middleware + vi.mock access service; UPDATE the two pre-existing agent write-route tests (accounting.test.ts:1820 category, :2139 payments) to mock hasPermission→true; ADD K1 tests (ungranted-agent 403-before-400, granted-agent reaches handler, non-agent pass-through).
 4. Tests: middleware unit tests (agent-with-grant 200-path, agent-without-grant 403, non-agent pass-through) + route integration tests.
 5. Closeout: migrate locked decisions to an ADR (or amend ADR-001), summarize in PHASE-4-PROGRESS.md, update EA/Brief, archive this WIP doc.
 
@@ -85,6 +101,8 @@ None.
 - **REJECTED: Gate the invoices route now (Decision I Option 2).** Considered 2026-05-29. Reason: invoice flow is not agent-exposed (consumer-agent-identity deferred); gating it would imply agent-readiness it does not have. The ungated invoices route is INTENTIONAL — re-add the gate only when the invoice flow is exposed to agents.
 - **REJECTED: Local wrapper helper for middleware insertion (Decision J Option 2).** Reason: premature abstraction for two call sites.
 - **REJECTED: Integration-test one representative route only (Decision K Option 2).** Reason: both gated routes should carry the real-chain proof, especially the agent-without-grant handler-never-runs assertion.
+- **REJECTED: L2 — dependency-inject accessService into the route factory.** Considered 2026-05-29. Reason: changes the locked `accountingRoutes(db)` signature; over-engineered for the need.
+- **REJECTED: L3 — hand-stub the Drizzle query chain in the test fakeDb.** Reason: brittle; tests that the mock was called, not real grant behavior (the exact anti-pattern the WIP notes warn about).
 
 ## Session Log
 
@@ -99,3 +117,4 @@ None.
 - Locked step-2 implementation decisions E1/F1/G1/H1 (factory signature, throw-via-errorHandler error mechanism, permission-gate-before-handler as an outer-wrapper extension of the locked gate order, unit+integration test shape). Recorded before code per Tenet #16.
 - Shipped step 2: requireAgentPermission factory + 6 unit tests (90ba922a), not yet mounted. Confirmed Express 5 async-throw auto-propagation (no try/catch needed) against the routes/authz.ts precedent. State: factory built + unit-tested; step 3 (route mount + integration tests, touching the Decision G gate-order extension) is the next entry point.
 - Locked step-3 decisions I1/J1/K1 (gate category+payments not invoices, inline per-route insertion, per-route integration tests with the 403-before-400 ordering assertion proving the Decision G outermost-gate placement). Confirmed via code read that the permission key is static-per-route, so requireAgentPermission composes as outer middleware while the locked inner gate order stays inside the handler untouched. Recorded before code per Tenet #16.
+- Locked Decision L (L1-revised): vi.mock access service + mount real middleware. Verify-step caught that L1 is NOT zero-existing-test-change — two pre-existing agent write-route tests (category:1820, payments:2139) expect the handler to run and must be updated to mock hasPermission→true. Recorded the test-update obligation before code so it reads as deliberate, not collateral.
