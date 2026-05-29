@@ -29,6 +29,8 @@ import {
   companySkills,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { auditArchiveService } from "./audit-archive/index.js";
+import { getStorageService } from "../storage/index.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -257,8 +259,23 @@ export function companyService(db: Db) {
         return enrichCompany(hydrated);
       }),
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
+    remove: async (id: string) => {
+      // Phase 6 6a-0 (DD3/EE3): archive the company's activity_log BEFORE the
+      // cascade delete destroys it. Archive-failure ABORTS the deletion —
+      // losing the audit trail is worse than failing a delete (Trust Tenet).
+      // We do NOT catch-and-continue: if archiveActivityForCompany throws,
+      // the error propagates and the deletion never happens (the tenant +
+      // rows stay intact, retry-able). Empty companies return
+      // {objectKey: null, rowCount: 0} without throwing — safe for tenants
+      // with no audit history. EE3 invariant: never proceed-and-lose.
+      //
+      // DD3 — company-deletion only. agents.remove() is NOT hooked: agent
+      // book-events survive via the company trail's agentNameSnapshot (S/T).
+      // The archive runs OUTSIDE the delete transaction (avoids holding the
+      // txn open across storage I/O; avoids orphan-archive-on-rollback).
+      await auditArchiveService(db, getStorageService()).archiveActivityForCompany(id);
+
+      return db.transaction(async (tx) => {
         // Delete from child tables in dependency order
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
@@ -290,7 +307,8 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
-      }),
+      });
+    },
 
     stats: () =>
       Promise.all([
