@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — step-2 decisions E1/F1/G1/H1 locked
+**Last updated:** 2026-05-29 — step 2 (middleware factory) shipped (90ba922a)
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (`docs/adr/ADR-001-pattern-b-full-api-endpoints.md`) — locks the Phase 5 requirements; ADR-004 (`docs/adr/ADR-004-phase-4c-5-write-endpoint-implementation.md`) — the write endpoints being gated.
 **Estimated remaining work:** ~3–5 hours (estimate may shrink — most key/auth infrastructure already exists; see Context).
@@ -46,12 +46,14 @@ None blocking. (The `accounting:create_invoice` agent-exposure dependency is tra
 
 - `8fe2f7d8` — Phase 5 WIP doc stood up (decisions A1/B1/C1/D1 locked).
 - `a745fd23` — Step 1: added 3 accounting permission keys to PERMISSION_KEYS (`accounting:write_category`, `accounting:create_payment`, `accounting:create_invoice`) in packages/shared/src/constants.ts. Type-system propagation verified — the exhaustive `Record<PermissionKey, string>` label map at ui/src/pages/CompanyAccess.tsx forced human labels for all 3 keys (compile-time confirmation the keys are load-bearing, not just string literals). All 20 packages typecheck clean.
+- `f319b99c` — Step-2 decisions E1/F1/G1/H1 locked in WIP doc (before code, per Tenet #16).
+- `90ba922a` — Step 2: `requireAgentPermission(db, permissionKey)` middleware factory + 6 unit tests (server/src/middleware/require-agent-permission.ts + .test.ts). Agent-only enforcement (Decision C): non-agent actors (board/none) pass through, `hasPermission` not called (asserted). Agent branch calls `accessService(db).hasPermission(companyId, "agent", agentId, permissionKey)`; throws `forbidden(...)` (→403 via errorHandler) on missing grant or incomplete agent identity. Async errors propagate via Express 5 auto-catch (server pins express ^5.1.0; matches the 8 existing `throw forbidden(...)` async sites in routes/authz.ts) — no try/catch wrapper. NOT YET MOUNTED on any route. 6/6 tests green, typecheck clean.
 
 ## Next Steps (in order)
 
 1. ✅ DONE (a745fd23): Add the three accounting permission keys to `PERMISSION_KEYS` in `packages/shared/src/constants.ts` (propagates to `PermissionKey` type + Zod validator automatically). Verify build/typecheck after.
-2. ✅ DECISIONS LOCKED (E1/F1/G1/H1): Write the `requireAgentPermission(db, permissionKey)` middleware factory in server/src/middleware/. Reads `req.actor`; if `type !== "agent"` pass through (Decision C); else call `accessService(db).hasPermission(companyId, "agent", agentId, permissionKey)` and throw Forbidden on miss (Decision F). Implementation entry point: first read routes/authz.ts to confirm the Forbidden error class to reuse.
-3. Apply the factory to the `/api/accounting/v1/*` write routes (category, payments; invoice route key wired but agent-exposure deferred per Decision A note).
+2. ✅ DONE (90ba922a): ✅ DECISIONS LOCKED (E1/F1/G1/H1): Write the `requireAgentPermission(db, permissionKey)` middleware factory in server/src/middleware/. Reads `req.actor`; if `type !== "agent"` pass through (Decision C); else call `accessService(db).hasPermission(companyId, "agent", agentId, permissionKey)` and throw Forbidden on miss (Decision F). Implementation entry point: first read routes/authz.ts to confirm the Forbidden error class to reuse.
+3. Apply the factory to the `/api/accounting/v1/*` write routes (category, payments; invoice route key wired but agent-exposure deferred per Decision A note). Touches the Decision G locked-gate-order extension — mount requireAgentPermission as the outermost gate, preserving the inner validate→assertCompanyAccess→withIdempotency order. Integration tests per H1: gate fires (403) for agent-without-grant on the real route; agent-with-grant reaches handler; non-agent unaffected.
 4. Tests: middleware unit tests (agent-with-grant 200-path, agent-without-grant 403, non-agent pass-through) + route integration tests.
 5. Closeout: migrate locked decisions to an ADR (or amend ADR-001), summarize in PHASE-4-PROGRESS.md, update EA/Brief, archive this WIP doc.
 
@@ -86,3 +88,4 @@ None.
 - Shipped: this WIP doc (`8fe2f7d8`); step 1 — accounting permission keys added to PERMISSION_KEYS (`a745fd23`).
 - State at session end: decisions locked; step 1 (permission keys) shipped + typecheck-verified; Next Steps step 2 (requireAgentPermission middleware factory) is the next entry point.
 - Locked step-2 implementation decisions E1/F1/G1/H1 (factory signature, throw-via-errorHandler error mechanism, permission-gate-before-handler as an outer-wrapper extension of the locked gate order, unit+integration test shape). Recorded before code per Tenet #16.
+- Shipped step 2: requireAgentPermission factory + 6 unit tests (90ba922a), not yet mounted. Confirmed Express 5 async-throw auto-propagation (no try/catch needed) against the routes/authz.ts precedent. State: factory built + unit-tested; step 3 (route mount + integration tests, touching the Decision G gate-order extension) is the next entry point.
