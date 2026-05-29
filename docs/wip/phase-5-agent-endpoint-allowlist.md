@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — step 2 (middleware factory) shipped (90ba922a)
+**Last updated:** 2026-05-29 — step-3 decisions I1/J1/K1 locked
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (`docs/adr/ADR-001-pattern-b-full-api-endpoints.md`) — locks the Phase 5 requirements; ADR-004 (`docs/adr/ADR-004-phase-4c-5-write-endpoint-implementation.md`) — the write endpoints being gated.
 **Estimated remaining work:** ~3–5 hours (estimate may shrink — most key/auth infrastructure already exists; see Context).
@@ -38,6 +38,12 @@ If this didn't get done: agents would have key-authenticated access with NO per-
   - **LOCKED-GATE-ORDER NOTE (important):** accounting.ts:939 carries `// Gate order (locked): validate body → assertCompanyAccess → withIdempotency`. Decision G PREPENDS an outer gate; the locked INNER sequence (validate → assertCompanyAccess → withIdempotency) is preserved intact and unchanged. Per the locked-decisions tenet, adding an outer wrapper while preserving the locked inner order is an EXTENSION, not a reordering. Approved knowingly by Scott 2026-05-29 with this distinction explicit. Locked.
 - **Decision H — Test coverage (Option H1):** Middleware unit tests (agent-with-grant → pass; agent-without-grant → 403; non-agent actor → pass-through per Decision C) PLUS per-route integration tests confirming the gate fires on the real accounting write routes. Reasoning: matches WIP step 4 + the codebase middleware-test pattern (board-mutation-guard.test.ts). The non-agent pass-through branch (Decision C) specifically needs a dedicated unit test — it's the subtle branch most likely to regress silently. Locked.
 
+### Step 3 implementation decisions (locked 2026-05-29)
+
+- **Decision I — Key→route mapping (Option I1):** Gate the two agent-facing write routes now — `/accounting/v1/transactions/:txnId/category` → `accounting:write_category`; `/accounting/v1/payments` → `accounting:create_payment`. The `/accounting/v1/invoices` route is NOT gated yet. Reasoning: per Decision A's locked note, `accounting:create_invoice` is defined but its agent-exposure is deferred (consumer-agent-identity item, ADR-001 Phase 5+ downstream); the invoice flow is not agent-exposed. Gating it now would imply the route is agent-ready when it is not — a code/decision mismatch. Leave invoices ungated until the phase that exposes it. **DO NOT add the invoices gate in a future session without first exposing the invoice flow to agents** — its absence is intentional, not an oversight. Locked.
+- **Decision J — Insertion mechanism (Option J1):** Inline per-route middleware arg: `router.post(path, requireAgentPermission(db, key), handler)` on each gated route. Reasoning: two routes, two one-line additions, each visible at the route declaration (matches Decision B1). A wrapper helper for two call sites is premature abstraction. Locked.
+- **Decision K — Integration-test shape (Option K1):** Per gated route, three assertions: (a) agent-WITHOUT-grant → 403, handler never runs; (b) agent-WITH-grant → reaches handler; (c) non-agent actor (board/local) → unaffected (Decision C pass-through on the real route). **Critical ordering assertion (proves Decision G):** the agent-without-grant request MUST send a body that would ALSO fail body-validation, and assert the response is 403 (permission gate) NOT 400 (validation) — proving the permission gate is genuinely the OUTERMOST gate, firing before the locked inner `validate→assertCompanyAccess→withIdempotency` sequence. Reasoning: integration tests prove the gate fires on the real route in the real chain (distinct from the unit tests' isolated-logic claim); the 403-before-400 assertion is what actually verifies the Decision G gate-order extension rather than merely asserting the gate's presence. Locked.
+
 ## Architecture Decisions Pending
 
 None blocking. (The `accounting:create_invoice` agent-exposure dependency is tracked under ADR-001 Phase 5+ downstream, not as a Phase 5 blocker — the key is defined here regardless.)
@@ -53,7 +59,7 @@ None blocking. (The `accounting:create_invoice` agent-exposure dependency is tra
 
 1. ✅ DONE (a745fd23): Add the three accounting permission keys to `PERMISSION_KEYS` in `packages/shared/src/constants.ts` (propagates to `PermissionKey` type + Zod validator automatically). Verify build/typecheck after.
 2. ✅ DONE (90ba922a): ✅ DECISIONS LOCKED (E1/F1/G1/H1): Write the `requireAgentPermission(db, permissionKey)` middleware factory in server/src/middleware/. Reads `req.actor`; if `type !== "agent"` pass through (Decision C); else call `accessService(db).hasPermission(companyId, "agent", agentId, permissionKey)` and throw Forbidden on miss (Decision F). Implementation entry point: first read routes/authz.ts to confirm the Forbidden error class to reuse.
-3. Apply the factory to the `/api/accounting/v1/*` write routes (category, payments; invoice route key wired but agent-exposure deferred per Decision A note). Touches the Decision G locked-gate-order extension — mount requireAgentPermission as the outermost gate, preserving the inner validate→assertCompanyAccess→withIdempotency order. Integration tests per H1: gate fires (403) for agent-without-grant on the real route; agent-with-grant reaches handler; non-agent unaffected.
+3. ✅ DECISIONS LOCKED (I1/J1/K1): Mount `requireAgentPermission(db, key)` as inline per-route middleware on the category + payments routes (NOT invoices — Decision I1). Add integration tests per K1 including the 403-before-400 ordering assertion that proves the Decision G outermost-gate placement.
 4. Tests: middleware unit tests (agent-with-grant 200-path, agent-without-grant 403, non-agent pass-through) + route integration tests.
 5. Closeout: migrate locked decisions to an ADR (or amend ADR-001), summarize in PHASE-4-PROGRESS.md, update EA/Brief, archive this WIP doc.
 
@@ -76,6 +82,9 @@ None.
 - **REJECTED: Inline `res.status(403).json(...)` in the middleware (Decision F Option 2).** Reason: would be the only place breaking the throw-via-errorHandler convention; duplicates error-shape logic.
 - **REJECTED: Permission gate after `assertCompanyAccess` / inside the handler (Decision G Options 2 & 3).** Reason: permission-to-invoke should fail fast before body parse/validation.
 - **REJECTED: Integration-tests-only (Decision H Option 2).** Reason: the non-agent pass-through branch needs a dedicated unit test to prevent silent regression.
+- **REJECTED: Gate the invoices route now (Decision I Option 2).** Considered 2026-05-29. Reason: invoice flow is not agent-exposed (consumer-agent-identity deferred); gating it would imply agent-readiness it does not have. The ungated invoices route is INTENTIONAL — re-add the gate only when the invoice flow is exposed to agents.
+- **REJECTED: Local wrapper helper for middleware insertion (Decision J Option 2).** Reason: premature abstraction for two call sites.
+- **REJECTED: Integration-test one representative route only (Decision K Option 2).** Reason: both gated routes should carry the real-chain proof, especially the agent-without-grant handler-never-runs assertion.
 
 ## Session Log
 
@@ -89,3 +98,4 @@ None.
 - State at session end: decisions locked; step 1 (permission keys) shipped + typecheck-verified; Next Steps step 2 (requireAgentPermission middleware factory) is the next entry point.
 - Locked step-2 implementation decisions E1/F1/G1/H1 (factory signature, throw-via-errorHandler error mechanism, permission-gate-before-handler as an outer-wrapper extension of the locked gate order, unit+integration test shape). Recorded before code per Tenet #16.
 - Shipped step 2: requireAgentPermission factory + 6 unit tests (90ba922a), not yet mounted. Confirmed Express 5 async-throw auto-propagation (no try/catch needed) against the routes/authz.ts precedent. State: factory built + unit-tested; step 3 (route mount + integration tests, touching the Decision G gate-order extension) is the next entry point.
+- Locked step-3 decisions I1/J1/K1 (gate category+payments not invoices, inline per-route insertion, per-route integration tests with the 403-before-400 ordering assertion proving the Decision G outermost-gate placement). Confirmed via code read that the permission key is static-per-route, so requireAgentPermission composes as outer middleware while the locked inner gate order stays inside the handler untouched. Recorded before code per Tenet #16.
