@@ -35,6 +35,9 @@ const permissionLabels: Record<PermissionKey, string> = {
   "tasks:assign_scope": "Assign scoped tasks",
   "tasks:manage_active_checkouts": "Manage active task checkouts",
   "joins:approve": "Approve join requests",
+  "accounting:write_category": "Update transaction categories",
+  "accounting:create_payment": "Create payments",
+  "accounting:create_invoice": "Create invoices",
 };
 
 function formatGrantSummary(member: CompanyMember) {
