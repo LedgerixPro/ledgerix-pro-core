@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — 6-PRESERVE arc complete (6c writer + 6a-0 hook); audit trail survives tenant deletion
+**Last updated:** 2026-05-29 — 6a-rest narrowed to query-only; backstop + fidelity split to later pieces
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (Pattern B Full — Phase 6 requirements, line 34 + line 77). Strategic Plan "Phase 6b" (== our 6c). ADR-005 (Phase 5, just completed — preceding arc).
 **Estimated remaining work:** Large — multi-arc (6c → 6a-0 → 6a-rest → 6b). Estimate refined per sub-phase.
@@ -121,6 +121,8 @@ Building blocks confirmed by read: secrets module exposes AES-256-GCM `encryptVa
   - **CRITICAL INVARIANT:** archive-failure must NEVER proceed-and-delete (that would silently destroy the exact record the arc preserves). The hook does NOT catch-and-continue on archive failure; it lets the failure propagate to abort the deletion.
   Rejected: EE1 (archive inside the txn — holds txn open across storage I/O; orphan-on-rollback; though atomically cleaner), EE2 (archive inside txn but failure does NOT block delete — DANGEROUS: silently loses the record on archive failure).
 
+**6a-rest scope narrowed (2026-05-29):** 6a-rest is scoped to the QUERY/retrieval capability only. The originally-bundled completeness-backstop middleware and logging-fidelity standardization are split into separate later pieces — they have different characters (preventive infra for not-yet-existing routes; cleanup) from the retrieval capability, and bundling risked an unfocused piece. The query is the direct, high-value continuation: it makes the now-durable trail actually usable for litigation/trust ("pull exactly what was done to a tenant's books").
+
 ## Architecture Decisions Pending
 
 - **6a-0 FK/cascade resolution detail** (depends on 6c existing): exact mechanism for archive-then-cascade. To be scoped at 6a-0.
@@ -148,10 +150,12 @@ Building blocks confirmed by read: secrets module exposes AES-256-GCM `encryptVa
 2. ✅ DONE — 2a (commit 6a90fea6, schema columns + legal_holds) and 2b-i (commit c64bf177, optional snapshot fields on logActivity with the no-fallback hot-path-untouched guarantee). The former 2b-ii (accounting callers pass snapshots) is now absorbed into 6a-AUDIT below.
 3. ✅ DONE — **6a-AUDIT (scope LOCKED U3/V2/W1/X1/Y2/Z1):** Both sites shipped — replay-side (`9253be34`) + route-side (`acf956b9`). Accounting book-changes now persist durable activity_log rows at every meaningful event with point-in-time identity.
 4. ✅ DONE — **6-PRESERVE arc COMPLETE.** (a) ✅ (`e708ce5f`) — 6c archive-writer + retrieval. (b) ✅ (`d2e2cc2f`) — 6a-0 archive-before-delete hook in `companies.remove()`; archive runs OUTSIDE/BEFORE the delete transaction with NO try/catch (EE3 enforced by control flow); `agents.remove()` unhooked + guard-tested (DD3). **A tenant's complete audit trail is durably archived to encrypted storage BEFORE deletion can touch it; archive-failure aborts deletion; empty companies pass safely; agent-deletion preserves the snapshot-named trail at company level.** Next entry point: step 5 (6a-rest).
-5. **6a-rest:** per-tenant audit query capability + middleware completeness-backstop for FUTURE non-logging routes + fidelity/logging standardization.
-6. **6c-infra:** provision durable bucket + Railway config + 7-year master-key escrow (Scott — real-world decisions).
-7. **6b:** integrity/tamper-evidence on the now-complete, archived audit trail.
-8. Closeout each sub-phase to ADR (likely an ADR-006, or amend ADR-001) + tracker/EA/Brief + archive this WIP.
+5. **6a-rest-QUERY (scoped to retrieval ONLY):** per-tenant audit query capability — given a tenant (companyId) + optional date range, produce their complete trail, unifying LIVE activity_log rows AND archived objects (read back via `auditArchiveService.readArchive`). This is the read-side completion of the litigation requirement ("pull exactly what was or was not done to a tenant's books") and the ADR-001 "queryable for debugging and trust-building" line.
+6. **(split out, separate later piece) completeness-backstop middleware for FUTURE non-logging write routes** — deferred; warrants its own decision on whether to build before there are new routes to guard (no new write routes currently pending).
+7. **(split out, separate later piece) logging-fidelity standardization** — cleanup, anytime.
+8. **6c-infra:** provision durable bucket + Railway config + 7-year master-key escrow incl. `PAPERCLIP_ARCHIVE_MASTER_KEY` (Scott — real-world decisions).
+9. **6b:** integrity/tamper-evidence on the now-complete, archived audit trail.
+10. Closeout each sub-phase to ADR (likely an ADR-006, or amend ADR-001) + tracker/EA/Brief + archive this WIP.
 
 ## Blockers
 
@@ -208,3 +212,4 @@ Building blocks confirmed by read: secrets module exposes AES-256-GCM `encryptVa
 - 6c archive-writer + retrieval shipped (e708ce5f, audit-archive service). Round-trips a tenant's activity_log through full-row JSONL → dedicated-key AES-256-GCM → StorageService and back, 7/7 against real local-disk incl. tamper-detection + company-isolation + dev-fallback-key-independence. Reused decodeMasterKey (one-line export), mirrored the ~10-line cipher with archive_v1 scheme. Next: 6a-0 delete-hook (thin caller of the writer before the cascade).
 - Locked 6a-0 delete-hook DD3/EE3. DD3: hook companies.remove() ONLY — agent-deletion is protected by the S/T snapshot identity (company trail still names the deleted agent) so it needs no separate archive; ACCEPTED GAP that agent operational rows are destroyed un-archived on agent-delete. EE3: archive BEFORE the delete transaction; archive-failure ABORTS the deletion (Trust Tenet — losing the record is worse than failing a delete; never proceed-and-lose). Read confirmed companies.remove() deletes activityLog at line 265 inside a txn; agents.remove() deletes by agentId-OR-run. Next code: the hook in companies.remove().
 - 6a-0 delete-hook shipped (d2e2cc2f) — 6-PRESERVE arc COMPLETE. companies.remove() archives activity_log before the cascade; archive-failure aborts deletion via control flow (EE3, load-bearing test proves transaction never runs on archive failure); agents.remove() unhooked + guard-tested (DD3). End-to-end: a tenant's audit trail provably survives their deletion. Preservation half of the litigation requirement is real; remaining work is retrievability (6a-rest), prod infra/key-escrow (6c-infra), integrity (6b).
+- Narrowed 6a-rest to QUERY-capability-only (per-tenant audit retrieval unifying live activity_log + archived objects — the read-side completion of the litigation requirement). Split the backstop-middleware (preventive infra for not-yet-existing routes) and fidelity-standardization (cleanup) into separate later pieces to keep the retrieval work focused. Next: read the activity query + archive-read interfaces, then scope the query build.
