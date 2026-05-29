@@ -5,17 +5,20 @@ import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
+import { companyService } from "./companies.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import {
   executeApprovedAccountingWrite,
   isAccountingApprovalType,
 } from "./accounting/write-approvals.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
+  const companiesSvc = companyService(db);
   const instanceSettings = instanceSettingsService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
@@ -179,12 +182,63 @@ export function approvalService(db: Db) {
       if (applied && isAccountingApprovalType(updated.type)) {
         try {
           const result = await executeApprovedAccountingWrite(db, updated);
-          // Result info is available here for future enhancement (e.g.,
-          // writing it into the approval's decisionNote or a separate
-          // activity_log entry). For Phase 4c.4 we just log.
-          if (!result.executed) {
-            // Stub or unknown-type case — log at info level
-            // (logger call already happens inside the dispatcher)
+
+          // Phase 6 6a-AUDIT replay-side (W1/U3/X1): persist a durable
+          // activity_log row for accounting book-change outcomes. Only
+          // write_executed and write_failed_replay are real book-touch
+          // attempts that warrant durable audit records — stub_logged /
+          // skip_unknown_type are not. logActivity failure must NOT roll
+          // back the approval (matches the existing dispatcher-failure
+          // handling philosophy below).
+          if (
+            result.action === "write_executed" ||
+            result.action === "write_failed_replay"
+          ) {
+            try {
+              // X1: resolve point-in-time identity ONCE per approval.
+              const [company, agent] = await Promise.all([
+                companiesSvc.getById(updated.companyId),
+                updated.requestedByAgentId
+                  ? agentsSvc.getById(updated.requestedByAgentId)
+                  : Promise.resolve(null),
+              ]);
+              const companyNameSnapshot = company?.name ?? null;
+              const agentNameSnapshot = agent?.name ?? null;
+
+              const isExecuted = result.action === "write_executed";
+              await logActivity(db, {
+                companyId: updated.companyId,
+                actorType: updated.requestedByAgentId ? "agent" : "user",
+                actorId: updated.requestedByAgentId ?? decidedByUserId,
+                action: isExecuted
+                  ? "accounting.write.executed"
+                  : "accounting.write.failed_replay",
+                entityType: "approval",
+                entityId: updated.id,
+                agentId: updated.requestedByAgentId ?? null,
+                companyNameSnapshot,
+                agentNameSnapshot,
+                status: isExecuted ? "success" : "failure",
+                details: {
+                  approvalId: updated.id,
+                  approvalType: updated.type,
+                  decidedByUserId,
+                  message: result.message,
+                  upstreamResult: result.upstreamResult ?? null,
+                },
+              });
+            } catch (logErr) {
+              const msg = logErr instanceof Error ? logErr.message : String(logErr);
+              logger.error(
+                {
+                  approvalId: id,
+                  approvalType: updated.type,
+                  dispatcherAction: result.action,
+                  error: msg,
+                },
+                "logActivity failed after accounting write — approval remains approved",
+              );
+            }
           }
         } catch (err) {
           // Dispatcher errored — don't roll back the approval, but log loudly.
