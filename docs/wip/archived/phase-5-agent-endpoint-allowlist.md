@@ -1,8 +1,10 @@
+> **ARCHIVED 2026-05-29.** This WIP doc has been retired. Its locked Architecture Decisions (A–L) are now canonical in `docs/adr/ADR-005-phase-5-agent-endpoint-allowlist.md`. The chronological summary lives in `docs/PHASE-4-PROGRESS.md` (Phase 5 entry, 2026-05-29). This file is preserved as the historical record of how those decisions were reached, including the verify-step findings (e.g. Decision L1-revised's discovery that two pre-existing agent write-route tests required updating) that are denser here than in the ADR. **For canonical decision lookup, read ADR-005 first.**
+
 # WIP: Phase 5 — Agent Endpoint Allowlist (ADR-001 Pattern B Full)
 
-**Status:** in_progress
+**Status:** archived
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — step 3 shipped (91772d7d); agent allowlist live on category+payments
+**Last updated:** 2026-05-29 — archived; decisions canonical in ADR-005
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (`docs/adr/ADR-001-pattern-b-full-api-endpoints.md`) — locks the Phase 5 requirements; ADR-004 (`docs/adr/ADR-004-phase-4c-5-write-endpoint-implementation.md`) — the write endpoints being gated.
 **Estimated remaining work:** step 5 closeout only — migrate locked decisions to an ADR (or amend ADR-001), summarize in PHASE-4-PROGRESS.md, update EA/Brief, archive this WIP doc. ~1–2 hours of doc work. (Initial estimate was ~3–5 hours of code+test; steps 1–4 shipped under that.)
