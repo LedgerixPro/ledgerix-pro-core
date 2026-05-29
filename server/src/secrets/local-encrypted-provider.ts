@@ -17,7 +17,7 @@ function resolveMasterKeyFilePath() {
   return path.resolve(process.cwd(), "data/secrets/master.key");
 }
 
-function decodeMasterKey(raw: string): Buffer | null {
+export function decodeMasterKey(raw: string): Buffer | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
