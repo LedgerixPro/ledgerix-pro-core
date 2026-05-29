@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — Decision T locked (logActivity identity-capture, Option 3 hybrid)
+**Last updated:** 2026-05-29 — Decision T REVISED (accounting-writes-only identity capture; hot path untouched)
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (Pattern B Full — Phase 6 requirements, line 34 + line 77). Strategic Plan "Phase 6b" (== our 6c). ADR-005 (Phase 5, just completed — preceding arc).
 **Estimated remaining work:** Large — multi-arc (6c → 6a-0 → 6a-rest → 6b). Estimate refined per sub-phase.
@@ -58,6 +58,8 @@ Rejected: Option 1 (archive-time join — simpler, but loses mid-engagement iden
 
 **Work-order consequence:** logActivity identity-capture is now a FOUNDATIONAL 6c-code piece, sequenced BEFORE the archive-writer (the writer reads what logActivity stores). logActivity must look up + store the current company/agent name at insert time; callers that pass companyId/agentId get the snapshot captured automatically inside logActivity (callers unchanged where possible).
 
+**SCOPE NARROWED 2026-05-29 (consequence of T REVISED).** S's intent ('every real client audit row carries point-in-time identity') is narrowed to: every ACCOUNTING-WRITE audit row carries point-in-time identity (the litigation-defense-of-books surface). Non-accounting audit rows leave the snapshot columns NULL. The dedicated nullable columns added in 2a (commit 6a90fea6) remain correct and unchanged — nullable was already the right call; this only narrows WHICH rows populate them.
+
 ### Decision T — logActivity identity-capture mechanism (locked 2026-05-29)
 
 **Decision: Option 3 (hybrid) — optional caller-supplied point-in-time names, with a lookup fallback when not supplied.**
@@ -74,6 +76,8 @@ Rejected: Option 1 (always lookup — simplest, but adds 2 queries × 142 hot-pa
 
 **Implementation note:** As callers are NOT all updated at once, the accounting write paths (litigation-critical) should be updated to supply names in the SAME work as the logActivity change or immediately after; the fallback covers correctness in the interim. No client rows exist yet, so there is no legacy gap regardless.
 
+**REVISED 2026-05-29 (premise corrected, scope narrowed).** Verify-step finding: the litigation-critical accounting write callers (accounting.ts) hold companyId + req.actor.agentId — IDs ONLY, no name and no loaded company/agent object at the logActivity call site. T's original Option-3-hybrid premise ('accounting callers supply names with zero added query') is therefore FALSE — they cannot cheaply supply names. Revised decision: do NOT add the optional caller-supplied-name machinery to the general logActivity path, and do NOT impose a lookup on the 142-site hot surface. INSTEAD: confine point-in-time identity capture to the low-volume accounting write paths only — those callers perform the company/agent name lookup explicitly (low volume → the 142-site perf concern that drove T away from always-lookup does NOT apply here) and pass the resolved names to logActivity via the optional snapshot fields. Non-accounting audit rows store NULL snapshots (they don't carry the litigation-defense-of-books requirement). Net effect: the litigation fidelity lands exactly where the requirement bites (the books), the 142-site hot path gets ZERO added queries, and the implementation is simpler than the abandoned general hybrid. The optional companyNameSnapshot/agentNameSnapshot fields on LogActivityInput are RETAINED (the accounting callers use them to pass resolved names); what's dropped is the general in-logActivity lookup-fallback for the whole surface.
+
 ## Architecture Decisions Pending
 
 - **6a-0 FK/cascade resolution detail** (depends on 6c existing): exact mechanism for archive-then-cascade. To be scoped at 6a-0.
@@ -87,7 +91,7 @@ Rejected: Option 1 (always lookup — simplest, but adds 2 queries × 142 hot-pa
 ## Next Steps (in order)
 
 1. ✅ DECISIONS LOCKED (P1/Q1/R1): 6c-code design (per-tenant JSONL + denormalized identity, app-level AES-256-GCM, app-level legal_holds registry).
-2. Step 2 (6c-code implementation), in order: (2a) add legal_holds table + company_name_snapshot/agent_name_snapshot columns to activity_log (additive migration); (2b) **Decision T, Option 3 hybrid:** extend LogActivityInput with optional companyNameSnapshot/agentNameSnapshot; logActivity stores supplied names directly, else looks up companies/agents by id when id present, else null. Then update the accounting write-path callers to supply names they already hold (zero added query on the litigation-critical paths). Tests: supplied-name path (no query), fallback-lookup path (query fires), null-company/null-agent path (null snapshot, no query). (2c) build the archive-writer service (query activity_log per tenant/window → read denormalized identity → JSONL serialize → AES-256-GCM encrypt → StorageService.putFile), local-disk dev/test backend; (2d) build the retrieval/read path; tests at each.
+2. Step 2 (6c-code implementation), in order: (2a) add legal_holds table + company_name_snapshot/agent_name_snapshot columns to activity_log (additive migration); (2b) **Decision T REVISED:** (i) retain the optional companyNameSnapshot/agentNameSnapshot fields on LogActivityInput; logActivity stores them if supplied, else null — NO general lookup-fallback in logActivity (142-site hot path untouched, zero added queries). (ii) In the accounting write paths ONLY, resolve the company name (by companyId) and agent name (by agentId when actor is agent) and pass them to logActivity. (iii) Tests: logActivity stores supplied snapshots / stores null when omitted (no query); accounting write path resolves + passes names; non-accounting callers unaffected (null snapshot). (2c) build the archive-writer service (query activity_log per tenant/window → read denormalized identity → JSONL serialize → AES-256-GCM encrypt → StorageService.putFile), local-disk dev/test backend; (2d) build the retrieval/read path; tests at each.
 3. 6c-infra: provision durable bucket + Railway config (Scott).
 4. 6a-0: archive-before-delete hook in `companies.remove()`/`agents.remove()`.
 5. 6a-rest: completeness middleware + per-tenant audit query capability + fidelity/logging standardization.
@@ -111,6 +115,7 @@ Rejected: Option 1 (always lookup — simplest, but adds 2 queries × 142 hot-pa
 - **REJECTED: Defer legal-hold entirely (Decision R3).** Reason: destruction logic should be born hold-aware.
 - **REJECTED: logActivity always-lookup for identity (Decision T Option 1).** Reason: 2 extra DB round-trips × 142 hot-path call sites — adds to the established deferred-perf-debt pattern Scott flagged. Avoid piling on.
 - **REJECTED: caller-supplied-only, no fallback (Decision T Option 2).** Reason: risks silent null-snapshot gaps in litigation-critical records if a caller isn't updated.
+- **REVISED-AWAY: general in-logActivity lookup-fallback across all 142 callers (T original Option 3 mechanism).** 2026-05-29. Reason: premise was wrong (accounting callers hold ids not names); and a general fallback would impose lookups on the 142-site hot path. Point-in-time identity confined to the low-volume accounting writes instead.
 
 ## Session Log
 
@@ -124,3 +129,4 @@ Rejected: Option 1 (always lookup — simplest, but adds 2 queries × 142 hot-pa
 - Locked 6c-code design P1/Q1/R1 (per-tenant date-windowed JSONL with denormalized identity; app-level AES-256-GCM mirroring the secrets module; app-level legal_holds registry). Flagged Q1's key-survivability risk: app-level encryption makes 7-year master-key escrow a MANDATORY 6c-infra obligation (lost key = unrecoverable evidence). Confirmed via read that the existing StorageService is already per-tenant/date-partitioned/sha256, and the S3 provider does NOT expose Object Lock (closing the R2 fork). Next: implement 6c-code against StorageService with local-disk dev/test backend.
 - Locked Decision S (Option 2): capture company/agent name into activity_log at write time as dedicated nullable columns (not details jsonb — avoids the username-redaction pass and keeps identity as typed audit metadata). Read confirmed logActivity does not snapshot names today; no client rows exist yet, so write-time capture has zero legacy gap. Work-order consequence: logActivity identity-capture is foundational, sequenced before the archive-writer.
 - Locked Decision T (Option 3 hybrid): optional caller-supplied names + lookup fallback in logActivity. Chosen over always-lookup specifically to AVOID piling onto the known deferred-perf-debt pattern (conversation-search confirmed: unhinted probe loop, deferred rate-limiting/caching, simplified payments fields) on the 142-caller hot path. Litigation-critical accounting callers supply names (zero added query); fallback guarantees completeness elsewhere.
+- Decision T REVISED (doc-first, Tenet #16): verify-step found accounting callers hold IDs not names (T's zero-query premise was false). Revised to confine point-in-time identity capture to the low-volume accounting write paths (explicit name lookup there, names passed via the retained optional snapshot fields); dropped the general in-logActivity fallback so the 142-site hot path gets zero added queries. Decision S scope narrowed accordingly (accounting-write rows carry snapshots; others null). 2a columns unchanged.
