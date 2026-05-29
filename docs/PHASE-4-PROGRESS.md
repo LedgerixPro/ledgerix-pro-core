@@ -881,6 +881,8 @@ Phase 5 of the ADR-001 Pattern B Full arc. Pre-implementation code read surfaced
 
 ### Next session (date TBD)
 
+> **SUPERSEDED 2026-05-29.** Everything originally planned in this section has shipped: the three write endpoints (Phase 4c.5), Q1 charter-status storage + Q2 setup-fee handling (4c.5, ADR-003/ADR-004), and ADR-001 Pattern B Full Phases 1-5 (Phase 5 — agent endpoint allowlist — closed 2026-05-29, canonical in ADR-005). Current state: HEAD at master tip post-Phase-5-closeout. Next active work is ADR-001 Phase 6 (audit log). The planning bullets below are preserved as the historical record of what was next-up at the time of writing; they are NOT a current to-do list.
+
 **Two paths forward, in any order:**
 
 **Path A — Fix the compareAndSeed null-identity bug:** ✅ DONE Session 3 (commit `1727746a`, prod-verified via audit_log `e6d8b7f5-a851-4af9-a5f5-164acc940f95`). See 2026-05-26 Tuesday session entry above.
