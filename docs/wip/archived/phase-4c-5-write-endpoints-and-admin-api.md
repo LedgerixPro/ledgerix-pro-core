@@ -1,3 +1,7 @@
+> **ARCHIVED 2026-05-28.** This WIP doc has been retired. Its locked Architecture Decisions are now captured in `docs/adr/ADR-004-phase-4c-5-write-endpoint-implementation.md`. The chronological implementation diary lives in `docs/PHASE-4-PROGRESS.md` (Sessions 1–5). This file is preserved here as the historical record of how those decisions were reached, including session arcs, rejected options, and verify-step findings that are denser here than in the ADR. **For canonical decision lookup, read ADR-004 first.**
+>
+> Note: two factual errors in this archived file (references to a non-existent "top-level Q4 resolved during Decision 6") were corrected in a post-archival errata commit (2026-05-29); the corrected text reads "Q-pay-4 (Decision 6 sub-decision)". This is the only post-archival edit; everything else is preserved verbatim.
+
 # WIP: Phase 4c.5 — Re-ship Write Endpoints Atop Safety Layer + Admin API Foundation
 
 **Status:** ready_to_merge_to_adr
@@ -1035,7 +1039,7 @@ When all three exist, reopen Q5 with a new pending-decision section in this WIP 
 
 **What this lock means for Phase 4c.5 closure:**
 
-All Phase 4c.5 architectural decisions are now resolved: Decisions 4, 5, 6, 7 FEATURE-COMPLETE; Q1, Q2 LOCKED + IMPLEMENTED; Q3 resolved as Decision 4; Q4 resolved during Decision 6; Q5 LOCKED as deliberately excluded. The WIP doc status (ready_to_merge_to_adr) is now genuinely accurate — the migration to ADR-004 is the only remaining architectural step, and ADR-004 can capture the complete Phase 4c.5 story (Decisions 4–7 + Q1/Q2 + Q5 exclusion) at once.
+All Phase 4c.5 architectural decisions are now resolved: Decisions 4, 5, 6, 7 FEATURE-COMPLETE; Q1, Q2 LOCKED + IMPLEMENTED; Q3 resolved as Decision 4; Q-pay-4 (Decision 6 sub-decision) resolved during Decision 6; Q5 LOCKED as deliberately excluded. The WIP doc status (ready_to_merge_to_adr) is now genuinely accurate — the migration to ADR-004 is the only remaining architectural step, and ADR-004 can capture the complete Phase 4c.5 story (Decisions 4–7 + Q1/Q2 + Q5 exclusion) at once.
 
 ## Defects Discovered
 
@@ -1339,6 +1343,6 @@ This WIP doc must be read at the start of every Phase 4c.5 session before any wo
 **State at session end (full Session 5):**
 - Codebase HEAD: master @ 0523275c (this commit will be +1).
 - 340 accounting tests passing; typecheck clean.
-- Phase 4c.5: ALL decisions (4, 5, 6, 7, Q1, Q2, Q3, Q4, Q5) resolved. 8-of-8 Phase 4 endpoints production-ready. 4-of-4 executeApprovedAccountingWrite approval-replay stubs wired.
+- Phase 4c.5: ALL decisions (Decisions 4–7, Q1, Q2, Q3, Q5; no top-level Q4 — Q-pay-4 was a Decision 6 sub-decision) resolved. 8-of-8 Phase 4 endpoints production-ready. 4-of-4 executeApprovedAccountingWrite approval-replay stubs wired.
 - WIP doc status: `ready_to_merge_to_adr` (now genuinely accurate — no pending architectural items remain).
 - Next session: ADR-004 migration, or one of the deferred operational items above (Scott's call).
