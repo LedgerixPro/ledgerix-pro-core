@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — 6c-code design decisions P1/Q1/R1 locked
+**Last updated:** 2026-05-29 — Decision S locked (point-in-time identity, dedicated columns)
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (Pattern B Full — Phase 6 requirements, line 34 + line 77). Strategic Plan "Phase 6b" (== our 6c). ADR-005 (Phase 5, just completed — preceding arc).
 **Estimated remaining work:** Large — multi-arc (6c → 6a-0 → 6a-rest → 6b). Estimate refined per sub-phase.
@@ -46,6 +46,18 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
   Rejected: Q2 (SSE only — backend-dependent, plaintext in app, weaker tamper story). Locked (with the key-management obligation).
 - **Decision R — Legal-hold mechanism (R1, app-level registry):** A DB table (e.g. `legal_holds`: tenant/companyId, reason, placedAt, placedBy, liftedAt) that the archival lifecycle/destruction logic consults — an archive under an active hold is never destroyed regardless of 7-year age. Chosen over S3 Object Lock (R2) because the existing S3 provider does NOT expose Object Lock/Retention/Legal Hold (only put/get/head/delete), so R2 would require extending the provider AND depend on un-built bucket config; and because the destruction decision is app-level anyway, so the hold check belongs beside it as a simple, testable, backend-independent DB lookup. Legal hold is a business state ('this tenant is under subpoena/IRS audit/dispute'), naturally a DB record. Rejected: R2 (S3 Object Lock — couples to un-built infra); R3 (defer hold entirely — the destruction logic should be born hold-aware). Locked.
 
+### Decision S — Point-in-time identity capture (locked 2026-05-29)
+
+**Decision: Option 2 — capture company name + agent name into the activity_log row AT WRITE TIME**, so every audit record carries the identity as it was at the moment of the action (not as re-derived later).
+
+Rationale: P1 requires denormalized identity 'as it was at the time of the action' so the archive stands alone. A read confirmed logActivity does NOT snapshot names today — the row stores companyId/agentId (FKs) + an action-specific details jsonb; names live only in the mutable companies/agents tables. An archive-time join would collapse all history to the name as-of-archive/deletion, losing mid-engagement renames. For a litigation record where fidelity is the point, 'agent X did Z when the company was named Y-at-the-time' is stronger. Critically, there are NO client audit rows yet (no clients until the system is complete), so backfilling logActivity to snapshot identity going forward has ZERO legacy-data gap — every real client row gets point-in-time identity from day one. This is a rare clean window to do it right at the source.
+
+Rejected: Option 1 (archive-time join — simpler, but loses mid-engagement identity history); Option 3 (hybrid/defer — no reason to defer given the clean no-data window).
+
+**Storage shape (implementation form of S):** point-in-time identity is stored as DEDICATED, nullable columns on activity_log (e.g. `company_name_snapshot text`, `agent_name_snapshot text`), NOT inside the details jsonb. Reasoning: (a) details is run through sanitizeRecord + redactCurrentUserValue at write time — a company/agent name could be wrongly redacted by the username-censor; identity metadata must not be subject to that. (b) Point-in-time identity is structural audit metadata, not action detail — keeping it as typed columns is queryable and explicit, and the archive-writer reads it directly rather than digging through a blob. Cost: one additive nullable migration. Locked.
+
+**Work-order consequence:** logActivity identity-capture is now a FOUNDATIONAL 6c-code piece, sequenced BEFORE the archive-writer (the writer reads what logActivity stores). logActivity must look up + store the current company/agent name at insert time; callers that pass companyId/agentId get the snapshot captured automatically inside logActivity (callers unchanged where possible).
+
 ## Architecture Decisions Pending
 
 - **6a-0 FK/cascade resolution detail** (depends on 6c existing): exact mechanism for archive-then-cascade. To be scoped at 6a-0.
@@ -59,7 +71,7 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
 ## Next Steps (in order)
 
 1. ✅ DECISIONS LOCKED (P1/Q1/R1): 6c-code design (per-tenant JSONL + denormalized identity, app-level AES-256-GCM, app-level legal_holds registry).
-2. Implement 6c-code archival layer against `StorageService` (local-disk dev/test backend).
+2. Step 2 (6c-code implementation), in order: (2a) add legal_holds table + company_name_snapshot/agent_name_snapshot columns to activity_log (additive migration); (2b) extend logActivity to capture point-in-time identity at write time (Decision S); (2c) build the archive-writer service (query activity_log per tenant/window → read denormalized identity → JSONL serialize → AES-256-GCM encrypt → StorageService.putFile), local-disk dev/test backend; (2d) build the retrieval/read path; tests at each.
 3. 6c-infra: provision durable bucket + Railway config (Scott).
 4. 6a-0: archive-before-delete hook in `companies.remove()`/`agents.remove()`.
 5. 6a-rest: completeness middleware + per-tenant audit query capability + fidelity/logging standardization.
@@ -92,3 +104,4 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
 - Locked: Option 5 framing; 6a/6b/6c decomposition reordered to 6c-first; Option 2 (archive-before-delete) design; Option 3 (code/infra split) for 6c.
 - State: decision trail recorded; no code yet. Next entry point = scope 6c-code design decisions (format, encryption, legal-hold).
 - Locked 6c-code design P1/Q1/R1 (per-tenant date-windowed JSONL with denormalized identity; app-level AES-256-GCM mirroring the secrets module; app-level legal_holds registry). Flagged Q1's key-survivability risk: app-level encryption makes 7-year master-key escrow a MANDATORY 6c-infra obligation (lost key = unrecoverable evidence). Confirmed via read that the existing StorageService is already per-tenant/date-partitioned/sha256, and the S3 provider does NOT expose Object Lock (closing the R2 fork). Next: implement 6c-code against StorageService with local-disk dev/test backend.
+- Locked Decision S (Option 2): capture company/agent name into activity_log at write time as dedicated nullable columns (not details jsonb — avoids the username-redaction pass and keeps identity as typed audit metadata). Read confirmed logActivity does not snapshot names today; no client rows exist yet, so write-time capture has zero legacy gap. Work-order consequence: logActivity identity-capture is foundational, sequenced before the archive-writer.
