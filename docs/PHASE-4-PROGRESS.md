@@ -759,6 +759,36 @@ Per the `docs/wip/README.md` retirement convention ("all decisions locked + work
 49. `e45cd434` — WIP doc archived to `docs/wip/archived/` + two factual corrections folded in.
 50. *this commit* — PHASE-4-PROGRESS Phase 4c.5 closeout summary (hash see `git log`; self-referencing hash inside the commit content is the chicken-and-egg case ADR-005-style commits would solve, deferred as not worth the amend cycle here).
 
+### Phase 4c.5 operational follow-on — Q-setup-fee prod seed (2026-05-29)
+
+Q-setup-fee operationally completed. The `setup_fee_pricing` admin seed endpoint (shipped Session 4 commit `83b80a72`) was invoked against Railway prod via the board API key after Phase 4c.5 architectural closure.
+
+**Pre-flight + invocation:**
+- Pre-flight unauth POST returned `HTTP 403 {"error":"Board access required"}` — confirmed endpoint mounted with auth guard intact.
+- Authed POST with `pcp_board_railway_admin_key_2026` returned the version-aware Option D-modified idempotency response: `pricing.skipped: 6` (recurring already seeded from `104e82fb`), `setupFees.inserted: 3` (net-new). No supersedes, no inserts on the recurring side — confirms the idempotency model behaved as designed.
+
+**Audit log verification (Railway prod psql):**
+- Row id: `5ad4beea-0380-458a-afd2-369b16e89d17`
+- `action`: `admin.pricing.seed`
+- `entity_type`: `service_tier_pricing+setup_fee_pricing`
+- `status`: `success`
+- `actor_id`: `8h4TGtK2pquzYJ53TsnDpLHd9LibX4kv` (board user behind the Railway Admin Key)
+- `details.pricing`: `{skipped: 6, inserted: 0, superseded: 0, newRows: 0, candidateCount: 6}`
+- `details.setupFees`: `{skipped: 0, inserted: 3, superseded: 0, newRows: 0, candidateCount: 3}`
+- `created_at`: `2026-05-29 03:22:42.967461+00`
+
+**Outcome:**
+- Setup-mode invoices (`billingMode: "setup"`) are now operational in prod. POST `/api/accounting/v1/invoices` will no longer return 500 `setup_fee_not_configured` for setup-mode calls.
+- Q-setup-fee fully retired across architectural (Session 4 lock + implementation) AND operational (Session 5 follow-on prod seed) layers.
+
+**Remaining Phase 4c.5 operational items** (per ADR-004 § Open Items):
+- Q-charter — onboarding/cancellation workflow wiring (code work).
+- Billing & Invoicing agent reconciliation against Decision 7's contract (now unblocked by this prod seed).
+
+**Commits shipped (operational follow-on):**
+
+51. *this commit* — Q-setup-fee operationally retired; ADR-004 Open Items updated, PHASE-4-PROGRESS follow-on entry (hash see `git log`).
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
