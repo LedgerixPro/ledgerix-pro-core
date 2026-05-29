@@ -1,13 +1,13 @@
 # Ledgerix Pro — Enterprise Architecture
 
 **Railway Cloud Edition — 18-Agent AI Workforce**
-**Version 3.4 — May 24, 2026 — CONFIDENTIAL**
+**Version 3.5 — May 29, 2026 — CONFIDENTIAL**
 
 | Property | Value |
 |---|---|
 | Founder & Business Strategist | Scott Hansbury |
 | Headquarters | Scottsdale, Arizona |
-| Version | 3.4 — May 24, 2026 |
+| Version | 3.5 — May 29, 2026 |
 | Horizons Complete | H1, H2, H3, H4 (all in-scope items) |
 | Active Agents | 18 (of 25 total configured) |
 | Scheduled Routines | 17 cron routines live on Railway |
@@ -508,7 +508,27 @@ Phase 4 architectural decisions are captured in ADR documents under `docs/adr/`:
 - **ADR-001** — Pattern B Full API endpoints as primary agent interface
 - **ADR-002** — Phase 4b write endpoint design (idempotency, audit, two-phase failure)
 - **ADR-003** — Phase 4c safety architecture (10 decisions + 3 amendments)
-- **ADR-004** — Pending; will capture Phase 4c.5 locked decisions when Phase 4c.5 ships
+- **ADR-004** — Phase 4c.5 write-endpoint implementation decisions (Decisions 1–7 + Q-charter + Q-setup-fee + Q-multi-line-journals; accepted May 28, 2026)
+- **ADR-005** — Phase 5 agent endpoint allowlist (Decisions A–L; accepted May 29, 2026; see §6.5 below)
+
+### 6.5 Phase 5 — Agent Endpoint Allowlist (live as of 2026-05-29)
+
+Per-agent endpoint allowlist enforcement is now LIVE on the agent-facing accounting write endpoints. Phase 5 of the ADR-001 Pattern B Full arc implements requirements #30 (per-agent DB key authenticates every call) and #32 (per-agent endpoint allowlists; non-allowlisted calls rejected) for the Phase 4 endpoint surface.
+
+**Live property.** Agent calls to the accounting write endpoints pass through `requireAgentPermission(db, permissionKey)` middleware (`server/src/middleware/require-agent-permission.ts`), which checks the existing `principal_permission_grants` system via `accessService(db).hasPermission(companyId, "agent", agentId, permissionKey)` and throws `forbidden(...)` on miss. Enforced on:
+
+- `POST /api/accounting/v1/transactions/:txnId/category` → key `accounting:write_category`
+- `POST /api/accounting/v1/payments` → key `accounting:create_payment`
+
+**Gate composition.** The permission gate sits as an **outer wrapper** ahead of the locked per-route gate order (`validate body → assertCompanyAccess → withIdempotency`), preserving that inner order intact — adding an outer wrapper while preserving the locked inner sequence is an EXTENSION, not a reordering. Empirically proven by the 403-before-400 K1 ordering test on both gated routes (ungranted-agent request with invalid body returns 403, not 400). See ADR-005 § Load-bearing nuances.
+
+**Invoices route — intentionally ungated.** `/api/accounting/v1/invoices` is NOT gated pending agent-exposure of the invoice flow (consumer-agent identity deferred; see ADR-004 § Open Items / ADR-001 Phase 5+). The `accounting:create_invoice` key is DEFINED in `PERMISSION_KEYS` but no agent receives the grant until the flow is exposed. DO NOT add the invoices gate without first exposing the flow.
+
+**Orthogonal safety layers.** The allowlist gates *which endpoints* an agent may call; the Phase 4c.2 `write_thresholds` system continues to own *how much an agent may move* (via `isThresholdExceeded` + per-client overrides). These compose without overlap — grant `scope` jsonb was deliberately NOT used for amount limits (Decision D1) to avoid duplicating thresholds' source of truth.
+
+**Non-agent flows unaffected.** Board users, instance-admins, and `local_trusted` callers pass through the gate via Decision C agent-only enforcement; existing admin/local auth (Phase 4c.5 §6.3) continues to govern them.
+
+**Canonical decisions.** ADR-005 (Decisions A–L organized into three groups: A–D allowlist scope; E–H middleware factory; I–L route mount). Phases 6–8 of the ADR-001 arc remain ahead: Phase 6 audit log + middleware + query, Phase 7 rate limiting + versioning + agent onboarding, Phase 8 migration of the 4 existing scripts to endpoint-based flows.
 
 ---
 

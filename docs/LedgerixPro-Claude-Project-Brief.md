@@ -1,6 +1,6 @@
 # Ledgerix Pro — Claude Project Brief
 
-**Version 1.4 — May 24, 2026 — CONFIDENTIAL**
+**Version 1.5 — May 29, 2026 — CONFIDENTIAL**
 
 Context document for AI assistant — optimized for fast loading.
 
@@ -79,8 +79,9 @@ No real clients — including Ledgerix Pro's own books — onboarded until the s
 | H2 Accounting Core | Done | Xero + QBO OAuth, Sentinel, Ledger Specialist, Reconciliation, Senior Bookkeeper, KB Manager |
 | H3 Operations | Done | Dashboard, weekly digest, budget guardrails, diagnostic CRO funnel, nurture, SDR Laura, Reactivation |
 | H4 Full Platform | Done | Client portal (slug URLs), 6 new agents, Railway migration, multi-tenant OAuth (H4-14), AR payment date intelligence |
-| Phase 4 Accounting API | In progress | 5 of 8 endpoints production-ready. Write endpoints (transactions/category, payments, invoices) deferred behind Phase 4c safety architecture. |
-| Phase 4c Safety Architecture | In progress | 4 of 5 pieces complete: pricing source of truth, threshold framework, customer dedupe with HITL, write-approval dispatcher (stub mode). Phase 4c.5 in progress — see `docs/wip/phase-4c-5-write-endpoints-and-admin-api.md` |
+| Phase 4 Accounting API | Done | 8 of 8 endpoints production-ready (5 read + 3 write: transactions/category, payments, invoices). Write endpoints shipped atop the Phase 4c safety architecture. |
+| Phase 4c Safety Architecture | Done | 5 of 5 pieces complete: pricing source of truth, threshold framework, customer dedupe with HITL, write-approval dispatcher (now wired 4-of-4), write endpoint re-implementation. Phase 4c.5 closed 2026-05-28 — canonical in ADR-004. |
+| Phase 5 Agent Endpoint Allowlist | Done | Per-agent permission enforcement live on agent-facing accounting write endpoints (category, payments via keys `accounting:write_category` + `accounting:create_payment`); invoices route intentionally ungated pending agent-exposure. Shipped 2026-05-29 — canonical in ADR-005. ADR-001 Pattern B arc Phases 6–8 (audit, rate limiting/onboarding, script migration) remain. |
 | H4 Deferred | Scale | Sales Outreach (50+ leads), Scale Pattern (50 clients), KB rules DB table |
 
 ---
@@ -122,13 +123,15 @@ Every write endpoint (`POST /transactions/:txnId/category`, `POST /payments`, `P
 - **Customer dedupe with HITL (4c.3)** — `findOrCreateCustomer` returns `{customerId, action}` where action is one of 5 types (3 auto-proceed, 2 require approval). String-similarity utility (Levenshtein + name normalization).
 - **Write-approval dispatcher (4c.4, stub mode)** — `services/accounting/write-approvals.ts`. 4 dot-namespaced approval types (`accounting.payment.threshold_exceeded`, `accounting.invoice.dedupe_ambiguous`, etc.) with typed payloads. Wired into `approvalService.approve()` for routing.
 
-**In progress:** Phase 4c.5 — admin endpoints for safety-layer data management + re-implementing the three write endpoints atop the safety layer. See WIP doc for current state.
+**Shipped 2026-05-28:** Phase 4c.5 closed — admin endpoints + 3 write endpoints re-implemented atop the safety layer (8/8 production-ready). Canonical in ADR-004. **Shipped 2026-05-29:** Phase 5 agent endpoint allowlist live on category + payments (invoices intentionally ungated). Canonical in ADR-005.
 
 ### Architectural Decision Records
 
 - **ADR-001:** Pattern B Full API endpoints
 - **ADR-002:** Phase 4b write endpoint design (idempotency, audit, two-phase failure)
 - **ADR-003:** Phase 4c safety architecture (10 decisions, 3 amendments)
+- **ADR-004:** Phase 4c.5 write-endpoint implementation decisions (May 28, 2026)
+- **ADR-005:** Phase 5 agent endpoint allowlist (May 29, 2026)
 
 ---
 
@@ -272,4 +275,4 @@ Current targeted test baseline: **145 tests passing**
 
 **LEDGERIX PRO — CONFIDENTIAL**
 
-Scott Hansbury | Founder & Business Strategist | Version 1.4 | May 24, 2026
+Scott Hansbury | Founder & Business Strategist | Version 1.5 | May 29, 2026
