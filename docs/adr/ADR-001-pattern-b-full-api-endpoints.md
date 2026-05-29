@@ -74,7 +74,7 @@ The founder explicitly chose Pattern B Full over Pattern B Lite, accepting the a
 ### Affected Work
 
 - Phase 4 (API endpoints): Remaining 7 endpoints + Vitest tests for all 8
-- Phase 5 (new): Agent API key infrastructure, allowlist middleware
+- Phase 5 (new): Agent API key infrastructure, allowlist middleware → IMPLEMENTED 2026-05-29; canonical decisions in ADR-005. Key finding: most agent-key infra pre-existed; Phase 5 was adoption + thin enforcement layer.
 - Phase 6 (new): Audit log table, middleware, query capabilities
 - Phase 7 (new): Rate limiting, versioning strategy, agent onboarding process
 - Phase 8 (new): Migration of 4 existing scripts to endpoint-based agent flows
