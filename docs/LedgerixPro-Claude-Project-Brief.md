@@ -64,7 +64,7 @@ No real clients — including Ledgerix Pro's own books — onboarded until the s
 
 | Division | Agents | Key Schedules |
 |---|---|---|
-| Accounting (CFO) | Senior Bookkeeper, Ledger Specialist, Reconciliation Agent, AP Specialist, AR Specialist, Payroll, Reporter, Tax Liaison, Billing & Invoicing | Sentinel 6am daily; AP 6:30am daily; Tax 7am daily; Senior Bookkeeper digest Mon 8am |
+| Accounting (CFO) | Senior Bookkeeper, Ledger Specialist, Reconciliation Agent, AP Specialist, AR Specialist, Payroll, Reporter, Tax Liaison, [future own-billing agent — TBD per ADR-001 Phase 5+] | Sentinel 6am daily; AP 6:30am daily; Tax 7am daily; Senior Bookkeeper digest Mon 8am |
 | Operations (COO) | Sentinel, Onboarding, Quality Control, Audit & Compliance, Knowledge Base Manager | QC spot-check 7:30am Mon-Fri; QC weekly Fri 9am; Audit & Compliance Mon 10:15am |
 | Revenue (CRO) | SDR (Laura), Client Success Manager, Referral & Reviews, Reactivation | Referral & Reviews Tue 9am; Reactivation 1st of month 9am |
 | Dormant | Client Health Monitor (enable at 5 paying clients), Sales Outreach (50+ leads) | Client Health Monitor cron: `0 15 * * 1` (Mon 8am Arizona) |

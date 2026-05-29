@@ -122,7 +122,7 @@ Eight endpoints total. Five reads, three writes. All under `/api/accounting/v1/`
 |---|---|---|---|
 | `POST /api/accounting/v1/transactions/:txnId/category` | `updateTransactionCategory` | Update a transaction's account category | Ledger Specialist, Senior Bookkeeper |
 | `POST /api/accounting/v1/payments` | `reconcilePayment` | Apply a payment against an invoice | Reconciliation, Senior Bookkeeper |
-| `POST /api/accounting/v1/invoices` | `findOrCreateCustomer` + `createInvoice` | Create an invoice in Ledgerix Pro's own QBO | Billing & Invoicing |
+| `POST /api/accounting/v1/invoices` | `findOrCreateCustomer` + `createInvoice` | Create an invoice in Ledgerix Pro's own QBO | Future own-billing agent (TBD — ADR-001 Phase 5+) |
 
 **Aggregate impact:** All 10 BROKEN agents from the Phase 3b audit gain a real data path. The endpoints additionally serve as the foundation for the Categorization Rule Service and Active Categorizer described in Section 1.3.
 
@@ -446,7 +446,7 @@ This is the highest-stakes write endpoint. **Idempotency-Key is REQUIRED.**
 
 ### 2B.4 POST /api/accounting/v1/invoices
 
-**Purpose:** Create a new invoice in **Ledgerix Pro's own QBO** (not in client's books). Used exclusively by the Billing & Invoicing agent for monthly Ledgerix Pro service billing.
+**Purpose:** Create a new invoice in **Ledgerix Pro's own QBO** (not in client's books). Used exclusively by the future consumer of POST /api/accounting/v1/invoices (agent identity deferred — see ADR-001 Phase 5+) for monthly Ledgerix Pro service billing.
 
 This endpoint operates on Ledgerix Pro's own QBO, not on client books. The `contactId` parameter identifies which Ledgerix Pro client to invoice, but the invoice itself is created in Ledgerix Pro LLC's QBO account.
 
@@ -840,7 +840,7 @@ Agent re-enabling is sequenced one at a time, in this order:
 - Sentinel (least risky, daily read-only)
 - Tax Liaison (daily, reads only)
 - AP Specialist (the original hallucination culprit — extra scrutiny on first run)
-- Audit & Compliance, Payroll, Billing & Invoicing — in any order
+- Audit & Compliance, Payroll — in any order (future own-billing agent rollout TBD pending ADR-001 Phase 5+)
 - Reconciliation, Senior Bookkeeper, Ledger Specialist, AR Specialist — these involve writes, sequenced after reads-only agents are proven stable
 
 #### Stop conditions

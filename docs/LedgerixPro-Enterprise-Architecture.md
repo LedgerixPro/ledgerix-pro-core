@@ -42,7 +42,7 @@ Ledgerix Pro is an AI-powered, autonomous bookkeeping and accounting firm built 
 
 | Division | Active Agents | Dormant / Deferred |
 |---|---|---|
-| Accounting (CFO) | Senior Bookkeeper, Ledger Specialist, Reconciliation Agent, AP Specialist, AR Specialist, Payroll, Reporter, Tax Liaison, Billing & Invoicing | Client Health Monitor (5+ clients) |
+| Accounting (CFO) | Senior Bookkeeper, Ledger Specialist, Reconciliation Agent, AP Specialist, AR Specialist, Payroll, Reporter, Tax Liaison, [future own-billing agent — TBD per ADR-001 Phase 5+] | Client Health Monitor (5+ clients) |
 | Operations (COO) | Sentinel, Onboarding, Quality Control, Audit & Compliance, Knowledge Base Manager | — |
 | Revenue (CRO) | SDR (Laura), Client Success Manager, Referral & Reviews, Reactivation | Sales Outreach (50+ leads) |
 | Executive | CEO, CFO, COO, CRO (configured, strategic governance) | — |
@@ -54,7 +54,7 @@ Ledgerix Pro is an AI-powered, autonomous bookkeeping and accounting firm built 
 | H1 — Foundation | Complete | GHL webhook pipeline, Dispatcher, workspace registry, dual-path auth |
 | H2 — Accounting Core | Complete | QBO + Xero OAuth, Sentinel, Ledger Specialist, Reconciliation, Senior Bookkeeper, KB Manager |
 | H3 — Operations | Complete | Internal dashboard, weekly digest, budget guardrails, CRO funnel, nurture sequences, SDR (Laura), Client Health Monitor, Reactivation |
-| H4 — Full Platform | Complete | Client portal (slug-based), AP Specialist, Tax Liaison, Reporter, Billing & Invoicing, Payroll, Quality Control, Audit & Compliance, Referral & Reviews, AR payment date intelligence, Railway migration, multi-tenant OAuth |
+| H4 — Full Platform | Complete | Client portal (slug-based), AP Specialist, Tax Liaison, Reporter, [own-billing agent: TBD per ADR-001 Phase 5+], Payroll, Quality Control, Audit & Compliance, Referral & Reviews, AR payment date intelligence, Railway migration, multi-tenant OAuth |
 | H4 Deferred | Scale-triggered | Sales Outreach (50+ leads), Scale Pattern (50 clients), KB rules DB table (50 clients) |
 
 ### 1.4 Trust Tenet (established 2026-05-24)
@@ -147,7 +147,7 @@ Unique constraint: `(company_id, platform, contact_id)` with `NULLS NOT DISTINCT
 | 7:30 AM | Monday | Reporter — weekly pulse digest |
 | 7:00 AM | 1st of month | Reporter — monthly deep dive |
 | 8:00 AM | Monday | Senior Bookkeeper — weekly digest email to Scott |
-| 8:00 AM | 1st of month | Billing & Invoicing — monthly client invoicing |
+| 8:00 AM | 1st of month | [future own-billing agent — TBD per ADR-001 Phase 5+] — monthly Ledgerix Pro client invoicing |
 | 8:30 AM | Monday | AP Specialist — weekly AP summary |
 | 9:00 AM | Monday | Tax Liaison — weekly deadline summary |
 | 9:00 AM | 1st of month | Reactivation — monthly churn outreach scan |
@@ -328,7 +328,7 @@ Unique constraint: `(company_id, platform, contact_id)` with `NULLS NOT DISTINCT
 
 **Internal Operations — CEO/CFO Oversight**
 
-#### AGENT: Billing & Invoicing — 1st of month 8:00 AM
+#### AGENT (design intent, not yet built — TBD per ADR-001 Phase 5+): future own-billing agent — 1st of month 8:00 AM
 
 | Aspect | Detail |
 |---|---|

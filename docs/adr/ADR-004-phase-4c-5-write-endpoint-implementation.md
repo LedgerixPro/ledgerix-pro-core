@@ -179,7 +179,7 @@ The asymmetry between read (11 types) and write (6 types) is by design and match
 
 ### Decision 7: POST /invoices — dedupe + pricing gates
 
-**Decision.** POST `/api/accounting/v1/invoices` creates monthly service invoices in **Ledgerix Pro's own QBO** (not client books) behind two safety gates per the Trust Tenet: dedupe (Q-inv-2) and pricing (Q-inv-3). The endpoint is used exclusively by the Billing & Invoicing agent.
+**Decision.** POST `/api/accounting/v1/invoices` creates monthly service invoices in **Ledgerix Pro's own QBO** (not client books) behind two safety gates per the Trust Tenet: dedupe (Q-inv-2) and pricing (Q-inv-3). The endpoint is consumed by the agent that will call POST /api/accounting/v1/invoices for Ledgerix Pro's own monthly client billing (no such agent yet exists in code — agent infrastructure is downstream of ADR-001 Pattern B Full Phase 5+; the specific agent identity is deliberately deferred per the 2026-05-29 reconciliation session).
 
 **Three primary sub-decisions locked at design time.**
 
@@ -296,7 +296,7 @@ These are NOT Phase 4c.5 architectural items — they are downstream operational
 
 - **Q-charter — onboarding/cancellation workflow wiring.** Charter status service functions (`grantCharterToNewClient`, `recordNonCharterClient`, `cancelCharter`) exist and the read predicate (`isCharterForInvoicing`) is called by the invoice endpoint. The onboarding agent's first-paying-client path and the cancellation flow do NOT yet call the grant/record/cancel functions. Code work.
 - **Q-setup-fee — production seed of `setup_fee_pricing`.** ✅ COMPLETED 2026-05-29 (UTC). `POST /api/admin/pricing/seed` invoked against Railway prod via board API key; response confirmed 3 setupFees inserts + 6 recurring-pricing skips (idempotent — pre-existing recurring data untouched). Audit-log row `5ad4beea-0380-458a-afd2-369b16e89d17` (action=admin.pricing.seed, entity_type=service_tier_pricing+setup_fee_pricing, status=success). Setup-mode invoices are now operational in prod.
-- **Billing & Invoicing agent reconciliation.** The Billing & Invoicing agent prompt + tool registration may not yet reflect Decision 7's request body (`billingMode` etc.) or the safety-gate responses (202 dedupe_ambiguous + 202 pricing_mismatch). Downstream-blocked by Q-setup-fee production seed.
+- **Consumer-agent identity for POST /api/accounting/v1/invoices.** No agent in `server/src/` yet calls this endpoint. The EA's Phase 4 agent roster (AP Specialist, AR Specialist, Payroll) does not include a named "Billing & Invoicing" agent. The question of which agent will own Ledgerix Pro's own monthly billing — whether it becomes a named AR Specialist responsibility, a new dedicated agent, or something else — is genuinely undecided and deferred. Resolution depends on ADR-001 Phase 5+ agent infrastructure shipping (per-agent allowlists, API key issuance, prompt files); the endpoint contract is forward-compatible regardless. Tracked as a follow-on for the session that opens ADR-001 Phase 5.
 - **EA §2B.4 supersession note already in place.** EA §2B.4's API Spec language ("no automatic validation" / "billing agent is responsible") was superseded by Decision 7; the supersession note landed inside the EA's Decision 7 entry (commit `ac58de83`) because EA does not quote §2B.4 verbatim.
 
 ## Amendments

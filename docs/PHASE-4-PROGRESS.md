@@ -750,7 +750,7 @@ Per the `docs/wip/README.md` retirement convention ("all decisions locked + work
 - All Phase 4c.5 architectural decisions resolved.
 - 8 of 8 Phase 4 endpoints production-ready; 4 of 4 approval-replay stubs wired.
 - 340 accounting tests passing; typecheck clean.
-- Open work tracked in ADR-004 § Open Items (operational/integration, not architectural): onboarding/cancellation workflow wiring for Q-charter, production seed for Q-setup-fee, Billing & Invoicing agent reconciliation against Decision 7's contract.
+- Open work tracked in ADR-004 § Open Items (operational/integration, not architectural): onboarding/cancellation workflow wiring for Q-charter, production seed for Q-setup-fee, consumer-agent identity for POST /api/accounting/v1/invoices against Decision 7's contract (agent identity deferred — see ADR-001 Phase 5+).
 - HEAD master: this commit (post-migration).
 
 **Commits shipped (migration arc):**
@@ -783,11 +783,31 @@ Q-setup-fee operationally completed. The `setup_fee_pricing` admin seed endpoint
 
 **Remaining Phase 4c.5 operational items** (per ADR-004 § Open Items):
 - Q-charter — onboarding/cancellation workflow wiring (code work).
-- Billing & Invoicing agent reconciliation against Decision 7's contract (now unblocked by this prod seed).
+- Consumer-agent identity for POST /api/accounting/v1/invoices — reconciliation against Decision 7's contract (agent identity deferred per ADR-001 Phase 5+; now unblocked by this prod seed at infrastructure level).
 
 **Commits shipped (operational follow-on):**
 
 51. *this commit* — Q-setup-fee operationally retired; ADR-004 Open Items updated, PHASE-4-PROGRESS follow-on entry (hash see `git log`).
+
+### Phase 4c.5 doc reconciliation — Billing & Invoicing agent naming deferred (2026-05-29)
+
+Tenet #7 verification on the next-natural-step "Billing & Invoicing agent reconciliation" task surfaced that no such agent exists in code. The name appeared across ADR-004, the API spec, the Brief, the EA's Phase 4 narrative, and PHASE-4-PROGRESS — but `find server/src -type d -name "*agent*"` returned zero hits, and the EA's actual Phase 4 agent roster (AP Specialist, AR Specialist, Payroll) does not include a named "Billing & Invoicing" agent. The references were aspirational architectural intent ahead of agent infrastructure that hasn't shipped yet (ADR-001 Pattern B Full Phase 5+ work).
+
+The naming question itself — which agent will own Ledgerix Pro's own monthly client billing, whether that's an AR-Specialist responsibility or a new dedicated agent — is genuinely undecided. Rather than rename to "AR Specialist agent" (which would silently answer the architectural question) or keep the named placeholder, the references were replaced with deferred-naming language pointing at ADR-001 Phase 5+ as the resolution context. Sub-option C ("defer the naming entirely") chosen per the decision-framing protocol.
+
+**What changed (doc-only, no code):**
+- ADR-004 § Open Items third bullet: rewritten to make the agent's non-existence explicit and the naming question deferred.
+- ADR-004 + API spec + EA + Brief: occurrences of "Billing & Invoicing agent" replaced with the deferred-naming phrasing.
+- The archived WIP doc (`docs/wip/archived/`) was deliberately NOT touched — it stays as historical record.
+
+**What did NOT change:**
+- The POST /api/accounting/v1/invoices endpoint contract is forward-compatible with whichever agent eventually consumes it. No endpoint changes.
+- The EA's Phase 4 agent roster (AP Specialist, AR Specialist, Payroll) is the authoritative current state.
+- Ledgerix Pro's own monthly billing remains a future-agent responsibility; no agent calls POST /invoices today.
+
+**Commits shipped (doc reconciliation):**
+
+52. *this commit* — Billing & Invoicing agent naming deferred across canonical docs (Sub-option C; hash see `git log`).
 
 ### Next session (date TBD)
 
