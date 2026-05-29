@@ -833,6 +833,22 @@ Tenet #7 verification on the remaining Phase 4c.5 open item ("Q-charter onboardi
 
 53. *this commit* — Q-charter reframed as architectural arc; deferred-with-explicit-resolution (hash see `git log`).
 
+### Phase 4c.5 closeout correction — full-suite test claim rescoped (2026-05-29)
+
+The "340 tests passing / typecheck clean" baseline asserted across the Session 5 closeout (line 715), the WIP-to-ADR migration follow-on (line 752), and the Q-charter reframe follow-on (line 827) was the **accounting-targeted** subset — focused vitest runs against `server/src/services/accounting/...` and `server/src/routes/accounting.test.ts`. The **full monorepo suite was never run** at the Phase 4c.5 close.
+
+A later full-suite run (`pnpm test:run` against the 2,113-test monorepo) surfaced 31 failures. Root cause PROVEN: parallel-contention timeouts in the agent-runtime subsystem (workspace-runtime / worktree / execution-workspaces / heartbeat / issues / company-skills) under full-suite concurrency (5s/20s limits) — heavyweight tests do real git-worktree spin-ups + `pnpm install` + queue/DB connections. Zero assertion or type failures. Files pass cleanly in isolation (e.g., `company-portability.test.ts`: 39/39 in 304ms alone vs timeout-at-5000ms in the parallel run). Every failing file last touched mid-April 2026 by [codex] merges (#4086, #4125, #4157); the accounting arc never modified them. None are on the client-funds / accounting path.
+
+**Corrected statement of record (supersedes the green-baseline implications of the State-at-session-end bullets in the closeout entries above):**
+- 340 accounting-targeted tests green; typecheck clean.
+- Full monorepo suite: 2,113 tests; 31 known pre-existing agent-runtime contention timeouts, NOT introduced by the Phase 4c.5 arc, NOT on the client-funds path. Tracked in TODO.md § Technical Debt for a deliberate infra session.
+
+The prior Session Log entries are preserved unedited as historical record of what was claimed at the time, per the append-only-Session-Log discipline.
+
+**Commits shipped (correction):**
+
+54. *this commit* — rescope 4c.5 closeout test claim to accounting-targeted; log agent-runtime full-suite contention as tech debt (hash see `git log`).
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**

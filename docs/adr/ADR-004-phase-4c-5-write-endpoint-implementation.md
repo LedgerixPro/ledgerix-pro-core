@@ -285,7 +285,7 @@ These cross-Decision patterns emerged from Phase 4c.5 and are now established co
 - **8 of 8 Phase 4 endpoints production-ready** — 5 read endpoints from Phase 4a/4b + 3 write endpoints from Phase 4c.5 (`POST /transactions/:txnId/category`, `POST /payments`, `POST /invoices`).
 - **2 admin endpoints shipped under `/api/admin/*`** (`POST /pricing/seed`, `POST /thresholds/seed`) — the Phase 4c.5 bootstrap surface for safety-layer data management (Decisions 1–3). Not part of the Phase 4 endpoint roster; admin surface is separate.
 - **4 of 4 `executeApprovedAccountingWrite` approval-replay stubs wired** (transaction-category, payment-threshold, invoice-dedupe, invoice-pricing).
-- **Test baseline:** 161 → 340 (+179 across Phase 4c + 4c.5).
+- **Test baseline (accounting-targeted):** 161 → 340 (+179 across Phase 4c + 4c.5). 340 accounting-targeted tests green; full monorepo suite (2,113 tests) was NOT run at the 4c.5 close. A later full-suite run surfaced 31 pre-existing agent-runtime parallel-contention timeouts unrelated to the accounting path — see TODO.md Technical Debt.
 - **All architectural decisions resolved.** Decisions 1–7 + Q-charter + Q-setup-fee + Q-multi-line-journals.
 - The Phase 4c.5 WIP doc is archived (see `docs/wip/archived/phase-4c-5-write-endpoints-and-admin-api.md` after Migration Step 2).
 - Full implementation arc captured chronologically in `docs/PHASE-4-PROGRESS.md` (Sessions 1–5).

@@ -185,6 +185,7 @@ Priority-ordered build list. Updated: 2026-05-27.
 ## Technical Debt
 
 - [ ] RESET.md Section 9 diagnostic table still references .env file for secret management — update to reflect Railway env vars (dashboard, not file) for production troubleshooting context.
+- [ ] **Full-suite agent-runtime contention timeouts (31 tests).** `pnpm test:run` (full monorepo, 2,113 tests) shows 31 failures in workspace-runtime / worktree / execution-workspaces / heartbeat / issues / company-skills. Root cause PROVEN: parallel-contention timeouts under full-suite concurrency (5s/20s limits) — heavyweight tests do real git-worktree spin-ups + `pnpm install` + queue/DB connections. Files pass in isolation (company-portability 39/39 in 304ms alone). Pre-existing since ~April 2026 ([codex] #4086/#4125/#4157); NOT introduced by the accounting arc; NOT on the client-funds path. Fix options: raise per-file timeout for the heavyweight agent-runtime files, cap concurrency for that suite, or stand up the local queue/DB the recovery tests require. Deferred to a deliberate infra session.
 
 ---
 
