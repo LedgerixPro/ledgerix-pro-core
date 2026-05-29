@@ -1,8 +1,9 @@
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  auditArchives,
   documentRevisions,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -15,6 +16,10 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+import { companyService } from "./companies.js";
+import { auditArchiveService, rowToArchived } from "./audit-archive/index.js";
+import type { ArchivedActivityRow } from "./audit-archive/types.js";
+import { getStorageService } from "../storage/index.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -348,6 +353,65 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt))
         .then((rows) => rows.map((r) => r.activityLog));
+    },
+
+    // Phase 6 6a-rest-QUERY (GG1/LL1/MM1): per-tenant audit retrieval that
+    // resolves by tenant state — live activity_log for existing companies,
+    // archived objects (via audit_archives manifest + auditArchiveService) for
+    // deleted ones, EMPTY for "nothing on record". Output shape is uniform
+    // (ArchivedActivityRow + a `source` discriminator) so the caller can
+    // present provenance to operators.
+    //
+    // NOT this.list — `list` is a heavyweight recency-capped UI feed with
+    // joins and summarization. Litigation retrieval needs a clean, complete,
+    // chronological full-row dump.
+    async retrieveAuditTrail(
+      companyId: string,
+    ): Promise<{ source: "live" | "archived" | "none"; rows: ArchivedActivityRow[] }> {
+      // LL1: existence-check via the companyService primitive.
+      const company = await companyService(db).getById(companyId);
+
+      if (company) {
+        // LIVE path — clean full-row chronological query mapped through the
+        // SAME rowToArchived used by the archive-writer (single source of truth
+        // for DB-row → ArchivedActivityRow; createdAt → ISO string to match
+        // the archived path's JSON-round-tripped shape).
+        const rows = await db
+          .select()
+          .from(activityLog)
+          .where(eq(activityLog.companyId, companyId))
+          .orderBy(asc(activityLog.createdAt));
+        return { source: "live", rows: rows.map(rowToArchived) };
+      }
+
+      // ARCHIVED path (MM1): read ALL manifest rows for the companyId, then
+      // readArchive each and concatenate. Today a deleted tenant has at most
+      // one manifest row; reading all defends against silent-loss if windowed
+      // archiving or retried deletion ever produces multiple rows.
+      const manifests = await db
+        .select()
+        .from(auditArchives)
+        .where(eq(auditArchives.companyId, companyId))
+        .orderBy(asc(auditArchives.archivedAt));
+
+      if (manifests.length === 0) {
+        // LL1: NEITHER live nor archived → empty, not 404. "No record on file"
+        // is a legitimate litigation answer, not an error.
+        return { source: "none", rows: [] };
+      }
+
+      const archive = auditArchiveService(db, getStorageService());
+      const all: ArchivedActivityRow[] = [];
+      for (const m of manifests) {
+        // Defensive: JJ1 means we never wrote rows with null objectKey, but
+        // the column nominally permits it — guard anyway.
+        if (!m.objectKey) continue;
+        const archived = await archive.readArchive(companyId, m.objectKey);
+        all.push(...archived);
+      }
+      // Merge by createdAt across all archive objects (MM1).
+      all.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      return { source: "archived", rows: all };
     },
 
     forIssue: (issueId: string) =>

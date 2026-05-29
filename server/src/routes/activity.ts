@@ -44,6 +44,20 @@ export function activityRoutes(db: Db) {
     res.json(result);
   });
 
+  // Phase 6 6a-rest-QUERY (NN1): board-gated audit-trail retrieval.
+  //
+  // CRITICAL AUTHZ: assertBoard ONLY. Do NOT add assertCompanyAccess here —
+  // it would fail for DELETED companies (no company row to check access
+  // against), breaking the core deleted-tenant retrieval case this feature
+  // exists for. The board-level gate is the intentional authorization for
+  // litigation/trust-building. See WIP doc Phase 6 NN1 + NOT-Doing guard.
+  router.get("/companies/:companyId/audit", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    const result = await svc.retrieveAuditTrail(companyId);
+    res.json(result);
+  });
+
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
     assertBoard(req);
     const companyId = req.params.companyId as string;

@@ -25,7 +25,7 @@ import type {
 
 const NAMESPACE = "audit-archive";
 
-function rowToArchived(row: typeof activityLog.$inferSelect): ArchivedActivityRow {
+export function rowToArchived(row: typeof activityLog.$inferSelect): ArchivedActivityRow {
   return {
     id: row.id,
     companyId: row.companyId,

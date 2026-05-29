@@ -17,6 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { activityService } from "../services/activity.ts";
+import { companyService } from "../services/companies.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -486,5 +487,213 @@ describeEmbeddedPostgres("activity service", () => {
       livenessReason: "Run described future work without concrete action evidence",
       lastUsefulActionAt: null,
     });
+  });
+});
+
+// ============================================================================
+// Phase 6 6a-rest-QUERY: retrieveAuditTrail (GG1/LL1/MM1).
+// Live → activity_log; deleted+manifest → readArchive (all manifests, merged);
+// neither → empty (NOT 404). Driven by real flows (companies.remove() for the
+// archived path) to exercise the actual production seam.
+// ============================================================================
+
+describeEmbeddedPostgres("activityService.retrieveAuditTrail", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-audit-retrieval-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("LIVE: company exists + activity_log rows → source 'live', rows in chronological asc order, ArchivedActivityRow shape", async () => {
+    const { activityLog, companies, auditArchives } = await import("@paperclipai/db");
+    const { eq } = await import("drizzle-orm");
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Live Tenant",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(activityLog).values([
+      {
+        id: randomUUID(),
+        companyId,
+        actorType: "agent",
+        actorId: "agent-1",
+        action: "accounting.write.success",
+        entityType: "accounting_write",
+        entityId: "txn-1",
+        agentId: null,
+        runId: null,
+        details: { foo: "bar" },
+        status: "success",
+        companyNameSnapshot: "Live Tenant",
+        agentNameSnapshot: "Recon Agent",
+        createdAt: new Date("2026-05-29T10:00:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        actorType: "agent",
+        actorId: "agent-1",
+        action: "accounting.write.success",
+        entityType: "accounting_write",
+        entityId: "txn-2",
+        agentId: null,
+        runId: null,
+        details: null,
+        status: "success",
+        companyNameSnapshot: null,
+        agentNameSnapshot: null,
+        createdAt: new Date("2026-05-29T11:00:00.000Z"),
+      },
+    ]);
+
+    const result = await activityService(db).retrieveAuditTrail(companyId);
+
+    expect(result.source).toBe("live");
+    expect(result.rows).toHaveLength(2);
+    // Chronological asc.
+    expect(result.rows[0].entityId).toBe("txn-1");
+    expect(result.rows[1].entityId).toBe("txn-2");
+    // createdAt → ISO string (matches archived path's JSON-round-tripped shape).
+    expect(result.rows[0].createdAt).toBe("2026-05-29T10:00:00.000Z");
+    expect(result.rows[1].createdAt).toBe("2026-05-29T11:00:00.000Z");
+    // Snapshot fields carried through.
+    expect(result.rows[0].companyNameSnapshot).toBe("Live Tenant");
+    expect(result.rows[1].companyNameSnapshot).toBeNull();
+
+    // Cleanup
+    await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+    await db.delete(companies).where(eq(companies.id, companyId));
+    await db.delete(auditArchives).where(eq(auditArchives.companyId, companyId));
+  });
+
+  it("ARCHIVED: company removed via real flow → source 'archived', rows readArchive'd via the manifest", async () => {
+    const { activityLog, companies, auditArchives } = await import("@paperclipai/db");
+    const { eq } = await import("drizzle-orm");
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Departed Tenant",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(activityLog).values({
+      id: randomUUID(),
+      companyId,
+      actorType: "agent",
+      actorId: "agent-1",
+      action: "accounting.write.success",
+      entityType: "accounting_write",
+      entityId: "archived-txn-1",
+      agentId: null,
+      runId: null,
+      details: { note: "before deletion" },
+      status: "success",
+      companyNameSnapshot: "Departed Tenant",
+      agentNameSnapshot: "Recon Agent",
+      createdAt: new Date("2026-05-29T09:00:00.000Z"),
+    });
+
+    // Real flow: companies.remove() → archive → manifest insert → cascade.
+    await companyService(db).remove(companyId);
+
+    // Company is GONE; manifest row exists; activity_log row is gone.
+    const companyAfter = await db.select().from(companies).where(eq(companies.id, companyId));
+    expect(companyAfter).toHaveLength(0);
+    const manifests = await db.select().from(auditArchives).where(eq(auditArchives.companyId, companyId));
+    expect(manifests).toHaveLength(1);
+
+    const result = await activityService(db).retrieveAuditTrail(companyId);
+
+    expect(result.source).toBe("archived");
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].entityId).toBe("archived-txn-1");
+    expect(result.rows[0].details).toEqual({ note: "before deletion" });
+    expect(result.rows[0].companyNameSnapshot).toBe("Departed Tenant");
+    expect(result.rows[0].createdAt).toBe("2026-05-29T09:00:00.000Z");
+
+    await db.delete(auditArchives).where(eq(auditArchives.companyId, companyId));
+  });
+
+  it("ARCHIVED MULTI (MM1): two manifest rows → readArchive each, merged by createdAt", async () => {
+    const { activityLog, companies, auditArchives } = await import("@paperclipai/db");
+    const { eq } = await import("drizzle-orm");
+    const companyId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Multi-Manifest Tenant",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(activityLog).values({
+      id: randomUUID(),
+      companyId,
+      actorType: "agent",
+      actorId: "agent-1",
+      action: "accounting.write.success",
+      entityType: "accounting_write",
+      entityId: "multi-txn-1",
+      agentId: null,
+      runId: null,
+      details: null,
+      status: "success",
+      companyNameSnapshot: "Multi-Manifest Tenant",
+      agentNameSnapshot: null,
+      createdAt: new Date("2026-05-29T08:00:00.000Z"),
+    });
+
+    // Real archive + manifest via companies.remove().
+    await companyService(db).remove(companyId);
+    const firstManifest = await db.select().from(auditArchives).where(eq(auditArchives.companyId, companyId));
+    expect(firstManifest).toHaveLength(1);
+
+    // Simulate MM1: insert a SECOND manifest row pointing at the same archive
+    // object. retrieveAuditTrail must readArchive BOTH and concatenate. (Today
+    // a tenant has at most one manifest row; this test guards the merge path
+    // against silent-loss bugs if windowed archiving ever produces multiple.)
+    await db.insert(auditArchives).values({
+      companyId,
+      objectKey: firstManifest[0].objectKey,
+      rowCount: firstManifest[0].rowCount,
+      sha256: firstManifest[0].sha256,
+      // archivedAt defaults to now() — sorts after the first manifest row.
+    });
+
+    const result = await activityService(db).retrieveAuditTrail(companyId);
+
+    expect(result.source).toBe("archived");
+    // Two manifest rows × one row in the archive each = 2 rows in the merged result.
+    expect(result.rows).toHaveLength(2);
+    // Both rows have the same content (same archive object); the load-bearing
+    // assertion is that BOTH manifests were read (not just one).
+    expect(result.rows[0].entityId).toBe("multi-txn-1");
+    expect(result.rows[1].entityId).toBe("multi-txn-1");
+
+    await db.delete(auditArchives).where(eq(auditArchives.companyId, companyId));
+  });
+
+  it("NONE (LL1): company doesn't exist + no manifest rows → source 'none', rows [] (NOT 404)", async () => {
+    const companyId = randomUUID();
+    const result = await activityService(db).retrieveAuditTrail(companyId);
+
+    expect(result.source).toBe("none");
+    expect(result.rows).toEqual([]);
   });
 });
