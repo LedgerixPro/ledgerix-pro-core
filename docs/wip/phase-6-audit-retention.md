@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — 6a-AUDIT complete (both sites); accounting book-change audit trail exists end-to-end
+**Last updated:** 2026-05-29 — 6a-0 + 6c merged into the 6-PRESERVE arc (archive-writer → delete-hook, dependency order)
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (Pattern B Full — Phase 6 requirements, line 34 + line 77). Strategic Plan "Phase 6b" (== our 6c). ADR-005 (Phase 5, just completed — preceding arc).
 **Estimated remaining work:** Large — multi-arc (6c → 6a-0 → 6a-rest → 6b). Estimate refined per sub-phase.
@@ -43,6 +43,7 @@ If this didn't get done: a litigation event against Ledgerix Pro for past-tenant
     - **6c:** archival/durability — MOVED from first to here; now archives a trail that actually contains the book-writes. The locked 6c design decisions (P/Q/R per-tenant JSONL + app-level GCM + legal_holds) all STILL HOLD; they execute later.
     - **6b:** integrity/tamper-evidence on the now-complete, archived trail.
   - **No prior work is wasted.** The 2a schema (snapshot columns + legal_holds table, commit 6a90fea6), 2b-i (optional snapshot fields on logActivity, commit c64bf177), and the P/Q/R/S/T design decisions all remain correct and necessary — only the EXECUTION ORDER changed (completeness moved ahead of durability).
+  - **REVISED 2026-05-29 (6a-0 + 6c merged into one audit-preservation arc).** 6a-0 (archive-before-delete hook) has a hard dependency on 6c (the archival layer) — the hook must archive TO something. "Archive-before-delete" is one mechanism, not two separable phases; the prior split was a numbering artifact. MERGED: the new arc "6-PRESERVE (audit preservation)" = build the 6c archive-writer FIRST (per-tenant JSONL + app-level AES-256-GCM + legal_holds-aware, per locked decisions P/Q/R/S/T), THEN wire the 6a-0 delete-hook in companies.remove()/agents.remove() to archive a tenant's activity_log rows before the cascade removes them. Revised remaining order: 6a-AUDIT (DONE) → 6-PRESERVE (6c archive-writer → 6a-0 delete-hook) → 6a-rest (query/retrievability + completeness-backstop middleware) → 6c-infra (bucket provisioning + 7yr key escrow — Scott's real-world decisions) → 6b (integrity/tamper-evidence). All locked 6c design decisions (P/Q/R/S/T) and shipped schema (2a) still hold.
 - **Decision D — Audit-survival approach = Option 2 (archive-before-delete).** Locked 2026-05-29. Rejected Option 1 (break the FK + denormalize identity, accumulate audit in operational DB) and Option 3 (soft-delete entities). Reasoning: Option 2 matches the retention policy as written; Option 1 was an expedient workaround justified only by an urgency that no longer exists.
 - **Decision E — 6c approach = Option 3 (code/infra split).** Locked 2026-05-29. Build the archival layer (writer, format, encryption, legal-hold, lifecycle) as CODE targeting the existing `StorageService` abstraction now — runs on local-disk in dev/test, S3 in prod, exactly as the codebase already abstracts storage. Track bucket provisioning + prod config as a SEPARATE 6c-infra deliverable (Scott's real-world vendor/cost decision), which does NOT block 6c-code. Rejected Option 2 (provision bucket first — blocks code on procurement, contrary to how the system abstracts storage).
 
@@ -123,13 +124,12 @@ Validated finding: accounting book-changes are logged to activity_log NOWHERE. R
 
 1. ✅ DECISIONS LOCKED (P1/Q1/R1): 6c-code design (per-tenant JSONL + denormalized identity, app-level AES-256-GCM, app-level legal_holds registry). Decisions still hold; they execute later in the revised order.
 2. ✅ DONE — 2a (commit 6a90fea6, schema columns + legal_holds) and 2b-i (commit c64bf177, optional snapshot fields on logActivity with the no-fallback hot-path-untouched guarantee). The former 2b-ii (accounting callers pass snapshots) is now absorbed into 6a-AUDIT below.
-3. ✅ DONE — **6a-AUDIT (scope LOCKED U3/V2/W1/X1/Y2/Z1):** Both sites shipped — replay-side (`9253be34`) + route-side (`acf956b9`). Accounting book-changes now persist durable activity_log rows at every meaningful event with point-in-time identity. Next entry point: step 4 (6a-0 archive-before-delete) — now meaningful because a complete trail exists worth preserving.
-4. **6a-0:** archive-before-delete hook in `companies.remove()`/`agents.remove()` — concept unchanged; now there is a complete trail worth preserving.
+3. ✅ DONE — **6a-AUDIT (scope LOCKED U3/V2/W1/X1/Y2/Z1):** Both sites shipped — replay-side (`9253be34`) + route-side (`acf956b9`). Accounting book-changes now persist durable activity_log rows at every meaningful event with point-in-time identity.
+4. **6-PRESERVE (audit preservation, merged arc — replaces former separate steps 4 and 6):** built in dependency order — (a) 6c archive-writer service first: query a tenant's activity_log rows for a window → serialize per-tenant JSONL with the point-in-time identity already captured in the rows → AES-256-GCM encrypt → StorageService.putFile (local-disk dev/test backend); plus a legal_holds-aware retrieval path. (b) THEN the 6a-0 delete-hook: in `companies.remove()`/`agents.remove()`, archive the entity's activity_log rows via the 6c writer BEFORE the existing cascade delete removes them. Locked P/Q/R/S/T design decisions apply unchanged.
 5. **6a-rest:** per-tenant audit query capability + middleware completeness-backstop for FUTURE non-logging routes + fidelity/logging standardization.
-6. **6c:** archival/durability — build the archive-writer service against StorageService (local-disk dev/test backend) per the locked P/Q/R + S design decisions; build the retrieval/read path. Archives a trail that NOW contains the book-writes.
-7. **6c-infra:** provision durable bucket + Railway config + 7-year master-key escrow (Scott — real-world decisions).
-8. **6b:** integrity/tamper-evidence on the now-complete, archived audit trail.
-9. Closeout each sub-phase to ADR (likely an ADR-006, or amend ADR-001) + tracker/EA/Brief + archive this WIP.
+6. **6c-infra:** provision durable bucket + Railway config + 7-year master-key escrow (Scott — real-world decisions).
+7. **6b:** integrity/tamper-evidence on the now-complete, archived audit trail.
+8. Closeout each sub-phase to ADR (likely an ADR-006, or amend ADR-001) + tracker/EA/Brief + archive this WIP.
 
 ## Blockers
 
@@ -155,6 +155,8 @@ Validated finding: accounting book-changes are logged to activity_log NOWHERE. R
 - **REJECTED: log replay-side inside the dispatcher (Decision W Option 2).** Reason: mixes execution with audit concern; the dispatcher returns audit data precisely so the caller logs it.
 - **REJECTED: log input-validation failures (Decision Y Option 1).** Reason: malformed requests never reach the books; logging them is request-noise, not the book-event litigation record needs.
 - **REJECTED: log route-side on replay (implied by V2 resolution).** Reason: withIdempotency doesn't re-run work() on replay; the original execution already logged; a replay log would be a spurious duplicate book-event.
+- **REVISED-AWAY: 6a-0 and 6c as separate non-adjacent phases.** 2026-05-29. Reason: archive-before-delete is one mechanism (archive + the hook that calls it); 6a-0 hard-depends on 6c. Merged into the 6-PRESERVE arc, built 6c-writer-then-6a-0-hook.
+- **REJECTED (again): stop-the-cascade-now / archive-later minimal 6a-0.** Reason: no clients → no at-risk trail to protect in the interim; would add an operational-DB-accumulation step 6c must later clean up.
 
 ## Session Log
 
@@ -173,3 +175,4 @@ Validated finding: accounting book-changes are logged to activity_log NOWHERE. R
 - Completed the book-change event map: validated that NO activity_log row is written for accounting book-changes anywhere — route success/approval-request/failure all unlogged, and approve() captures the dispatcher's write_executed result but never logActivity's it ('for Phase 4c.4 we just log' = pino stdout, a designed-for-but-unwired seam). Locked 6a-AUDIT scope U3/V2/W1/X1: log every book-touching event (success/queued/failed/replay-executed/replay-failed) with point-in-time identity, two sites (replay-side approve() first, then route-side after reading withIdempotency per the V caveat).
 - Read withIdempotency (resolves V2 caveat): no work() re-run on replay (book-change once), throws propagate uncached. Locked route-side Y2 (log only post-validation/book-attempt failures, not input-validation noise) + Z1 (resolve identity once up-front, reused by success+failure paths). Route-side logging: after-result keyed on !replayed + body.status for success/approval; try/catch around withIdempotency for failures (log then rethrow). Replay-side already shipped (9253be34); route-side is the next code.
 - 6a-AUDIT COMPLETE: replay-side (9253be34) + route-side (acf956b9). Accounting book-changes now logActivity at every meaningful event with point-in-time identity; replays suppressed; input-validation noise excluded; failures logged without masking errors. accounting.test.ts 96→111, all green. The completeness floor exists; 6a-0 (archive-before-delete) is next, now meaningful because there's a complete trail to preserve.
+- Merged 6a-0 + 6c into one "6-PRESERVE" arc (REVISED locked order). Realization: archive-before-delete is a single mechanism — the 6a-0 delete-hook hard-depends on the 6c archive-writer existing to archive TO. Build order within the arc: 6c archive-writer first, then the 6a-0 hook. Rejected the stop-cascade-now/archive-later split (no clients → nothing at risk to protect interim). Next code: the 6c archive-writer service.
