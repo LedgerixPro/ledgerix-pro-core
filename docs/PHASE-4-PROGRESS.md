@@ -729,6 +729,36 @@ The design lock (`a328db6f`) captured Option A: one decision, three sub-decision
 - Approval dispatcher wiring status: 4 of 4 types WIRED (full coverage)
 - Implementation gaps that are NOT architectural blockers (workflow integration for charter status, production seed invocation for setup fees) continue to be tracked in the WIP doc's "What is NOT implemented yet" subsections under Q1 and Q2
 
+### Phase 4c.5 closeout — WIP-to-ADR migration (2026-05-28)
+
+After Q5 LOCKED (commit `9cc3b6cd`) Phase 4c.5 had every architectural decision resolved (Decisions 1–7 + Q-charter + Q-setup-fee + Q-multi-line-journals), 8 of 8 endpoints production-ready, 4 of 4 approval-replay stubs wired, and 340 tests passing. The WIP doc's status of `ready_to_merge_to_adr` was finally accurate.
+
+Per the `docs/wip/README.md` retirement convention ("all decisions locked + work shipped + tests passing → move the Architecture Decisions to an ADR, summarize the result in the relevant PHASE-N-PROGRESS.md, delete the WIP doc"), Phase 4c.5 became the first WIP doc to execute the full migration. Three sequential commits:
+
+1. **ADR-004 drafted** (commit `e33bf8d3`). Peer ADR to ADR-003, capturing all 7 Decisions + 3 Q-items in canonical ADR form. Descriptive Q-labels (Q-charter, Q-setup-fee, Q-multi-line-journals) avoid collision with ADR-003's Q1–Q10. Two REVISED notes preserved (Decision 2 admin auth + Q-inv-3-β pricing replay) as the locked precedent for Tenet #16 doc-first revision discipline. Includes a Pre-implementation Tenet #7 finding section per Decision so future readers see the code grounding that shaped each lock. ADR-004 supersedes ADR-003's planning-level "Phase 4c.5: Re-ship the 3 write endpoints atop the safety layer" section.
+
+2. **WIP doc archived** (commit `e45cd434`). `git mv` from `docs/wip/` to `docs/wip/archived/` to preserve rename history. Two factual errors corrected in the archival commit (per Scott's explicit confirmation: "correct it as part of the archival, not silently"): two references to a non-existent "top-level Q4 resolved during Decision 6" — the intended reference was to Q-pay-4, a sub-decision INSIDE Decision 6 about threshold check location. Top-level Q4 never existed; the Session-1 Q4 on admin auth resolved as Decision 2. Archival header added pointing readers at ADR-004 as the canonical decision record.
+
+3. **PHASE-4-PROGRESS summary** (this commit). Closes the chronological arc with a forward-pointer to ADR-004.
+
+**Canonical decision lookup, going forward:** ADR-004 is the authoritative source for Phase 4c.5 architectural decisions. PHASE-4-PROGRESS.md (this file) is the chronological diary — useful for "when did X ship?" and "what was the implementation arc?" but not the locked-decision contract. The archived WIP doc (`docs/wip/archived/phase-4c-5-write-endpoints-and-admin-api.md`) is preserved as historical narrative — useful for "what discarded options were considered?" and "how was X reached?" but the locked contract is in ADR-004.
+
+**Architectural patterns established by Phase 4c.5** (captured canonically in ADR-004's "Architectural patterns" section): lock-then-implement workflow; Tenet #7 verify-before-locking; Tenet #16 REVISED-notes-doc-first; route↔replay shared helpers; FK actor separation; identifier-seam documentation when overloaded; money convention (dollars-in-body / cents-in-decision / per-item-rounding); honest deferral over speculative design (Q-multi-line-journals as the canonical Option C example).
+
+**State at Phase 4c.5 close:**
+
+- All Phase 4c.5 architectural decisions resolved.
+- 8 of 8 Phase 4 endpoints production-ready; 4 of 4 approval-replay stubs wired.
+- 340 accounting tests passing; typecheck clean.
+- Open work tracked in ADR-004 § Open Items (operational/integration, not architectural): onboarding/cancellation workflow wiring for Q-charter, production seed for Q-setup-fee, Billing & Invoicing agent reconciliation against Decision 7's contract.
+- HEAD master: this commit (post-migration).
+
+**Commits shipped (migration arc):**
+
+48. `e33bf8d3` — ADR-004 drafted (Phase 4c.5 write-endpoint implementation decisions, all 7 Decisions + 3 Q-items canonical).
+49. `e45cd434` — WIP doc archived to `docs/wip/archived/` + two factual corrections folded in.
+50. *this commit* — PHASE-4-PROGRESS Phase 4c.5 closeout summary (hash see `git log`; self-referencing hash inside the commit content is the chicken-and-egg case ADR-005-style commits would solve, deferred as not worth the amend cycle here).
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
