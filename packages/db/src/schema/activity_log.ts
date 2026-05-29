@@ -18,6 +18,14 @@ export const activityLog = pgTable(
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     agentId: uuid("agent_id").references(() => agents.id),
+    // Point-in-time identity snapshots (Phase 6 Decision S, 2026-05-29).
+    // Captured at write time by logActivity so the audit row remains
+    // legible after the live company/agent entity is deleted —
+    // litigation-grade audit per ADR-005-successor (Phase 6 arc). Nullable:
+    // system-scoped rows have no company/agent, and historical rows
+    // pre-dating Decision S have no snapshot.
+    companyNameSnapshot: text("company_name_snapshot"),
+    agentNameSnapshot: text("agent_name_snapshot"),
     runId: uuid("run_id").references(() => heartbeatRuns.id),
     details: jsonb("details").$type<Record<string, unknown>>(),
     // Outcome of the action being logged. 'success' for completed writes,
