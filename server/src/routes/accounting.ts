@@ -28,6 +28,7 @@ import {
 import { isCharterForInvoicing } from "../services/accounting/charter.js";
 import { approvalService } from "../services/approvals.js";
 import { withIdempotency } from "../services/idempotency.js";
+import { requireAgentPermission } from "../middleware/require-agent-permission.js";
 import {
   ACCOUNTING_APPROVAL_TYPES,
   type InvoiceDedupeAmbiguousPayload,
@@ -455,7 +456,7 @@ export function accountingRoutes(db: Db) {
     });
   });
 
-  router.post("/accounting/v1/transactions/:txnId/category", async (req, res) => {
+  router.post("/accounting/v1/transactions/:txnId/category", requireAgentPermission(db, "accounting:write_category"), async (req, res) => {
     const startedAt = Date.now();
 
     // ---- URL param validation ----
@@ -668,7 +669,7 @@ export function accountingRoutes(db: Db) {
     res.status(result.status).json(finalBody);
   });
 
-  router.post("/accounting/v1/payments", async (req, res) => {
+  router.post("/accounting/v1/payments", requireAgentPermission(db, "accounting:create_payment"), async (req, res) => {
     const startedAt = Date.now();
 
     // ---- Body validation ----

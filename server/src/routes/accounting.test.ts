@@ -8,6 +8,16 @@ vi.mock("../services/accounting/index.js", () => ({
   getNewTransactions: vi.fn(),
 }));
 
+// Phase 5: mock the access service so requireAgentPermission's hasPermission call
+// is controllable. The vi.mock factory closes over hasPermissionMock; the outer
+// factory captures the binding lazily, and the inner accessService function is
+// only invoked at route-mount time (inside accountingRoutes(db)), by which time
+// the const is initialized. Same pattern as require-agent-permission.test.ts.
+const hasPermissionMock = vi.fn();
+vi.mock("../services/access.js", () => ({
+  accessService: () => ({ hasPermission: hasPermissionMock }),
+}));
+
 import { getNewTransactions } from "../services/accounting/index.js";
 import { accountingRoutes } from "./accounting.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -1799,6 +1809,9 @@ describe("POST /api/accounting/v1/transactions/:txnId/category", () => {
   });
 
   it("uses requestedByAgentId (not requestedByUserId) when actor is an agent", async () => {
+    // Phase 5 (L1-revised): granted agent — hasPermission → true so the request reaches the handler.
+    hasPermissionMock.mockResolvedValue(true);
+
     vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
       new TransactionNotFoundError(
         "quickbooks",
@@ -1931,6 +1944,68 @@ describe("POST /api/accounting/v1/transactions/:txnId/category", () => {
     // The inner work function should NOT have been invoked — withIdempotency
     // returned the cached response directly
     expect(updateTransactionCategory).not.toHaveBeenCalled();
+  });
+
+  // --------------------------------------------------------------------------
+  // Phase 5 step 3 — K1 integration tests for requireAgentPermission gate.
+  // Asserts the outer permission gate fires before the inner locked gate
+  // sequence (validate → assertCompanyAccess → withIdempotency). The
+  // ungranted-agent test sends a body that would ALSO fail body validation;
+  // a 403 result (not 400) proves the permission gate is the outermost gate.
+  // --------------------------------------------------------------------------
+
+  it("Phase 5 K1: ungranted agent → 403 BEFORE 400 (permission gate is outermost)", async () => {
+    hasPermissionMock.mockResolvedValue(false);
+
+    const agentActor: ActorOverride = {
+      type: "agent",
+      agentId: "agent-no-grant",
+      companyId: POST_COMPANY_ID,
+      source: "agent_key",
+    };
+    const app = buildTestApp(agentActor);
+    // Empty body — would otherwise fail body validation with 400
+    // ("Invalid companyId"). With the gate, 403 fires first.
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-x/category")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("accounting:write_category");
+
+    // Wiring proof: hasPermission called with ("agent" principalType, route's key)
+    expect(hasPermissionMock).toHaveBeenCalledTimes(1);
+    expect(hasPermissionMock).toHaveBeenCalledWith(
+      POST_COMPANY_ID,
+      "agent",
+      "agent-no-grant",
+      "accounting:write_category",
+    );
+
+    // Handler never ran — service mock NOT called (proves gate fired before validate)
+    expect(updateTransactionCategory).not.toHaveBeenCalled();
+  });
+
+  it("Phase 5 K1: non-agent actor (local board) → pass-through; hasPermission NOT called (Decision C)", async () => {
+    vi.mocked(updateTransactionCategory).mockResolvedValueOnce({
+      platform: "quickbooks",
+      txnType: "Purchase",
+      txnId: "txn-board-1",
+      previousAccountRef: "60100",
+      newAccountRef: "60200",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-board-1/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(200);
+    expect(hasPermissionMock).not.toHaveBeenCalled();
   });
 });
 
@@ -2123,6 +2198,9 @@ describe("POST /api/accounting/v1/payments", () => {
   });
 
   it("uses requestedByAgentId (not requestedByUserId) when actor is an agent and threshold is exceeded", async () => {
+    // Phase 5 (L1-revised): granted agent — hasPermission → true so the request reaches the handler.
+    hasPermissionMock.mockResolvedValue(true);
+
     vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({
       exceeded: true,
       thresholdAmount: 1000000,
@@ -2293,6 +2371,78 @@ describe("POST /api/accounting/v1/payments", () => {
     expect(evaluatePaymentThreshold).not.toHaveBeenCalled();
     expect(resolveEntityRefByPlatform).not.toHaveBeenCalled();
     expect(reconcilePayment).not.toHaveBeenCalled();
+  });
+
+  // --------------------------------------------------------------------------
+  // Phase 5 step 3 — K1 integration tests for requireAgentPermission gate.
+  // Same shape as the category route's K1 tests; the 403-before-400 assertion
+  // is the load-bearing proof of Decision G's outermost-gate placement.
+  // --------------------------------------------------------------------------
+
+  it("Phase 5 K1: ungranted agent → 403 BEFORE 400 (permission gate is outermost)", async () => {
+    hasPermissionMock.mockResolvedValue(false);
+
+    const agentActor: ActorOverride = {
+      type: "agent",
+      agentId: "agent-no-grant-pay",
+      companyId: POST_COMPANY_ID,
+      source: "agent_key",
+    };
+    const app = buildTestApp(agentActor);
+    // Empty body — would otherwise fail body validation with 400
+    // ("Invalid companyId"). With the gate, 403 fires first.
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("accounting:create_payment");
+
+    // Wiring proof: hasPermission called with ("agent" principalType, route's key)
+    expect(hasPermissionMock).toHaveBeenCalledTimes(1);
+    expect(hasPermissionMock).toHaveBeenCalledWith(
+      POST_COMPANY_ID,
+      "agent",
+      "agent-no-grant-pay",
+      "accounting:create_payment",
+    );
+
+    // Handler never ran — service mocks NOT called (proves gate fired before validate)
+    expect(evaluatePaymentThreshold).not.toHaveBeenCalled();
+    expect(resolveEntityRefByPlatform).not.toHaveBeenCalled();
+    expect(reconcilePayment).not.toHaveBeenCalled();
+  });
+
+  it("Phase 5 K1: non-agent actor (local board) → pass-through; hasPermission NOT called (Decision C)", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({ exceeded: false });
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "quickbooks",
+      ref: { customerId: "cust-board" },
+    });
+    vi.mocked(reconcilePayment).mockResolvedValueOnce({
+      platform: "quickbooks",
+      paymentId: "qbo-pay-board",
+      invoiceId: "inv-board",
+      amount: 50000,
+      customerId: "cust-board",
+      accountId: undefined,
+      paymentDate: "2026-05-29",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-board",
+        amount: 50000,
+        entityRef: "cust-board",
+        paymentDate: "2026-05-29",
+      });
+
+    expect(res.status).toBe(200);
+    expect(hasPermissionMock).not.toHaveBeenCalled();
   });
 });
 
