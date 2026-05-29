@@ -809,6 +809,30 @@ The naming question itself — which agent will own Ledgerix Pro's own monthly c
 
 52. *this commit* — Billing & Invoicing agent naming deferred across canonical docs (Sub-option C; hash see `git log`).
 
+### Phase 4c.5 verify finding — Q-charter reframed as architectural arc (2026-05-29)
+
+Tenet #7 verification on the remaining Phase 4c.5 open item ("Q-charter onboarding/cancellation workflow wiring") surfaced that the framing was wrong. What ADR-004 § Open Items called "code work" is actually a multi-session architectural arc with three undecided sub-questions: (1) which lifecycle event signals "became-paying" (no current dispatcher mapping covers this), (2) how to atomically enforce the first-10-Charter-clients cap (no count-of-active-Charter function exists in the service today), and (3) what triggers client cancellation (no cancellation handler exists in code at all). Same shape as today's earlier Billing & Invoicing finding — what looked like wiring against existing infrastructure turned out to be downstream of infrastructure that hasn't shipped.
+
+**Decision per Sub-option B (close-the-finding, defer-the-arc):** ADR-004 § Open Items bullet rewritten to reflect the architectural-arc reality. The arc itself stays deferred to a future session that can give it focused attention — Trust Tenet's "default to conservative path on safety-adjacent work" applies; client lifecycle events affect billing pricing, so the decisions warrant fresh attention rather than tail-of-session execution.
+
+**Pattern preserved (the third successful Tenet #7 save of the 2026-05-28/29 sessions):** the verify-before-acting discipline caught two false-positive "ready to implement" framings in 24 hours (Billing & Invoicing agent + Q-charter wiring). Both reduced to documentation honesty rather than premature code. Cost of the verify each time: ~15 min. Cost if we'd skipped: writing prompts against nonexistent entities.
+
+**What did NOT change:**
+- Charter service functions (`grantCharterToNewClient`, `recordNonCharterClient`, `cancelCharter`, `isCharterForInvoicing`) remain in code, fully tested, callable. No code regression.
+- `isCharterForInvoicing` continues to default to `false` for unknown clients — Q-setup-fee's prod seed last session means invoice pricing now works correctly for the default-Standard path. The Charter-pricing path will activate when the arc lands.
+- POST `/api/accounting/v1/invoices` continues to operate correctly for non-Charter clients (the only kind of client that currently exists in prod, since no Charter grants have been recorded).
+
+**State at session end (full 2026-05-28/29 arc):**
+- HEAD master @ (this commit).
+- 340 accounting tests passing; typecheck clean.
+- Phase 4c.5 architectural decisions: ALL resolved (Decisions 1–7 + Q-charter + Q-setup-fee + Q-multi-line-journals; the latter two as deferred-with-explicit-resolution; Q-charter now flipped to "architectural arc, deferred").
+- Phase 4c.5 operational items: Q-setup-fee ✅ retired (prod seed 2026-05-29, audit-log `5ad4beea-...`); Q-charter reframed as architectural arc; consumer-agent identity deferred (Billing & Invoicing deferral).
+- Phase 4c.5 itself is now genuinely closed across every dimension. Remaining work is either downstream of ADR-001 Phase 5+ (consumer agents, charter-lifecycle wiring) or fully outside Phase 4c.5's scope.
+
+**Commits shipped (verify finding):**
+
+53. *this commit* — Q-charter reframed as architectural arc; deferred-with-explicit-resolution (hash see `git log`).
+
 ### Next session (date TBD)
 
 **Two paths forward, in any order:**
