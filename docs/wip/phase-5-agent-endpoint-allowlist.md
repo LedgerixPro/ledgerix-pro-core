@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 at start of session (decisions A–D locked)
+**Last updated:** 2026-05-29 — step 1 shipped (a745fd23)
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (`docs/adr/ADR-001-pattern-b-full-api-endpoints.md`) — locks the Phase 5 requirements; ADR-004 (`docs/adr/ADR-004-phase-4c-5-write-endpoint-implementation.md`) — the write endpoints being gated.
 **Estimated remaining work:** ~3–5 hours (estimate may shrink — most key/auth infrastructure already exists; see Context).
@@ -36,11 +36,12 @@ None blocking. (The `accounting:create_invoice` agent-exposure dependency is tra
 
 ## Work Done (cumulative)
 
-- (none yet — this WIP doc is the first artifact)
+- `8fe2f7d8` — Phase 5 WIP doc stood up (decisions A1/B1/C1/D1 locked).
+- `a745fd23` — Step 1: added 3 accounting permission keys to PERMISSION_KEYS (`accounting:write_category`, `accounting:create_payment`, `accounting:create_invoice`) in packages/shared/src/constants.ts. Type-system propagation verified — the exhaustive `Record<PermissionKey, string>` label map at ui/src/pages/CompanyAccess.tsx forced human labels for all 3 keys (compile-time confirmation the keys are load-bearing, not just string literals). All 20 packages typecheck clean.
 
 ## Next Steps (in order)
 
-1. Add the three accounting permission keys to `PERMISSION_KEYS` in `packages/shared/src/constants.ts` (propagates to `PermissionKey` type + Zod validator automatically). Verify build/typecheck after.
+1. ✅ DONE (a745fd23): Add the three accounting permission keys to `PERMISSION_KEYS` in `packages/shared/src/constants.ts` (propagates to `PermissionKey` type + Zod validator automatically). Verify build/typecheck after.
 2. Write the `requireAgentPermission(permissionKey)` middleware factory (likely `server/src/middleware/` — confirm exact home before creating). It reads `req.actor`; if `type !== "agent"` pass through (Decision C); else call `accessService(db).hasPermission(companyId, "agent", agentId, permissionKey)` and 403 on miss.
 3. Apply the factory to the `/api/accounting/v1/*` write routes (category, payments; invoice route key wired but agent-exposure deferred per Decision A note).
 4. Tests: middleware unit tests (agent-with-grant 200-path, agent-without-grant 403, non-agent pass-through) + route integration tests.
@@ -69,5 +70,5 @@ None.
 - Selected Phase 5 (agent endpoint allowlist) as the next ADR-001 arc.
 - Read-before-scope: discovered the agent-key auth + grant system + typed permission-key enum + `hasPermission` already exist. Rescoped Phase 5 from "build infrastructure" to "adopt existing grant system + add thin enforcement."
 - Locked Decisions A1 / B1 / C1 / D1 (above).
-- Shipped: this WIP doc.
-- State at session end: decisions locked; no code yet; Next Steps step 1 is the entry point for implementation.
+- Shipped: this WIP doc (`8fe2f7d8`); step 1 — accounting permission keys added to PERMISSION_KEYS (`a745fd23`).
+- State at session end: decisions locked; step 1 (permission keys) shipped + typecheck-verified; Next Steps step 2 (requireAgentPermission middleware factory) is the next entry point.
