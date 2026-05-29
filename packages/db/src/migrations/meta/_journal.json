@@ -498,6 +498,13 @@
       "when": 1780086030539,
       "tag": "0070_secret_black_widow",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1780096136423,
+      "tag": "0071_nostalgic_whistler",
+      "breakpoints": true
     }
   ]
 }

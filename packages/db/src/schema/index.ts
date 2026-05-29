@@ -11,6 +11,7 @@ export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
 export { legalHolds } from "./legal_holds.js";
+export { auditArchives } from "./audit_archives.js";
 export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";

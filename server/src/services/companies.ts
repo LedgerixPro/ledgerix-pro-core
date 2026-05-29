@@ -27,6 +27,7 @@ import {
   principalPermissionGrants,
   companyMemberships,
   companySkills,
+  auditArchives,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { auditArchiveService } from "./audit-archive/index.js";
@@ -273,7 +274,33 @@ export function companyService(db: Db) {
       // book-events survive via the company trail's agentNameSnapshot (S/T).
       // The archive runs OUTSIDE the delete transaction (avoids holding the
       // txn open across storage I/O; avoids orphan-archive-on-rollback).
-      await auditArchiveService(db, getStorageService()).archiveActivityForCompany(id);
+      const archiveResult = await auditArchiveService(db, getStorageService()).archiveActivityForCompany(id);
+
+      // Phase 6 6a-rest FF1/KK1/JJ1: record the archive location in the
+      // audit_archives manifest BEFORE the cascade delete, so a deleted
+      // tenant's archive remains findable. The manifest is the index TO the
+      // deleted tenant's archive — it must outlive the tenant (II1: companyId
+      // is a plain uuid, no FK; the schema enforces survival).
+      //
+      // KK1 — manifest write runs OUTSIDE the txn with NO try/catch. A
+      // manifest-write failure propagates and ABORTS the deletion, the same
+      // way an archive-write failure does (EE3 extended: never proceed
+      // without a findable index).
+      //
+      // JJ1 — skip the manifest row for empty archives. objectKey === null
+      // means archiveActivityForCompany wrote no object; there is nothing to
+      // index. (A deletion-with-zero-history tombstone is a separate feature
+      // and is not built here.)
+      if (archiveResult.objectKey !== null) {
+        await db.insert(auditArchives).values({
+          companyId: id,
+          objectKey: archiveResult.objectKey,
+          rowCount: archiveResult.rowCount,
+          sha256: archiveResult.sha256,
+          // windowFrom / windowTo intentionally left null — the delete-hook
+          // archives the full tenant trail, no window restriction.
+        });
+      }
 
       return db.transaction(async (tx) => {
         // Delete from child tables in dependency order

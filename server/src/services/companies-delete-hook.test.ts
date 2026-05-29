@@ -32,6 +32,11 @@ import { companyService } from "./companies.js";
 interface OrderingState {
   transactionCalled: boolean;
   transactionCalledAfterArchive: boolean;
+  // Phase 6 step 5a additions (FF1/KK1/JJ1):
+  manifestInsertCalled: boolean;
+  manifestInsertedValues: Record<string, unknown> | null;
+  // If set, the .values() call throws this error (simulates manifest write failure).
+  manifestInsertThrows: Error | null;
 }
 
 function createFakeDb(state: OrderingState): Db {
@@ -44,7 +49,18 @@ function createFakeDb(state: OrderingState): Db {
   }));
   const tx = { delete: txDelete };
 
+  const insertSpy = vi.fn((_table: unknown) => ({
+    values: vi.fn(async (vals: Record<string, unknown>) => {
+      state.manifestInsertCalled = true;
+      state.manifestInsertedValues = vals;
+      if (state.manifestInsertThrows) {
+        throw state.manifestInsertThrows;
+      }
+    }),
+  }));
+
   const db: unknown = {
+    insert: insertSpy,
     transaction: vi.fn(async (cb: (tx: unknown) => unknown) => {
       state.transactionCalled = true;
       // EE3 ordering check: at the moment the transaction body begins,
@@ -56,6 +72,16 @@ function createFakeDb(state: OrderingState): Db {
     }),
   };
   return db as Db;
+}
+
+function freshState(): OrderingState {
+  return {
+    transactionCalled: false,
+    transactionCalledAfterArchive: false,
+    manifestInsertCalled: false,
+    manifestInsertedValues: null,
+    manifestInsertThrows: null,
+  };
 }
 
 describe("companies.remove() — Phase 6 6a-0 archive-before-delete hook (DD3/EE3)", () => {
@@ -74,7 +100,7 @@ describe("companies.remove() — Phase 6 6a-0 archive-before-delete hook (DD3/EE
   });
 
   it("archive runs BEFORE the delete transaction, then deletion proceeds (happy path)", async () => {
-    const state: OrderingState = { transactionCalled: false, transactionCalledAfterArchive: false };
+    const state = freshState();
     const db = createFakeDb(state);
 
     const result = await companyService(db).remove("company-1");
@@ -93,7 +119,7 @@ describe("companies.remove() — Phase 6 6a-0 archive-before-delete hook (DD3/EE
 
   it("EE3 INVARIANT: archive FAILURE aborts deletion (transaction NOT called, error propagates) — load-bearing 'never proceed-and-lose'", async () => {
     archiveActivityMock.mockRejectedValueOnce(new Error("storage down — archive failed"));
-    const state: OrderingState = { transactionCalled: false, transactionCalledAfterArchive: false };
+    const state = freshState();
     const db = createFakeDb(state);
 
     await expect(companyService(db).remove("company-1")).rejects.toThrow("storage down — archive failed");
@@ -106,6 +132,9 @@ describe("companies.remove() — Phase 6 6a-0 archive-before-delete hook (DD3/EE
     // exists to preserve.
     expect(state.transactionCalled).toBe(false);
     expect(state.transactionCalledAfterArchive).toBe(false);
+
+    // The manifest insert was never even attempted — archive threw first.
+    expect(state.manifestInsertCalled).toBe(false);
   });
 
   it("empty company (objectKey: null, rowCount: 0) → archive succeeds, delete still proceeds", async () => {
@@ -115,7 +144,7 @@ describe("companies.remove() — Phase 6 6a-0 archive-before-delete hook (DD3/EE
       sha256: null,
       byteSize: 0,
     });
-    const state: OrderingState = { transactionCalled: false, transactionCalledAfterArchive: false };
+    const state = freshState();
     const db = createFakeDb(state);
 
     const result = await companyService(db).remove("empty-company");
@@ -125,6 +154,72 @@ describe("companies.remove() — Phase 6 6a-0 archive-before-delete hook (DD3/EE
     expect(state.transactionCalled).toBe(true);
     expect(state.transactionCalledAfterArchive).toBe(true);
     expect(result).toEqual({ id: "company-1", name: "Test Co" });
+  });
+
+  // --------------------------------------------------------------------------
+  // Phase 6 step 5a — audit_archives manifest write (FF1/II1/JJ1/KK1).
+  // Hook order becomes: archive → manifest insert → delete transaction.
+  // The manifest insert runs OUTSIDE the txn, NO try/catch (extends EE3:
+  // "never proceed without a findable index").
+  // --------------------------------------------------------------------------
+
+  it("FF1/KK1: archive → manifest insert → delete transaction; manifest captures objectKey/rowCount/sha256", async () => {
+    const state = freshState();
+    const db = createFakeDb(state);
+
+    await companyService(db).remove("company-1");
+
+    // Manifest row was inserted between the archive and the delete txn.
+    expect(state.manifestInsertCalled).toBe(true);
+    expect(state.manifestInsertedValues).toEqual({
+      companyId: "company-1",
+      objectKey: "company-1/audit-archive/2026/05/29/abc-audit-all.jsonl.enc",
+      rowCount: 5,
+      sha256: "deadbeef".repeat(8),
+    });
+
+    // Delete transaction ran AFTER (this still holds — manifest sits between
+    // archive and txn; transactionCalledAfterArchive is set when the txn
+    // begins, by which time both the archive AND the manifest have completed).
+    expect(state.transactionCalled).toBe(true);
+    expect(state.transactionCalledAfterArchive).toBe(true);
+  });
+
+  it("KK1 INVARIANT: manifest-write FAILURE aborts deletion (delete txn NOT called, error propagates)", async () => {
+    const state = freshState();
+    state.manifestInsertThrows = new Error("manifest insert failed");
+    const db = createFakeDb(state);
+
+    await expect(companyService(db).remove("company-1")).rejects.toThrow("manifest insert failed");
+
+    // Archive completed and manifest insert was attempted.
+    expect(archiveActivityMock).toHaveBeenCalledTimes(1);
+    expect(state.manifestInsertCalled).toBe(true);
+
+    // CRITICAL: delete transaction NEVER ran. EE3 extended: never proceed
+    // without a findable index. If this flips green-with-transactionCalled-true,
+    // the arc has silently destroyed a tenant's archive index.
+    expect(state.transactionCalled).toBe(false);
+  });
+
+  it("JJ1: empty archive (objectKey: null) → NO manifest insert; delete still proceeds", async () => {
+    archiveActivityMock.mockResolvedValueOnce({
+      objectKey: null,
+      rowCount: 0,
+      sha256: null,
+      byteSize: 0,
+    });
+    const state = freshState();
+    const db = createFakeDb(state);
+
+    await companyService(db).remove("empty-company");
+
+    // Archive ran, returned objectKey:null.
+    expect(archiveActivityMock).toHaveBeenCalledTimes(1);
+    // Manifest insert was NOT attempted — JJ1 skips empty archives.
+    expect(state.manifestInsertCalled).toBe(false);
+    // Delete still proceeded.
+    expect(state.transactionCalled).toBe(true);
   });
 
   it("DD3: agents.ts does NOT import the audit-archive service (agent-delete is NOT hooked)", async () => {
