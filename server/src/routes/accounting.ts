@@ -29,6 +29,9 @@ import { isCharterForInvoicing } from "../services/accounting/charter.js";
 import { approvalService } from "../services/approvals.js";
 import { withIdempotency } from "../services/idempotency.js";
 import { requireAgentPermission } from "../middleware/require-agent-permission.js";
+import { agentService } from "../services/agents.js";
+import { companyService } from "../services/companies.js";
+import { logActivity } from "../services/activity-log.js";
 import {
   ACCOUNTING_APPROVAL_TYPES,
   type InvoiceDedupeAmbiguousPayload,
@@ -528,7 +531,29 @@ export function accountingRoutes(db: Db) {
     // cached response (either the 200 success or the 202 pending).
     const idempotencyKey = req.header("idempotency-key") ?? null;
 
-    const result = await withIdempotency<{
+    // Phase 6 6a-AUDIT (Z1): resolve point-in-time identity ONCE up-front,
+    // after assertCompanyAccess and before withIdempotency. Reused by both
+    // the success/approval after-path and the failure catch-path.
+    const auditActorType: "agent" | "user" | "system" =
+      req.actor.type === "agent" ? "agent" : req.actor.type === "board" ? "user" : "system";
+    const auditAgentId = req.actor.type === "agent" ? (req.actor.agentId ?? null) : null;
+    let companyNameSnapshot: string | null = null;
+    let agentNameSnapshot: string | null = null;
+
+    let result: {
+      status: number;
+      body: { status: "success" | "pending_approval"; data: Record<string, unknown>; meta: Record<string, unknown> };
+      replayed: boolean;
+    };
+    try {
+      const [companyForAudit, agentForAudit] = await Promise.all([
+        companyService(db).getById(companyId),
+        auditAgentId ? agentService(db).getById(auditAgentId) : Promise.resolve(null),
+      ]);
+      companyNameSnapshot = companyForAudit?.name ?? null;
+      agentNameSnapshot = agentForAudit?.name ?? null;
+
+      result = await withIdempotency<{
       status: "success" | "pending_approval";
       data: Record<string, unknown>;
       meta: Record<string, unknown>;
@@ -638,6 +663,46 @@ export function accountingRoutes(db: Db) {
         }
       },
     );
+    } catch (err) {
+      // Phase 6 6a-AUDIT (Y2): post-validation failure path. Input-validation
+      // 400s threw BEFORE this try/catch began and are correctly NOT logged.
+      // logActivity failure must NOT mask the original error — swallow + rethrow.
+      try {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const errDetails: Record<string, unknown> = { message: errMsg };
+        if (err instanceof HttpError) {
+          errDetails.httpStatus = err.status;
+          if (err.details && typeof err.details === "object") {
+            errDetails.errorDetails = err.details;
+          }
+        }
+        await logActivity(db, {
+          companyId,
+          actorType: auditActorType,
+          actorId: actorId ?? "system",
+          action: "accounting.write.failed",
+          entityType: "accounting_write",
+          entityId: txnId,
+          agentId: auditAgentId,
+          companyNameSnapshot,
+          agentNameSnapshot,
+          status: "failure",
+          details: {
+            endpoint: "POST /api/accounting/v1/transactions/:txnId/category",
+            contactId,
+            newAccountRef,
+            ...errDetails,
+          },
+        });
+      } catch (logErr) {
+        const logMsg = logErr instanceof Error ? logErr.message : String(logErr);
+        logger.error(
+          { txnId, companyId, originalError: err instanceof Error ? err.message : String(err), logError: logMsg },
+          "logActivity failed during accounting write failure — original error still rethrown",
+        );
+      }
+      throw err;
+    }
 
     // ---- Logger info ----
     logger.info(
@@ -656,6 +721,41 @@ export function accountingRoutes(db: Db) {
       },
       "accounting.transactions.category.post",
     );
+
+    // Phase 6 6a-AUDIT (V2-resolved, U3): durable activity_log row for
+    // book-events. Suppressed on replay (original execution already logged).
+    // logActivity failure must NOT break the response.
+    if (!result.replayed) {
+      try {
+        const isSuccess = result.body.status === "success";
+        const data = result.body.data as Record<string, unknown>;
+        await logActivity(db, {
+          companyId,
+          actorType: auditActorType,
+          actorId: actorId ?? "system",
+          action: isSuccess ? "accounting.write.success" : "accounting.write.approval_required",
+          entityType: "accounting_write",
+          entityId: isSuccess
+            ? (typeof data.txnId === "string" ? data.txnId : txnId)
+            : (typeof data.approvalId === "string" ? data.approvalId : txnId),
+          agentId: auditAgentId,
+          companyNameSnapshot,
+          agentNameSnapshot,
+          status: "success",
+          details: {
+            endpoint: "POST /api/accounting/v1/transactions/:txnId/category",
+            contactId,
+            ...data,
+          },
+        });
+      } catch (logErr) {
+        const logMsg = logErr instanceof Error ? logErr.message : String(logErr);
+        logger.error(
+          { txnId, companyId, outcomeStatus: result.body.status, logError: logMsg },
+          "logActivity failed after accounting write — response still sent",
+        );
+      }
+    }
 
     // ---- Response ----
     // Add idempotencyReplay flag to meta per ADR-003 Q5
@@ -758,7 +858,27 @@ export function accountingRoutes(db: Db) {
     // the cached response (200 success or 202 pending).
     const idempotencyKey = req.header("idempotency-key") ?? null;
 
-    const result = await withIdempotency<{
+    // Phase 6 6a-AUDIT (Z1): resolve identity ONCE up-front.
+    const auditActorType: "agent" | "user" | "system" =
+      req.actor.type === "agent" ? "agent" : req.actor.type === "board" ? "user" : "system";
+    const auditAgentId = req.actor.type === "agent" ? (req.actor.agentId ?? null) : null;
+    let companyNameSnapshot: string | null = null;
+    let agentNameSnapshot: string | null = null;
+
+    let result: {
+      status: number;
+      body: { status: "success" | "pending_approval"; data: Record<string, unknown>; meta: Record<string, unknown> };
+      replayed: boolean;
+    };
+    try {
+      const [companyForAudit, agentForAudit] = await Promise.all([
+        companyService(db).getById(companyId),
+        auditAgentId ? agentService(db).getById(auditAgentId) : Promise.resolve(null),
+      ]);
+      companyNameSnapshot = companyForAudit?.name ?? null;
+      agentNameSnapshot = agentForAudit?.name ?? null;
+
+      result = await withIdempotency<{
       status: "success" | "pending_approval";
       data: Record<string, unknown>;
       meta: Record<string, unknown>;
@@ -902,6 +1022,45 @@ export function accountingRoutes(db: Db) {
         }
       },
     );
+    } catch (err) {
+      // Phase 6 6a-AUDIT (Y2): post-validation failure.
+      try {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const errDetails: Record<string, unknown> = { message: errMsg };
+        if (err instanceof HttpError) {
+          errDetails.httpStatus = err.status;
+          if (err.details && typeof err.details === "object") {
+            errDetails.errorDetails = err.details;
+          }
+        }
+        await logActivity(db, {
+          companyId,
+          actorType: auditActorType,
+          actorId: actorId ?? "system",
+          action: "accounting.write.failed",
+          entityType: "accounting_write",
+          entityId: invoiceId,
+          agentId: auditAgentId,
+          companyNameSnapshot,
+          agentNameSnapshot,
+          status: "failure",
+          details: {
+            endpoint: "POST /api/accounting/v1/payments",
+            contactId,
+            amount,
+            entityRef,
+            ...errDetails,
+          },
+        });
+      } catch (logErr) {
+        const logMsg = logErr instanceof Error ? logErr.message : String(logErr);
+        logger.error(
+          { invoiceId, companyId, originalError: err instanceof Error ? err.message : String(err), logError: logMsg },
+          "logActivity failed during accounting write failure — original error still rethrown",
+        );
+      }
+      throw err;
+    }
 
     // ---- Logger info ----
     logger.info(
@@ -921,6 +1080,41 @@ export function accountingRoutes(db: Db) {
       },
       "accounting.payments.post",
     );
+
+    // Phase 6 6a-AUDIT (V2-resolved, U3): book-event audit row.
+    if (!result.replayed) {
+      try {
+        const isSuccess = result.body.status === "success";
+        const data = result.body.data as Record<string, unknown>;
+        await logActivity(db, {
+          companyId,
+          actorType: auditActorType,
+          actorId: actorId ?? "system",
+          action: isSuccess ? "accounting.write.success" : "accounting.write.approval_required",
+          entityType: "accounting_write",
+          entityId: isSuccess
+            ? (typeof data.paymentId === "string" ? data.paymentId : invoiceId)
+            : (typeof data.approvalId === "string" ? data.approvalId : invoiceId),
+          agentId: auditAgentId,
+          companyNameSnapshot,
+          agentNameSnapshot,
+          status: "success",
+          details: {
+            endpoint: "POST /api/accounting/v1/payments",
+            contactId,
+            invoiceId,
+            amount,
+            ...data,
+          },
+        });
+      } catch (logErr) {
+        const logMsg = logErr instanceof Error ? logErr.message : String(logErr);
+        logger.error(
+          { invoiceId, companyId, outcomeStatus: result.body.status, logError: logMsg },
+          "logActivity failed after accounting write — response still sent",
+        );
+      }
+    }
 
     // ---- Response with idempotencyReplay flag ----
     const finalBody = {
@@ -1107,7 +1301,27 @@ export function accountingRoutes(db: Db) {
       dueDate ??
       new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-    const result = await withIdempotency<{
+    // Phase 6 6a-AUDIT (Z1): resolve identity ONCE up-front.
+    const auditActorType: "agent" | "user" | "system" =
+      req.actor.type === "agent" ? "agent" : req.actor.type === "board" ? "user" : "system";
+    const auditAgentId = req.actor.type === "agent" ? (req.actor.agentId ?? null) : null;
+    let companyNameSnapshot: string | null = null;
+    let agentNameSnapshot: string | null = null;
+
+    let result: {
+      status: number;
+      body: { status: "success" | "pending_approval"; data: Record<string, unknown>; meta: Record<string, unknown> };
+      replayed: boolean;
+    };
+    try {
+      const [companyForAudit, agentForAudit] = await Promise.all([
+        companyService(db).getById(companyId),
+        auditAgentId ? agentService(db).getById(auditAgentId) : Promise.resolve(null),
+      ]);
+      companyNameSnapshot = companyForAudit?.name ?? null;
+      agentNameSnapshot = agentForAudit?.name ?? null;
+
+      result = await withIdempotency<{
       status: "success" | "pending_approval";
       data: Record<string, unknown>;
       meta: Record<string, unknown>;
@@ -1341,6 +1555,46 @@ export function accountingRoutes(db: Db) {
         };
       },
     );
+    } catch (err) {
+      // Phase 6 6a-AUDIT (Y2): post-validation failure.
+      try {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const errDetails: Record<string, unknown> = { message: errMsg };
+        if (err instanceof HttpError) {
+          errDetails.httpStatus = err.status;
+          if (err.details && typeof err.details === "object") {
+            errDetails.errorDetails = err.details;
+          }
+        }
+        await logActivity(db, {
+          companyId,
+          actorType: auditActorType,
+          actorId: actorId ?? "system",
+          action: "accounting.write.failed",
+          entityType: "accounting_write",
+          entityId: contactId,
+          agentId: auditAgentId,
+          companyNameSnapshot,
+          agentNameSnapshot,
+          status: "failure",
+          details: {
+            endpoint: "POST /api/accounting/v1/invoices",
+            customerName,
+            customerEmail,
+            serviceTier,
+            billingMode,
+            ...errDetails,
+          },
+        });
+      } catch (logErr) {
+        const logMsg = logErr instanceof Error ? logErr.message : String(logErr);
+        logger.error(
+          { contactId, companyId, originalError: err instanceof Error ? err.message : String(err), logError: logMsg },
+          "logActivity failed during accounting write failure — original error still rethrown",
+        );
+      }
+      throw err;
+    }
 
     // ---- Logger info ----
     logger.info(
@@ -1362,6 +1616,43 @@ export function accountingRoutes(db: Db) {
       },
       "accounting.invoices.post",
     );
+
+    // Phase 6 6a-AUDIT (V2-resolved, U3): book-event audit row.
+    if (!result.replayed) {
+      try {
+        const isSuccess = result.body.status === "success";
+        const data = result.body.data as Record<string, unknown>;
+        await logActivity(db, {
+          companyId,
+          actorType: auditActorType,
+          actorId: actorId ?? "system",
+          action: isSuccess ? "accounting.write.success" : "accounting.write.approval_required",
+          entityType: "accounting_write",
+          entityId: isSuccess
+            ? (typeof data.invoiceId === "string" ? data.invoiceId : contactId)
+            : (typeof data.approvalId === "string" ? data.approvalId : contactId),
+          agentId: auditAgentId,
+          companyNameSnapshot,
+          agentNameSnapshot,
+          status: "success",
+          details: {
+            endpoint: "POST /api/accounting/v1/invoices",
+            contactId,
+            customerName,
+            customerEmail,
+            serviceTier,
+            billingMode,
+            ...data,
+          },
+        });
+      } catch (logErr) {
+        const logMsg = logErr instanceof Error ? logErr.message : String(logErr);
+        logger.error(
+          { contactId, companyId, outcomeStatus: result.body.status, logError: logMsg },
+          "logActivity failed after accounting write — response still sent",
+        );
+      }
+    }
 
     // ---- Response with idempotencyReplay flag ----
     const finalBody = {

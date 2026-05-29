@@ -18,6 +18,27 @@ vi.mock("../services/access.js", () => ({
   accessService: () => ({ hasPermission: hasPermissionMock }),
 }));
 
+// Phase 6 6a-AUDIT (route-side): mock logActivity + identity-helper services
+// used by the 3 write routes. logActivity is a direct top-level export, so the
+// factory dereferences the spy IMMEDIATELY at registration — that requires
+// vi.hoisted so the spy exists before the hoisted vi.mock call runs.
+// (The companies/agents factories use a deferred-closure pattern like the
+// access mock above, but use vi.hoisted for symmetry and TDZ safety.)
+const { logActivityMock, companyGetByIdMock, agentGetByIdMock } = vi.hoisted(() => ({
+  logActivityMock: vi.fn(),
+  companyGetByIdMock: vi.fn(),
+  agentGetByIdMock: vi.fn(),
+}));
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: logActivityMock,
+}));
+vi.mock("../services/companies.js", () => ({
+  companyService: () => ({ getById: companyGetByIdMock }),
+}));
+vi.mock("../services/agents.js", () => ({
+  agentService: () => ({ getById: agentGetByIdMock }),
+}));
+
 import { getNewTransactions } from "../services/accounting/index.js";
 import { accountingRoutes } from "./accounting.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -1702,6 +1723,9 @@ describe("POST /api/accounting/v1/transactions/:txnId/category", () => {
       const r = await work();
       return { ...r, replayed: false };
     });
+    // Phase 6 6a-AUDIT (Z1): default identity resolution.
+    companyGetByIdMock.mockResolvedValue({ id: "company-x", name: "Acme Books Inc" });
+    agentGetByIdMock.mockResolvedValue({ id: "agent-x", name: "Reconciliation Agent" });
   });
 
   it("returns 200 with data envelope on successful write", async () => {
@@ -2007,6 +2031,146 @@ describe("POST /api/accounting/v1/transactions/:txnId/category", () => {
     expect(res.status).toBe(200);
     expect(hasPermissionMock).not.toHaveBeenCalled();
   });
+
+  // --------------------------------------------------------------------------
+  // Phase 6 6a-AUDIT route-side (U3/V2-resolved/Y2/Z1):
+  // logActivity persists durable activity_log rows for accounting book-events.
+  // --------------------------------------------------------------------------
+
+  it("Phase 6 6a-AUDIT: success → ONE logActivity call (action=accounting.write.success, status=success, snapshots present)", async () => {
+    vi.mocked(updateTransactionCategory).mockResolvedValueOnce({
+      platform: "quickbooks",
+      txnType: "Purchase",
+      txnId: "txn-pur-1",
+      previousAccountRef: "60100",
+      newAccountRef: "60200",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-pur-1/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(200);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      companyId: POST_COMPANY_ID,
+      action: "accounting.write.success",
+      entityType: "accounting_write",
+      entityId: "txn-pur-1",
+      status: "success",
+      companyNameSnapshot: "Acme Books Inc",
+      // local board actor → no agentNameSnapshot
+      agentNameSnapshot: null,
+    });
+    expect(input.details).toMatchObject({
+      endpoint: "POST /api/accounting/v1/transactions/:txnId/category",
+      platform: "quickbooks",
+      txnType: "Purchase",
+      previousAccountRef: "60100",
+      newAccountRef: "60200",
+    });
+  });
+
+  it("Phase 6 6a-AUDIT: replay (replayed:true) → NO logActivity call (suppress duplicate book-event)", async () => {
+    vi.mocked(withIdempotency).mockImplementationOnce(async (_db, _opts, _work) => ({
+      status: 200,
+      body: {
+        status: "success",
+        data: { platform: "quickbooks", txnType: "Purchase", txnId: "txn-pur-1", previousAccountRef: "60100", newAccountRef: "60200" },
+        meta: { performedAt: "2026-05-29T00:00:00.000Z", latencyMs: 0 },
+      },
+      replayed: true,
+    }));
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-pur-1/category")
+      .set("idempotency-key", "test-key")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta.idempotencyReplay).toBe(true);
+    expect(logActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("Phase 6 6a-AUDIT: approval-required (202) → ONE logActivity call (action=accounting.write.approval_required, status=success)", async () => {
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
+      new TransactionNotFoundError("quickbooks", "txn-missing", ["Purchase", "Bill"]),
+    );
+    const createMock = vi.fn().mockResolvedValueOnce({ id: "approval-id-1" });
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-missing/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    expect(res.status).toBe(202);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.approval_required",
+      entityType: "accounting_write",
+      entityId: "approval-id-1",
+      status: "success", // request handled OK — it was queued
+      companyNameSnapshot: "Acme Books Inc",
+    });
+  });
+
+  it("Phase 6 6a-AUDIT (Y2): post-validation failure (service throws unexpected) → logActivity status=failure AND error rethrown", async () => {
+    vi.mocked(updateTransactionCategory).mockRejectedValueOnce(
+      new Error("QBO upstream 502"),
+    );
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-x/category")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        newAccountRef: "60200",
+      });
+
+    // Original error propagated to global error handler.
+    expect(res.status).toBe(500);
+    // logActivity was called once with status=failure.
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.failed",
+      entityType: "accounting_write",
+      entityId: "txn-x",
+      status: "failure",
+    });
+    expect(input.details).toMatchObject({
+      endpoint: "POST /api/accounting/v1/transactions/:txnId/category",
+      message: "QBO upstream 502",
+    });
+  });
+
+  it("Phase 6 6a-AUDIT (Y2): input-validation failure (empty body → 400) → NO logActivity call (request-noise, not book-event)", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/transactions/txn-x/category")
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(logActivityMock).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================================
@@ -2059,6 +2223,9 @@ describe("POST /api/accounting/v1/payments", () => {
       const r = await work();
       return { ...r, replayed: false };
     });
+    // Phase 6 6a-AUDIT (Z1): default identity resolution.
+    companyGetByIdMock.mockResolvedValue({ id: "company-x", name: "Acme Books Inc" });
+    agentGetByIdMock.mockResolvedValue({ id: "agent-x", name: "Reconciliation Agent" });
   });
 
   it("returns 200 with payment result when threshold is not exceeded", async () => {
@@ -2444,6 +2611,149 @@ describe("POST /api/accounting/v1/payments", () => {
     expect(res.status).toBe(200);
     expect(hasPermissionMock).not.toHaveBeenCalled();
   });
+
+  // --------------------------------------------------------------------------
+  // Phase 6 6a-AUDIT route-side: logActivity for payments book-events.
+  // --------------------------------------------------------------------------
+
+  it("Phase 6 6a-AUDIT: success → ONE logActivity call (action=accounting.write.success)", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({ exceeded: false });
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "quickbooks",
+      ref: { customerId: "cust-1" },
+    });
+    vi.mocked(reconcilePayment).mockResolvedValueOnce({
+      platform: "quickbooks",
+      paymentId: "qbo-pay-success-1",
+      invoiceId: "inv-1",
+      amount: 50000,
+      customerId: "cust-1",
+      accountId: undefined,
+      paymentDate: "2026-05-29",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-1",
+        amount: 50000,
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(200);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.success",
+      entityType: "accounting_write",
+      entityId: "qbo-pay-success-1",
+      status: "success",
+      companyNameSnapshot: "Acme Books Inc",
+    });
+  });
+
+  it("Phase 6 6a-AUDIT: replay (replayed:true) → NO logActivity call", async () => {
+    vi.mocked(withIdempotency).mockImplementationOnce(async (_db, _opts, _work) => ({
+      status: 200,
+      body: {
+        status: "success",
+        data: { platform: "quickbooks", paymentId: "qbo-pay-cached-1", invoiceId: "inv-1", amount: 50000, customerId: "cust-1", accountId: undefined, paymentDate: "2026-05-29" },
+        meta: { performedAt: "2026-05-29T00:00:00.000Z", latencyMs: 0 },
+      },
+      replayed: true,
+    }));
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .set("idempotency-key", "test-key")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-1",
+        amount: 50000,
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta.idempotencyReplay).toBe(true);
+    expect(logActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("Phase 6 6a-AUDIT: approval-required (202) → ONE logActivity call (action=accounting.write.approval_required)", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({
+      exceeded: true,
+      thresholdAmount: 1000000,
+      reason: "Threshold exceeded",
+    });
+    const createMock = vi.fn().mockResolvedValueOnce({ id: "approval-pay-1" });
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-large",
+        amount: 1500000,
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(202);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.approval_required",
+      entityType: "accounting_write",
+      entityId: "approval-pay-1",
+      status: "success",
+    });
+  });
+
+  it("Phase 6 6a-AUDIT (Y2): post-validation failure → logActivity status=failure AND error rethrown", async () => {
+    vi.mocked(evaluatePaymentThreshold).mockResolvedValueOnce({ exceeded: false });
+    vi.mocked(resolveEntityRefByPlatform).mockResolvedValueOnce({
+      platform: "quickbooks",
+      ref: { customerId: "cust-1" },
+    });
+    vi.mocked(reconcilePayment).mockRejectedValueOnce(new Error("QBO upstream 502"));
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({
+        companyId: POST_COMPANY_ID,
+        contactId: "test-contact-id",
+        invoiceId: "inv-fail",
+        amount: 50000,
+        entityRef: "cust-1",
+      });
+
+    expect(res.status).toBe(500);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.failed",
+      entityType: "accounting_write",
+      entityId: "inv-fail",
+      status: "failure",
+    });
+    expect(input.details).toMatchObject({ message: "QBO upstream 502" });
+  });
+
+  it("Phase 6 6a-AUDIT (Y2): input-validation failure (empty body → 400) → NO logActivity call", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/payments")
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(logActivityMock).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================================
@@ -2504,6 +2814,9 @@ describe("POST /api/accounting/v1/invoices", () => {
       const r = await work();
       return { ...r, replayed: false };
     });
+    // Phase 6 6a-AUDIT (Z1): default identity resolution.
+    companyGetByIdMock.mockResolvedValue({ id: "company-x", name: "Acme Books Inc" });
+    agentGetByIdMock.mockResolvedValue({ id: "agent-x", name: "Reconciliation Agent" });
   });
 
   // Minimal valid recurring body — many tests start from this and tweak.
@@ -2940,5 +3253,122 @@ describe("POST /api/accounting/v1/invoices", () => {
     expect(res.body.error).toContain("Setup fee not configured");
     expect(res.body.details.code).toBe("setup_fee_not_configured");
     expect(qbo.createInvoice).not.toHaveBeenCalled();
+  });
+
+  // --------------------------------------------------------------------------
+  // Phase 6 6a-AUDIT route-side: logActivity for invoices book-events.
+  // --------------------------------------------------------------------------
+
+  it("Phase 6 6a-AUDIT: success (201) → ONE logActivity call (action=accounting.write.success)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-1",
+      action: "found_by_email",
+    });
+    vi.mocked(isCharterForInvoicing).mockResolvedValueOnce(false);
+    vi.mocked(getExpectedPriceCents).mockResolvedValueOnce({
+      amountCents: 29900,
+      source: "tier_standard",
+      priceRecordId: "tier-uuid-1",
+    });
+    vi.mocked(qbo.createInvoice).mockResolvedValueOnce({
+      invoiceId: "qbo-inv-audit-1",
+      invoiceNumber: "INV-AUDIT-1",
+      totalAmt: 299,
+      dueDate: "2099-06-15",
+    });
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(201);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.success",
+      entityType: "accounting_write",
+      entityId: "qbo-inv-audit-1",
+      status: "success",
+      companyNameSnapshot: "Acme Books Inc",
+    });
+  });
+
+  it("Phase 6 6a-AUDIT: replay (replayed:true) → NO logActivity call", async () => {
+    vi.mocked(withIdempotency).mockImplementationOnce(async (_db, _opts, _work) => ({
+      status: 201,
+      body: {
+        status: "success",
+        data: { invoiceId: "qbo-inv-cached-1", invoiceNumber: "INV-CACHED", customerId: "cust-1", totalAmount: 299, dueDate: "2099-06-15", status: "created" },
+        meta: { performedAt: "2026-05-29T00:00:00.000Z", latencyMs: 0 },
+      },
+      replayed: true,
+    }));
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app)
+      .post("/accounting/v1/invoices")
+      .set("idempotency-key", "test-key")
+      .send(validRecurringBody());
+
+    expect(res.status).toBe(201);
+    expect(res.body.meta.idempotencyReplay).toBe(true);
+    expect(logActivityMock).not.toHaveBeenCalled();
+  });
+
+  it("Phase 6 6a-AUDIT: approval-required (202) → ONE logActivity call (action=accounting.write.approval_required)", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-amb",
+      action: "ambiguous_name_only",
+    });
+    const createMock = vi.fn().mockResolvedValueOnce({ id: "approval-inv-1" });
+    vi.mocked(approvalService).mockReturnValueOnce({ create: createMock } as any);
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(202);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.approval_required",
+      entityType: "accounting_write",
+      entityId: "approval-inv-1",
+      status: "success",
+    });
+  });
+
+  it("Phase 6 6a-AUDIT (Y2): post-validation failure (createInvoice throws) → logActivity status=failure AND error rethrown", async () => {
+    vi.mocked(qbo.findOrCreateCustomer).mockResolvedValueOnce({
+      customerId: "cust-1",
+      action: "found_by_email",
+    });
+    vi.mocked(isCharterForInvoicing).mockResolvedValueOnce(false);
+    vi.mocked(getExpectedPriceCents).mockResolvedValueOnce({
+      amountCents: 29900,
+      source: "tier_standard",
+      priceRecordId: "tier-uuid-1",
+    });
+    vi.mocked(qbo.createInvoice).mockRejectedValueOnce(new Error("QBO upstream 502"));
+
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send(validRecurringBody());
+
+    expect(res.status).toBe(500);
+    expect(logActivityMock).toHaveBeenCalledTimes(1);
+    const [, input] = logActivityMock.mock.calls[0];
+    expect(input).toMatchObject({
+      action: "accounting.write.failed",
+      entityType: "accounting_write",
+      entityId: "ghl-contact-test",
+      status: "failure",
+    });
+    expect(input.details).toMatchObject({ message: "QBO upstream 502" });
+  });
+
+  it("Phase 6 6a-AUDIT (Y2): input-validation failure (empty body → 400) → NO logActivity call", async () => {
+    const app = buildTestApp(localBoardActor);
+    const res = await request(app).post("/accounting/v1/invoices").send({});
+
+    expect(res.status).toBe(400);
+    expect(logActivityMock).not.toHaveBeenCalled();
   });
 });
