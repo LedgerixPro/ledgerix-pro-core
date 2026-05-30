@@ -2,7 +2,7 @@
 
 **Status:** in_progress
 **Started:** 2026-05-29
-**Last updated:** 2026-05-29 — 6a-rest-QUERY complete (5b retrieval shipped); read side of litigation requirement answerable
+**Last updated:** 2026-05-29 (session end) — software half of litigation requirement complete; remaining: 6c-infra (operational), 6b (integrity), deferred backstop/fidelity
 **Owner:** Scott Hansbury
 **Related ADRs:** ADR-001 (Pattern B Full — Phase 6 requirements, line 34 + line 77). Strategic Plan "Phase 6b" (== our 6c). ADR-005 (Phase 5, just completed — preceding arc).
 **Estimated remaining work:** Large — multi-arc (6c → 6a-0 → 6a-rest → 6b). Estimate refined per sub-phase.
@@ -250,3 +250,21 @@ Read findings: archiving happens at exactly one site (the delete-hook), so live 
 - 5a shipped (d57f780a): audit_archives manifest table (plain companyId, no FK per II1, SQL-confirmed) + delete-hook extended to archive → manifest → delete (KK1, EE3-guarded; manifest-failure-aborts-deletion test green; empty-skips-manifest per JJ1). The durable-but-unfindable gap is closed — a deleted tenant's archive is now both durable and locatable. Next: 5b — the audit-retrieval query (live-or-archived by tenant state).
 - Locked 5b query LL1/MM1/NN1. Read found activityService.list is a heavyweight UI feed — 5b gets its OWN clean full-row chronological query. LL1: getById → live; gone+manifest → archive; neither → EMPTY (not 404, "no record" is a valid answer). MM1: read ALL manifest rows + concatenate (don't silently drop archives). NN1: route returns {source, rows} with provenance, assertBoard-ONLY — NOT assertCompanyAccess (would break deleted-tenant retrieval, the core case). Next code: the audit-retrieval method + board-gated route.
 - 5b shipped (b52a2941) — 6a-rest-QUERY COMPLETE. retrieveAuditTrail resolves live/archived/none by tenant state; reused rowToArchived for one mapping across both paths; board-only route with provenance + a guard test that makes any future assertCompanyAccess regression loud. The software half of the litigation requirement is done: durable logging → findable archive on deletion → retrieval for live or former tenants. Remaining is operational (6c-infra) + hardening (6b) + deferred cleanup (backstop/fidelity).
+
+---
+**SESSION END — 2026-05-29. HEAD = caccae3c. Working tree clean.**
+
+State at stop: The SOFTWARE HALF of the litigation-grade audit requirement is COMPLETE and tested. Done this session (8 impl commits + supporting doc/decision commits):
+- 6a-AUDIT (durable logging of accounting book-changes): 2a schema (6a90fea6) -> 2b-i optional snapshot fields (c64bf177) -> replay-side approve() logging (9253be34) -> route-side success/approval/failure logging (acf956b9).
+- 6-PRESERVE (archive on deletion): 6c archive-writer + retrieval, dedicated-key AES-256-GCM, round-trip + tamper-detection (e708ce5f) -> 6a-0 archive-before-delete hook, EE3-guarded (d2e2cc2f).
+- 6a-rest-QUERY (retrievability): audit_archives manifest table + delete-hook extension, EE3-guarded (d57f780a) -> retrieveAuditTrail live/archived/none + board-gated GET /companies/:companyId/audit (b52a2941).
+Net outcome: 'pull exactly what was or was not done to a tenant's books, even after they're gone' is answerable in code for live AND deleted tenants.
+
+REMAINING Phase 6 work (NONE started):
+- Step 8 - 6c-infra (OPERATIONAL, Scott's real-world task, NOT code): provision PAPERCLIP_ARCHIVE_MASTER_KEY (dedicated, separate from PAPERCLIP_SECRETS_MASTER_KEY), a durable storage bucket for Railway, and a 7-year escrow + NO-ROTATE discipline. GATING step to production-readiness - until done, the prod archive runs on the dev fallback key + local-disk and is not protecting real data. Highest real-world leverage. Can be a planning/discussion item with the assistant; execution is Scott's in the deployment environment.
+- Step 9 - 6b integrity/tamper-evidence (CODE): extend the archive's GCM-authTag tamper-detection into a comprehensive integrity story across live + archived rows (e.g. detecting tampering/deletion of LIVE activity_log rows; the archive is already tamper-evident, the live table is not). Multi-commit hardening arc.
+- Step 6 - backstop-middleware (DEFERRED, needs its own decision): completeness guard for FUTURE non-logging write routes. Pending a 'worth building before there are new routes to guard?' decision. No new write routes currently pending.
+- Step 7 - fidelity-standardization (DEFERRED, cleanup): normalize logging-call shapes. Anytime.
+
+NEXT-SESSION DIRECTION (assistant's standing recommendation, Scott to confirm): 6c-infra is the gating real-world step and highest-leverage remaining item, but it's operational (Scott executes). Options to open next session: (1) scope 6c-infra as an actionable checklist (key generation/custody/escrow/no-rotate procedure, Railway bucket choice, env wiring) - assistant helps think it through; (2) build 6b integrity as the next code arc; (3) a deferred cleanup piece; (4) Phase 6 ADR + closeout to lock the software half. Pick at session start.
+---
