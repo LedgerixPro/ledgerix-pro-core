@@ -267,4 +267,7 @@ REMAINING Phase 6 work (NONE started):
 - Step 7 - fidelity-standardization (DEFERRED, cleanup): normalize logging-call shapes. Anytime.
 
 NEXT-SESSION DIRECTION (assistant's standing recommendation, Scott to confirm): 6c-infra is the gating real-world step and highest-leverage remaining item, but it's operational (Scott executes). Options to open next session: (1) scope 6c-infra as an actionable checklist (key generation/custody/escrow/no-rotate procedure, Railway bucket choice, env wiring) - assistant helps think it through; (2) build 6b integrity as the next code arc; (3) a deferred cleanup piece; (4) Phase 6 ADR + closeout to lock the software half. Pick at session start.
+
+BASELINE METRIC CHANGE (2026-05-30): adopted `pnpm test` full-monorepo aggregate (2167/2169 pass) as the canonical Test baseline going forward. This supersedes the prior targeted-suite lineage (340/308/224…) — the jump is a denominator change (whole monorepo vs per-session targeted files), NOT new tests. All future SESSION END entries record the full-monorepo count + the `pnpm test` command.
+PRE-EXISTING RED (not Phase 6): cli/worktree.test.ts fails consistently (DB-restore syntax error) in both cli-alone and monorepo runs — tracked as cleanup, does not gate Phase 6. Separate cleanup: vitest.config.ts projects-mode path bug blocks packages/adapter-utils isolation.
 ---
