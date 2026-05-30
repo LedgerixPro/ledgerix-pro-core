@@ -55,3 +55,8 @@ These are non-negotiable, established across sessions:
 3. Check `docs/PHASE-4-PROGRESS.md` for current phase status
 4. If WIP docs exist, read them BEFORE proposing any architectural changes
 5. Verify locked decisions stay locked; verify rejected options stay rejected
+
+## Session ritual
+
+- **Session start:** the human pastes the output of `cat docs/SESSION-HANDOFF.md` as the first message. The assistant treats that block as the ONLY authoritative source for HEAD / test count / active phase / what shipped. The assistant must NOT assert those values from its own memory or from `/mnt/project/` files — both lag at least one session. If the handoff is absent, the assistant asks for it rather than reciting a memory-derived summary.
+- **Session end:** the existing end-of-session doc pass (WIP/tracker/EA/Brief updates) gains one required step — overwrite `docs/SESSION-HANDOFF.md` with the current state in the fixed format defined at the top of that file. This runs as part of the same doc commit → push step, so the handoff is always current the instant a session closes.
